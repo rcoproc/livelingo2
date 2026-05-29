@@ -37,6 +37,8 @@ class Transcriber:
             language=self.cfg.SOURCE_LANG,
             beam_size=self.cfg.WHISPER_BEAM_SIZE,
             vad_filter=self.cfg.WHISPER_VAD_FILTER,
+            # Optional vocabulary/spelling hint shared with the Groq engine.
+            initial_prompt=self.cfg.STT_INITIAL_PROMPT or None,
             # Each chunk is independent, so don't carry context across chunks —
             # this avoids text "bleeding" / repeating between utterances.
             condition_on_previous_text=False,
