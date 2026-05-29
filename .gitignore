@@ -1,0 +1,28 @@
+# Local config with secrets/overrides
+.env
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Whisper / HF model cache sometimes ends up local
+.cache/
+
+# Local Claude Code settings (permissions, etc.)
+.claude/
+
+# Scratch / test audio
+test.mp3
+*.tmp.wav
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

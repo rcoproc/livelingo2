@@ -1,0 +1,38 @@
+# Real-time voice translation tool — Python dependencies (Windows)
+# Install with:  pip install -r requirements.txt
+#
+# Pinned versions are known-good together on Python 3.10–3.12 / Windows.
+# If a wheel fails to build, try upgrading pip first:  python -m pip install -U pip
+
+# --- Speech-to-text (local, no API key) ---
+faster-whisper==1.1.1
+
+# --- Translation (free Google endpoint, no API key) ---
+deep-translator==1.11.4
+
+# --- HTTP client for the optional Groq LLM translation (free API key) ---
+# (also pulled in by deep-translator, declared here because we import it directly)
+requests>=2.31,<3
+
+# --- Text-to-speech (Microsoft Edge voices, free, needs internet) ---
+# Use 7.x: Microsoft's endpoint now requires a time-based "Sec-MS-GEC" token.
+# Older versions (e.g. 6.1.x) get HTTP 403. If TTS starts failing with 403 in
+# the future, run:  pip install --upgrade edge-tts
+edge-tts>=7.0.0
+
+# --- Audio capture & playback ---
+sounddevice==0.4.7
+# soundfile >= 0.12.1 bundles libsndfile 1.2.x which can decode the MP3
+# audio that edge-tts returns. Do NOT downgrade below 0.12.1.
+soundfile==0.12.1
+
+# --- Numerics ---
+# A range (not an exact pin) so pip can pick whatever wheel exists for your
+# Python version. 1.26.x and 2.x both work with ctranslate2/soundfile/sounddevice.
+numpy>=1.26,<3
+
+# --- Config from .env ---
+python-dotenv==1.0.1
+
+# --- Colored terminal output on Windows ---
+colorama==0.4.6
