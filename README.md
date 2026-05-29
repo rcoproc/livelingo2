@@ -7,14 +7,15 @@ translation as if it were your mic. Speak **French**, others hear **English**
 
 ```text
 🎤 mic (French)
-   └─► faster-whisper  (speech → French text, local)
+   └─► Whisper STT  (speech → French text: Groq cloud large-v3, or local)
         └─► translation (French → English: Google free, or Groq LLM for quality)
              └─► edge-tts  (English text → speech, free)
                   └─► VB-Cable  ──►  "CABLE Output" used as mic in Teams
 ```
 
-Everything runs locally except translation and text-to-speech, which use free
-public services (no API keys, internet required).
+Translation and text-to-speech use free public services (internet required).
+Speech-to-text runs **either** on Groq's free cloud Whisper (most accurate,
+recommended) **or** fully locally with faster-whisper (offline).
 
 ---
 
@@ -55,8 +56,9 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> The first run downloads the Whisper model (`small` ≈ 0.5 GB, `medium` ≈ 1.5 GB)
-> into `~/.cache/huggingface`. This is automatic — just wait for it once.
+> When using the **local** STT engine, the first run downloads the Whisper model
+> (`small` ≈ 0.5 GB, `medium` ≈ 1.5 GB) into `~/.cache/huggingface` — automatic,
+> just wait once. With the **Groq** engine (recommended), no download is needed.
 
 ---
 
@@ -97,7 +99,10 @@ Common settings:
 |---------|---------|---------|
 | `SOURCE_LANG` | `fr` | Language you speak |
 | `TARGET_LANG` | `en` | Language others hear |
-| `WHISPER_MODEL` | `small` | `tiny`/`base`/`small`/`medium`/`large-v3` (bigger = more accurate, slower) |
+| `STT_ENGINE` | `auto` | `auto`/`groq`/`local` — Groq cloud Whisper (best) vs local (see below) |
+| `GROQ_STT_MODEL` | `whisper-large-v3` | Groq STT model (`whisper-large-v3-turbo` = faster) |
+| `STT_INITIAL_PROMPT` | *(empty)* | Hint of names/vocabulary/accents to bias recognition |
+| `WHISPER_MODEL` | `small` | Local model: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` |
 | `INPUT_DEVICE` | *(default mic)* | Mic index or name substring |
 | `OUTPUT_DEVICE` | `CABLE Input` | VB-Cable playback device (index or name) |
 | `TTS_VOICE` | `en-US-AriaNeural` | Any Edge voice (`edge-tts --list-voices`) |
@@ -109,6 +114,29 @@ Common settings:
 | `TRANSLATION_ENGINE` | `auto` | `auto`/`llm`/`google` (see below) |
 | `GROQ_API_KEY` | *(empty)* | Free Groq key → much better translation quality |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model (`llama-3.1-8b-instant` = faster) |
+
+### Better transcription accuracy (recommended, free)
+
+If you speak but the *wrong words* come out, the local `small` model is usually
+the culprit. The biggest, free fix is to let **Groq transcribe in the cloud**
+with `whisper-large-v3` — far more accurate (especially for non-English speech),
+fast, and it offloads your CPU.
+
+1. Set a free `GROQ_API_KEY` (same key as for translation — see below).
+2. Leave `STT_ENGINE=auto` (the default). With a key present it automatically
+   uses Groq; without one it stays fully local. You'll see
+   `Speech-to-text ready (Groq cloud / whisper-large-v3)` on startup.
+
+Other knobs:
+
+- **Stay offline?** Set `STT_ENGINE=local` and raise the local model:
+  `WHISPER_MODEL=large-v3-turbo` (much more accurate than `small`, still
+  reasonable on CPU) or `medium`.
+- **Wrong names/jargon?** Set `STT_INITIAL_PROMPT` to a sentence containing the
+  expected vocabulary, names and accents — it biases both engines.
+
+> If the Groq key/network fails at startup, LiveLingo automatically falls back
+> to the local Whisper model so it always works.
 
 ### Better translation quality (optional, free LLM)
 
@@ -126,9 +154,10 @@ translates it in one step), plug in a **free Groq API key**:
    quick self-test. With `TRANSLATION_ENGINE=auto`, the LLM is used whenever a
    key is present, otherwise it falls back to Google.
 
-> Privacy note: with the LLM engine, the recognized text is sent to Groq for
-> translation (audio/STT stay local). Without a key, only Google Translate is
-> used.
+> Privacy note: with the Groq STT engine, your **audio** is sent to Groq for
+> transcription; with the LLM engine, the recognized **text** is sent for
+> translation. To keep audio fully local, set `STT_ENGINE=local`. Without a key,
+> STT runs locally and only Google Translate is used.
 
 ---
 
@@ -185,9 +214,15 @@ chunks.
 Keep `WHISPER_VAD_FILTER=true` (default) and raise `SILENCE_THRESHOLD` a bit so
 silent chunks aren't sent.
 
+**I say words but the wrong words come out** (poor accuracy).
+The local `small` model is usually the cause. Best fix: set a free `GROQ_API_KEY`
+and keep `STT_ENGINE=auto` to transcribe with Groq's `whisper-large-v3`. To stay
+offline, raise the local model (`WHISPER_MODEL=large-v3-turbo`). See "Better
+transcription accuracy" above.
+
 **It's too slow / chunks pile up** (`processing is N chunks behind`).
-Use a smaller model: `WHISPER_MODEL=base` or `tiny`. On CPU, `small` is usually
-the sweet spot. Set `WHISPER_BEAM_SIZE=1` for extra speed.
+Use `STT_ENGINE=groq` to offload transcription to the cloud, or a smaller local
+model: `WHISPER_MODEL=base` or `tiny`. Set `WHISPER_BEAM_SIZE=1` for extra speed.
 
 **`Could not decode TTS audio` / soundfile MP3 error.**
 Ensure `soundfile>=0.12.1` is installed (`pip install -U soundfile`); older
@@ -224,7 +259,8 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
 ├── README.md
 └── livelingo/          # modular pipeline package
     ├── capture.py      # mic -> audio chunks (energy VAD or fixed chunks)
-    ├── transcribe.py   # faster-whisper STT
+    ├── transcribe.py   # local faster-whisper STT
+    ├── groq_transcribe.py # Groq cloud Whisper STT (higher accuracy, optional)
     ├── translate.py    # deep-translator (Google) translation
     ├── llm.py          # Groq LLM translation (higher quality, optional)
     ├── synthesize.py   # edge-tts TTS -> numpy audio
@@ -240,5 +276,6 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
   there is inherent latency (record an utterance → transcribe → translate →
   speak). Expect ~1–4 s after you finish a sentence.
 - Translation and TTS quality depend on the free Google/Edge services.
-- All audio capture/STT is local and private; only the recognized text (for
-  translation) and the text-to-speech request leave your machine.
+- Privacy depends on the engines: with `STT_ENGINE=local` your audio never
+  leaves the machine (only the recognized text and TTS request do). With the
+  Groq STT engine, audio chunks are sent to Groq for transcription.
