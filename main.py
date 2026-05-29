@@ -5,16 +5,20 @@ Entry point for the real-time FR -> EN voice translator.
 
     python main.py
 
-Flow: microphone -> faster-whisper (STT) -> deep-translator (FR->EN)
-      -> edge-tts (TTS) -> VB-Cable output device (so Teams hears English).
+Flow: microphone -> Whisper STT (Groq cloud or local faster-whisper)
+      -> translation (Groq LLM or Google) -> edge-tts (TTS)
+      -> VB-Cable output device (so Teams hears English).
 
 Press Ctrl+C to stop.
 """
 
 import sys
 
+import numpy as np
+
 import config as cfg
 from livelingo import devices, ui
+from livelingo.groq_transcribe import GroqSTTError, GroqTranscriber
 from livelingo.llm import GROQ_KEY_HELP, LLMError, LLMTranslator
 from livelingo.pipeline import Pipeline
 from livelingo.synthesize import Synthesizer
@@ -106,6 +110,52 @@ def _build_translator():
     return Translator(cfg)
 
 
+def _build_local_transcriber():
+    """Load the local faster-whisper model (auto-downloads on first run)."""
+    try:
+        transcriber = Transcriber(cfg, log=ui.info)
+    except Exception as exc:
+        ui.error(f"Could not load the Whisper model '{cfg.WHISPER_MODEL}': {exc}")
+        ui.warn("Check your internet connection (first download) and disk space.")
+        sys.exit(1)
+    ui.success("Whisper model ready (local).")
+    return transcriber
+
+
+def _build_transcriber():
+    """
+    Pick the speech-to-text engine from config and return an object with a
+    `.transcribe(audio)` method. For the Groq engine, do a quick self-test so a
+    bad key / model name is caught early; on failure, fall back to local Whisper.
+    """
+    engine = (cfg.STT_ENGINE or "auto").lower()
+    if engine == "auto":
+        engine = "groq" if cfg.GROQ_API_KEY else "local"
+
+    if engine == "groq":
+        if not cfg.GROQ_API_KEY:
+            ui.warn("STT_ENGINE=groq but GROQ_API_KEY is empty — using local Whisper.")
+            print(GROQ_KEY_HELP)
+            return _build_local_transcriber()
+
+        transcriber = GroqTranscriber(cfg, log=ui.info)
+        # Self-test with a short silent clip so a bad key/model fails fast.
+        try:
+            silence = np.zeros(int(0.5 * cfg.SAMPLE_RATE), dtype=np.float32)
+            transcriber.transcribe(silence)
+        except GroqSTTError as exc:
+            ui.error(f"Groq STT self-test failed: {exc}")
+            ui.warn(
+                "Falling back to the local Whisper model. Fix GROQ_API_KEY, or "
+                "set STT_ENGINE=local to skip this check."
+            )
+            return _build_local_transcriber()
+        ui.success(f"Speech-to-text ready (Groq cloud / {cfg.GROQ_STT_MODEL}).")
+        return transcriber
+
+    return _build_local_transcriber()
+
+
 def main():
     ui.banner()
 
@@ -137,14 +187,8 @@ def main():
     # --- Translation engine (validate key/model before the slow model load) ---
     translator = _build_translator()
 
-    # --- Load the local Whisper model (auto-downloads on first run) ---
-    try:
-        transcriber = Transcriber(cfg, log=ui.info)
-    except Exception as exc:
-        ui.error(f"Could not load the Whisper model '{cfg.WHISPER_MODEL}': {exc}")
-        ui.warn("Check your internet connection (first download) and disk space.")
-        sys.exit(1)
-    ui.success("Whisper model ready.")
+    # --- Speech-to-text engine (Groq cloud or local Whisper) ---
+    transcriber = _build_transcriber()
 
     # --- TTS ---
     synthesizer = Synthesizer(cfg)

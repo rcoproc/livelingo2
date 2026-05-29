@@ -64,11 +64,40 @@ TARGET_LANG = _get_str("TARGET_LANG", "en")   # English
 
 
 # --------------------------------------------------------------------------- #
+# Speech-to-text engine selection
+# --------------------------------------------------------------------------- #
+# Which engine turns your speech into text:
+#   "auto"  -> use Groq's hosted Whisper if GROQ_API_KEY is set, else run locally
+#   "groq"  -> always use Groq cloud Whisper (best accuracy, needs key + internet)
+#   "local" -> always run faster-whisper on this machine (offline, uses the CPU)
+#
+# Groq runs whisper-large-v3, which is dramatically more accurate than the small
+# local model below — recommended when you have a key and internet, especially
+# on a modest CPU. It also offloads the work from your machine.
+STT_ENGINE = _get_str("STT_ENGINE", "auto")
+
+# Groq speech-to-text model (used when STT_ENGINE resolves to "groq"):
+#   "whisper-large-v3"        -> best accuracy (recommended)
+#   "whisper-large-v3-turbo"  -> faster, almost as accurate
+#   "distil-whisper-large-v3-en" -> fastest, ENGLISH ONLY
+GROQ_STT_MODEL = _get_str("GROQ_STT_MODEL", "whisper-large-v3")
+
+# Seconds to wait for a Groq transcription before giving up on a chunk.
+GROQ_STT_TIMEOUT = _get_float("GROQ_STT_TIMEOUT", 20.0)
+
+# Optional text that biases recognition toward expected words, names, acronyms,
+# and correct spelling/accents. Used by BOTH the Groq and local engines and can
+# noticeably reduce wrong-word errors on domain vocabulary. Example:
+#   STT_INITIAL_PROMPT=Réunion sur LiveLingo, VB-Cable, Whisper, Groq, Teams.
+STT_INITIAL_PROMPT = _get_str("STT_INITIAL_PROMPT", "")
+
+
+# --------------------------------------------------------------------------- #
 # Speech-to-text (faster-whisper, runs locally)
 # --------------------------------------------------------------------------- #
-# Model size: "tiny", "base", "small", "medium", "large-v3".
-# "small" is a good speed/accuracy trade-off on CPU; "medium" is more accurate
-# but noticeably slower without a GPU.
+# Model size: "tiny", "base", "small", "medium", "large-v3", "large-v3-turbo".
+# "small" is a good speed/accuracy trade-off on CPU; "medium" and especially
+# "large-v3-turbo" are much more accurate but heavier without a GPU.
 WHISPER_MODEL = _get_str("WHISPER_MODEL", "small")
 
 # "cpu" for everyone; "cuda" only if you have an NVIDIA GPU + CUDA libraries.
