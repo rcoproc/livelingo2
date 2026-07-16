@@ -101,13 +101,13 @@ STT_INITIAL_PROMPT = _get_str("STT_INITIAL_PROMPT", "")
 WHISPER_MODEL = _get_str("WHISPER_MODEL", "small")
 
 # "cpu" for everyone; "cuda" only if you have an NVIDIA GPU + CUDA libraries.
-WHISPER_DEVICE = _get_str("WHISPER_DEVICE", "cpu")
+WHISPER_DEVICE = _get_str("WHISPER_DEVICE", "cuda")
 
 # Compute type. CPU: "int8" (fast) or "int8_float32". GPU: "float16".
-WHISPER_COMPUTE_TYPE = _get_str("WHISPER_COMPUTE_TYPE", "int8")
+WHISPER_COMPUTE_TYPE = _get_str("WHISPER_COMPUTE_TYPE", "16")
 
 # Beam size for decoding. 1 = fastest/greedy, 5 = a bit slower but more robust.
-WHISPER_BEAM_SIZE = _get_int("WHISPER_BEAM_SIZE", 5)
+WHISPER_BEAM_SIZE = _get_int("WHISPER_BEAM_SIZE", 1)
 
 # Let Whisper run its own internal VAD to drop silence inside a chunk. This
 # strongly reduces "hallucinated" phrases on near-silent audio.
@@ -115,7 +115,7 @@ WHISPER_VAD_FILTER = _get_bool("WHISPER_VAD_FILTER", True)
 
 # CPU threads used for transcription. 0 = auto (CTranslate2 picks physical
 # cores). If STT feels slow, try setting this to your physical core count.
-WHISPER_CPU_THREADS = _get_int("WHISPER_CPU_THREADS", 0)
+WHISPER_CPU_THREADS = _get_int("WHISPER_CPU_THREADS", 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -204,3 +204,8 @@ BLOCK_DURATION = 0.03
 
 # Keep this much audio *before* speech onset so the first syllable isn't clipped.
 PREROLL_DURATION = 0.25
+
+# --------------------------------------------------------------------------- #
+# Debug / Verbose Mode
+# --------------------------------------------------------------------------- #
+VERBOSE = False
