@@ -15,8 +15,11 @@ Device settings (INPUT_DEVICE / OUTPUT_DEVICE) accept either:
 """
 
 import os
+import platform
 
 from dotenv import load_dotenv
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 # Load variables from a local .env file if it exists (does nothing otherwise).
 load_dotenv()
@@ -91,6 +94,15 @@ GROQ_STT_TIMEOUT = _get_float("GROQ_STT_TIMEOUT", 20.0)
 #   STT_INITIAL_PROMPT=Réunion sur LiveLingo, VB-Cable, Whisper, Groq, Teams.
 STT_INITIAL_PROMPT = _get_str("STT_INITIAL_PROMPT", "")
 
+# Drop common silence hallucinations (e.g. "Legenda por …", "Thanks for watching").
+STT_HALLUCINATION_FILTER = _get_bool("STT_HALLUCINATION_FILTER", True)
+# Heuristic: very quiet + short chunk + few words → discard.
+STT_MIN_RMS = _get_float("STT_MIN_RMS", 0.010)
+STT_LOW_ENERGY_MAX_WORDS = _get_int("STT_LOW_ENERGY_MAX_WORDS", 6)
+STT_LOW_ENERGY_MAX_SEC = _get_float("STT_LOW_ENERGY_MAX_SEC", 2.5)
+# Do not enqueue capture chunks shorter than this (seconds) when RMS is very low.
+CAPTURE_TAIL_MAX_SEC = _get_float("CAPTURE_TAIL_MAX_SEC", 2.0)
+
 
 # --------------------------------------------------------------------------- #
 # Speech-to-text (faster-whisper, runs locally)
@@ -101,10 +113,10 @@ STT_INITIAL_PROMPT = _get_str("STT_INITIAL_PROMPT", "")
 WHISPER_MODEL = _get_str("WHISPER_MODEL", "small")
 
 # "cpu" for everyone; "cuda" only if you have an NVIDIA GPU + CUDA libraries.
-WHISPER_DEVICE = _get_str("WHISPER_DEVICE", "cuda")
+WHISPER_DEVICE = _get_str("WHISPER_DEVICE", "cpu")
 
 # Compute type. CPU: "int8" (fast) or "int8_float32". GPU: "float16".
-WHISPER_COMPUTE_TYPE = _get_str("WHISPER_COMPUTE_TYPE", "16")
+WHISPER_COMPUTE_TYPE = _get_str("WHISPER_COMPUTE_TYPE", "int8")
 
 # Beam size for decoding. 1 = fastest/greedy, 5 = a bit slower but more robust.
 WHISPER_BEAM_SIZE = _get_int("WHISPER_BEAM_SIZE", 1)
@@ -136,6 +148,11 @@ GROQ_MODEL = _get_str("GROQ_MODEL", "llama-3.3-70b-versatile")
 # Seconds to wait for the LLM response before giving up on a chunk.
 LLM_TIMEOUT = _get_float("LLM_TIMEOUT", 15.0)
 
+# Synonym command [o]: wordnet (offline WordNet + Moby, default) | llm (Groq) | auto
+SYNONYMS_ENGINE = _get_str("SYNONYMS_ENGINE", "wordnet").lower()
+# Translate WordNet definitions/examples to Portuguese via Google (needs internet).
+SYNONYMS_PT_TRANSLATE = _get_bool("SYNONYMS_PT_TRANSLATE", True)
+
 
 # --------------------------------------------------------------------------- #
 # Text-to-speech (edge-tts, needs internet)
@@ -144,9 +161,53 @@ LLM_TIMEOUT = _get_float("LLM_TIMEOUT", 15.0)
 # A few English voices:
 #   en-US-AriaNeural   (female, US)   en-US-GuyNeural (male, US)
 #   en-GB-SoniaNeural  (female, UK)   en-US-JennyNeural (female, US)
+# TTS engine: edge | piper | hybrid (edge first chunk + piper tail/cache).
+TTS_ENGINE = _get_str("TTS_ENGINE", "edge")
+
+# When TTS_ENGINE=piper, use edge-tts for the first live chunk (Windows default).
+TTS_HYBRID = _get_bool("TTS_HYBRID", _IS_WINDOWS)
+
 TTS_VOICE = _get_str("TTS_VOICE", "en-US-AriaNeural")
 TTS_RATE = _get_str("TTS_RATE", "+0%")      # e.g. "+10%" faster, "-10%" slower
 TTS_VOLUME = _get_str("TTS_VOLUME", "+0%")  # e.g. "+20%" louder
+
+# Piper (local TTS) — used when TTS_ENGINE=piper
+# Voice list: https://huggingface.co/rhasspy/piper-voices
+# Empty PIPER_VOICE -> auto-pick from TARGET_LANG (e.g. en -> en_US-lessac-medium)
+PIPER_VOICE = _get_str("PIPER_VOICE", "")
+PIPER_MODEL_DIR = _get_str("PIPER_MODEL_DIR", ".cache/models/piper")
+# Speech speed: 1.0 = normal, 0.85 = faster, 1.15 = slower
+PIPER_LENGTH_SCALE = _get_float("PIPER_LENGTH_SCALE", 1.0)
+
+# Stream Piper ONNX chunks to playback (~80ms buffers). Much lower latency than
+# waiting for the full utterance. Enabled by default for TTS_ENGINE=piper.
+PIPER_CHUNK_STREAMING = _get_bool("PIPER_CHUNK_STREAMING", True)
+
+# Min audio buffer (ms) before first Piper playback chunk is sent.
+PIPER_PLAYBACK_BUFFER_MS = _get_int("PIPER_PLAYBACK_BUFFER_MS", 40)
+
+# Only split long text into sentences when above this length (chars).
+# Short utterances use a single ONNX run (faster). Values above 120 are capped.
+PIPER_SEGMENT_MIN_CHARS = _get_int("PIPER_SEGMENT_MIN_CHARS", 70)
+
+# ONNX Runtime CPU threads for Piper (0 = auto: 4 on Windows, else library default).
+PIPER_ORT_THREADS = _get_int("PIPER_ORT_THREADS", 0)
+
+# Piper ONNX provider: auto | cpu | dml (Windows GPU) | cuda (NVIDIA GPU).
+PIPER_ONNX_PROVIDER = _get_str("PIPER_ONNX_PROVIDER", "auto").lower()
+
+# fast = *-low voice (quicker on CPU); medium = default quality.
+PIPER_QUALITY = _get_str("PIPER_QUALITY", "fast" if _IS_WINDOWS else "medium").lower()
+
+# Emit the first TTS chunk at a word boundary once this many chars stream in.
+# 0 = wait for a clause delimiter (. or ,).
+PIPER_STREAM_FIRST_CHARS = _get_int("PIPER_STREAM_FIRST_CHARS", 30)
+
+# Merge all post-first segments into one Piper call (avoids ~3s overhead each).
+PIPER_MERGE_TAIL = _get_bool("PIPER_MERGE_TAIL", True)
+
+# Start TTS on the first translated clause while the LLM is still streaming.
+STREAMING_TTS_OVERLAP = _get_bool("STREAMING_TTS_OVERLAP", True)
 
 
 # --------------------------------------------------------------------------- #
@@ -186,15 +247,48 @@ VAD_ENABLED = _get_bool("VAD_ENABLED", True)
 CHUNK_DURATION = _get_float("CHUNK_DURATION", 4.0)
 
 # Hard upper bound: even if you never pause, a chunk is emitted after this long.
-MAX_CHUNK_DURATION = _get_float("MAX_CHUNK_DURATION", 10.0)
+# 60s fits long monologues (several paragraphs). Lower to 15–20 for live dialogue.
+MAX_CHUNK_DURATION = _get_float("MAX_CHUNK_DURATION", 60.0)
 
 # RMS energy below which a 30 ms block counts as silence. If short utterances
 # get cut off, lower this; if background noise triggers chunks, raise it.
 # Typical mic values: silence ~0.002-0.01, speech ~0.02-0.15.
 SILENCE_THRESHOLD = _get_float("SILENCE_THRESHOLD", 0.015)
 
-# How long the audio must stay quiet to mark the end of an utterance.
-SILENCE_DURATION = _get_float("SILENCE_DURATION", 0.7)
+# Base silence (seconds) before a chunk ends. Adaptive VAD scales this up while
+# you keep talking (long monologues tolerate longer pauses between paragraphs).
+SILENCE_DURATION = _get_float("SILENCE_DURATION", 1.2)
+
+# Longer speech requires longer silence to end the chunk (paragraph pauses).
+VAD_ADAPTIVE_SILENCE = _get_bool("VAD_ADAPTIVE_SILENCE", True)
+# Max multiplier on SILENCE_DURATION (e.g. 3.5 × 1.2s ≈ 4.2s pause after 25s+ speech).
+VAD_SILENCE_SCALE_MAX = _get_float("VAD_SILENCE_SCALE_MAX", 3.5)
+
+# Overlap (seconds) kept when MAX_CHUNK_DURATION forces a mid-speech split.
+VAD_SPLIT_OVERLAP = _get_float("VAD_SPLIT_OVERLAP", 1.5)
+
+# While already in speech, RMS threshold is multiplied by this (<1 = more tolerant
+# of brief dips between words, so monologues are not cut at MAX_CHUNK_DURATION).
+VAD_SPEECH_HANGOVER = _get_float("VAD_SPEECH_HANGOVER", 0.65)
+
+# Paragraph splits during long monologues (emit chunk at short pauses, keep listening).
+PARAGRAPH_SPLIT = _get_bool("PARAGRAPH_SPLIT", True)
+# Only split by paragraph when translation audio is muted ([s] sound OFF).
+PARAGRAPH_SPLIT_SOUND_OFF_ONLY = _get_bool("PARAGRAPH_SPLIT_SOUND_OFF_ONLY", True)
+# Pause (seconds) between paragraphs that triggers an early chunk while still speaking.
+PARAGRAPH_SILENCE = _get_float("PARAGRAPH_SILENCE", 1.0)
+# Minimum speech (seconds) before a paragraph pause can split the chunk.
+PARAGRAPH_MIN_SPEECH = _get_float("PARAGRAPH_MIN_SPEECH", 5.0)
+# Audio overlap (seconds) kept after a paragraph split.
+PARAGRAPH_SPLIT_OVERLAP = _get_float("PARAGRAPH_SPLIT_OVERLAP", 0.3)
+
+# Sound OFF: process STT+translation in parallel (one worker per paragraph chunk).
+SOUND_OFF_PARALLEL = _get_bool("SOUND_OFF_PARALLEL", True)
+SOUND_OFF_WORKERS = _get_int("SOUND_OFF_WORKERS", 2)
+# Sound OFF: skip TTS entirely (text only; saves CPU — replay needs re-synthesis).
+TTS_SKIP_WHEN_MUTED = _get_bool("TTS_SKIP_WHEN_MUTED", True)
+# Shorter end-of-speech pause (seconds) when sound is OFF ([s] muted).
+SOUND_OFF_SILENCE_DURATION = _get_float("SOUND_OFF_SILENCE_DURATION", 2.0)
 
 # Utterances shorter than this (after trimming) are ignored as noise/clicks.
 MIN_SPEECH_DURATION = _get_float("MIN_SPEECH_DURATION", 0.4)
@@ -204,6 +298,39 @@ BLOCK_DURATION = 0.03
 
 # Keep this much audio *before* speech onset so the first syllable isn't clipped.
 PREROLL_DURATION = 0.25
+
+# --------------------------------------------------------------------------- #
+# Low-latency mode
+# --------------------------------------------------------------------------- #
+# When True: shorter LLM translation prompt and tighter max_tokens cap.
+LOW_LATENCY = _get_bool("LOW_LATENCY", False)
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — streaming & advanced capture/playback
+# --------------------------------------------------------------------------- #
+# Stream LLM tokens to the terminal (Groq LLM only).
+STREAMING_LLM = _get_bool("STREAMING_LLM", True)
+
+# Synthesize and play TTS sentence-by-sentence (faster time-to-first-audio).
+STREAMING_TTS = _get_bool("STREAMING_TTS", True)
+
+# VAD backend: "energy" (RMS) or "silero" (neural, needs onnxruntime).
+VAD_MODE = _get_str("VAD_MODE", "energy").lower()
+
+# Silero speech probability threshold (0.0–1.0). Used when VAD_MODE=silero.
+SILERO_VAD_THRESHOLD = _get_float("SILERO_VAD_THRESHOLD", 0.45)
+
+# Emit partial chunks while still speaking (no pause required).
+ROLLING_CHUNKS = _get_bool("ROLLING_CHUNKS", False)
+
+# Rolling chunk length in seconds (only when ROLLING_CHUNKS=true).
+ROLLING_CHUNK_DURATION = _get_float("ROLLING_CHUNK_DURATION", 2.5)
+
+# Stop current playback when a new chunk arrives (live-call mode).
+PLAYBACK_INTERRUPT = _get_bool("PLAYBACK_INTERRUPT", True)
+
+# Playback write block size in milliseconds (smaller = more responsive interrupt).
+PLAYBACK_BLOCK_MS = _get_int("PLAYBACK_BLOCK_MS", 80)
 
 # --------------------------------------------------------------------------- #
 # Debug / Verbose Mode

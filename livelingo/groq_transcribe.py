@@ -38,6 +38,7 @@ class GroqTranscriber:
         self.prompt = config.STT_INITIAL_PROMPT
         self.timeout = config.GROQ_STT_TIMEOUT
         self.sample_rate = config.SAMPLE_RATE
+        self.session = requests.Session()
         log(f"Speech-to-text: Groq cloud ({self.model}).")
 
     # ------------------------------------------------------------------ #
@@ -75,7 +76,7 @@ class GroqTranscriber:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         try:
-            resp = requests.post(
+            resp = self.session.post(
                 GROQ_STT_URL,
                 headers=headers,
                 files=files,
