@@ -13,7 +13,6 @@ Two modes (config.VAD_ENABLED):
 The recorder runs in its own thread and stops cleanly when `stop_event` is set.
 """
 
-import math
 import queue
 from collections import deque
 
@@ -29,12 +28,23 @@ def _rms(block):
 
 
 class Recorder:
-    def __init__(self, config, device_index, chunk_queue, stop_event, on_listening=None):
+    def __init__(
+        self,
+        config,
+        device_index,
+        chunk_queue,
+        stop_event,
+        on_listening=None,
+        paragraph_split_enabled=None,
+        shorter_end_enabled=None,
+    ):
         self.cfg = config
         self.device = device_index
         self.chunk_queue = chunk_queue
         self.stop_event = stop_event
         self.on_listening = on_listening  # optional callback(bool is_speaking)
+        self.paragraph_split_enabled = paragraph_split_enabled
+        self.shorter_end_enabled = shorter_end_enabled
 
         self.sample_rate = config.SAMPLE_RATE
         self.block_frames = max(1, int(config.SAMPLE_RATE * config.BLOCK_DURATION))
@@ -45,6 +55,77 @@ class Recorder:
         self.min_speech_frames = int(config.MIN_SPEECH_DURATION * config.SAMPLE_RATE)
         self.max_chunk_frames = int(config.MAX_CHUNK_DURATION * config.SAMPLE_RATE)
         self.fixed_chunk_frames = int(config.CHUNK_DURATION * config.SAMPLE_RATE)
+        self.rolling_chunk_frames = int(
+            getattr(config, "ROLLING_CHUNK_DURATION", 2.5) * config.SAMPLE_RATE
+        )
+        self.rolling_overlap_blocks = max(
+            1, int(0.15 / config.BLOCK_DURATION)
+        )
+        self.split_overlap_blocks = max(
+            1, int(getattr(config, "VAD_SPLIT_OVERLAP", 1.5) / config.BLOCK_DURATION)
+        )
+        self.paragraph_silence_blocks = max(
+            1, int(getattr(config, "PARAGRAPH_SILENCE", 1.0) / config.BLOCK_DURATION)
+        )
+        self.paragraph_min_frames = int(
+            getattr(config, "PARAGRAPH_MIN_SPEECH", 5.0) * config.SAMPLE_RATE
+        )
+        self.paragraph_overlap_blocks = max(
+            1,
+            int(getattr(config, "PARAGRAPH_SPLIT_OVERLAP", 0.3) / config.BLOCK_DURATION),
+        )
+        self._silero = None
+        if getattr(config, "VAD_MODE", "energy") == "silero":
+            try:
+                from .vad_silero import SileroVAD
+
+                self._silero = SileroVAD(
+                    sample_rate=config.SAMPLE_RATE,
+                    threshold=getattr(config, "SILERO_VAD_THRESHOLD", 0.45),
+                )
+            except Exception as exc:
+                import warnings
+
+                warnings.warn(
+                    f"Silero VAD unavailable ({exc}); falling back to energy VAD."
+                )
+
+    def _block_is_speech(self, block, in_speech=False):
+        if self._silero is not None:
+            return self._silero.is_speech(block)
+        threshold = self.cfg.SILENCE_THRESHOLD
+        if in_speech:
+            # Hysteresis: stay in "speech" through brief dips between words/sentences.
+            hangover = getattr(self.cfg, "VAD_SPEECH_HANGOVER", 0.65)
+            threshold *= hangover
+        return _rms(block) > threshold
+
+    def _silence_blocks_to_end(self, total_frames):
+        """Require longer pauses before ending a chunk during long monologues."""
+        blocks = self.silence_blocks_needed
+        if getattr(self.cfg, "VAD_ADAPTIVE_SILENCE", True):
+            speech_sec = total_frames / self.sample_rate
+            if speech_sec >= 4.0:
+                scale_max = getattr(self.cfg, "VAD_SILENCE_SCALE_MAX", 3.5)
+                factor = min(scale_max, 1.0 + speech_sec / 10.0)
+                blocks = max(blocks, int(self.silence_blocks_needed * factor))
+        if self.shorter_end_enabled is not None and self.shorter_end_enabled():
+            cap = max(
+                1,
+                int(
+                    getattr(self.cfg, "SOUND_OFF_SILENCE_DURATION", 2.0)
+                    / self.cfg.BLOCK_DURATION
+                ),
+            )
+            blocks = min(blocks, cap)
+        return blocks
+
+    def _paragraph_split_active(self):
+        if not getattr(self.cfg, "PARAGRAPH_SPLIT", True):
+            return False
+        if self.paragraph_split_enabled is not None:
+            return bool(self.paragraph_split_enabled())
+        return not getattr(self.cfg, "PARAGRAPH_SPLIT_SOUND_OFF_ONLY", True)
 
     # ------------------------------------------------------------------ #
     def run(self):
@@ -78,27 +159,34 @@ class Recorder:
         if not blocks:
             return
         chunk = np.concatenate(blocks)
-        if chunk.size >= self.min_speech_frames:
-            self.chunk_queue.put(chunk)
+        if chunk.size < self.min_speech_frames:
+            return
+        # Drop near-silent tails left after paragraph splits (Whisper hallucinates on these).
+        if getattr(self.cfg, "STT_HALLUCINATION_FILTER", True):
+            tail_max_sec = getattr(self.cfg, "CAPTURE_TAIL_MAX_SEC", 2.0)
+            tail_max_frames = int(tail_max_sec * self.sample_rate)
+            min_rms = getattr(self.cfg, "STT_MIN_RMS", 0.010)
+            if chunk.size <= tail_max_frames and _rms(chunk) < min_rms:
+                return
+        self.chunk_queue.put(chunk)
 
     # ------------------------------------------------------------------ #
     def _run_vad(self, stream):
-        """Energy-based VAD: group audio into utterances separated by silence."""
+        """VAD: group audio into utterances separated by silence."""
         preroll = deque(maxlen=self.preroll_blocks)
-        speech = []            # accumulated blocks of the current utterance
+        speech = []
         in_speech = False
-        trailing_silence = 0   # consecutive silent blocks while in speech
+        trailing_silence = 0
         total_frames = 0
+        rolling_enabled = getattr(self.cfg, "ROLLING_CHUNKS", False)
 
         while not self.stop_event.is_set():
             block = self._read_block(stream)
-            loud = _rms(block) > self.cfg.SILENCE_THRESHOLD
+            loud = self._block_is_speech(block, in_speech=in_speech)
 
             if not in_speech:
                 preroll.append(block)
                 if loud:
-                    # Speech just started: seed the utterance with the preroll
-                    # so the first syllable isn't clipped.
                     in_speech = True
                     speech = list(preroll)
                     preroll.clear()
@@ -108,24 +196,56 @@ class Recorder:
                         self.on_listening(True)
                 continue
 
-            # Already inside an utterance.
             speech.append(block)
             total_frames += block.size
             trailing_silence = 0 if loud else trailing_silence + 1
 
-            ended = trailing_silence >= self.silence_blocks_needed
+            end_threshold = self._silence_blocks_to_end(total_frames)
+            ended = trailing_silence >= end_threshold
             too_long = total_frames >= self.max_chunk_frames
+            rolling = (
+                rolling_enabled
+                and total_frames >= self.rolling_chunk_frames
+            )
+            paragraph_split = (
+                self._paragraph_split_active()
+                and not ended
+                and not too_long
+                and total_frames >= self.paragraph_min_frames
+                and trailing_silence >= self.paragraph_silence_blocks
+            )
 
-            if ended or too_long:
+            if rolling or ended or too_long or paragraph_split:
                 self._emit(speech)
-                speech = []
-                in_speech = False
-                trailing_silence = 0
-                total_frames = 0
-                if self.on_listening:
-                    self.on_listening(False)
+                if ended:
+                    speech = []
+                    in_speech = False
+                    trailing_silence = 0
+                    total_frames = 0
+                    if self._silero is not None:
+                        self._silero.reset()
+                    if self.on_listening:
+                        self.on_listening(False)
+                elif paragraph_split:
+                    overlap_blocks = max(
+                        self.preroll_blocks, self.paragraph_overlap_blocks
+                    )
+                    speech = speech[-overlap_blocks:]
+                    total_frames = sum(b.size for b in speech)
+                    trailing_silence = 0
+                elif too_long:
+                    # Max duration reached — split for STT but keep listening
+                    # (do not require loudness; brief dips were ending monologues early).
+                    overlap_blocks = max(self.preroll_blocks, self.split_overlap_blocks)
+                    speech = speech[-overlap_blocks:]
+                    total_frames = sum(b.size for b in speech)
+                    trailing_silence = 0
+                elif rolling:
+                    overlap = speech[-self.rolling_overlap_blocks :]
+                    speech = list(overlap)
+                    total_frames = sum(b.size for b in speech)
+                    trailing_silence = 0
 
-        # Flush whatever is buffered when stopping.
         self._emit(speech)
 
     # ------------------------------------------------------------------ #

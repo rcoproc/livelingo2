@@ -36,3 +36,13 @@ python-dotenv==1.0.1
 
 # --- Colored terminal output on Windows ---
 colorama==0.4.6
+
+# --- Offline synonyms ([o] command; WordNet downloaded on first use) ---
+nltk>=3.8
+
+# --- Optional: Silero VAD (VAD_MODE=silero in .env) ---
+# onnxruntime>=1.17.0
+
+# --- Optional: Piper local TTS (TTS_ENGINE=piper in .env) ---
+# piper-tts>=1.2.0
+# onnxruntime>=1.17.0

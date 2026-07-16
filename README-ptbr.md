@@ -8,12 +8,12 @@ Além da tradução em tempo real, o projeto evoluiu para uma **ferramenta de re
 🎤 Microfone real
    └─► STT (Whisper local ou Groq cloud)
         └─► Tradução (Google ou LLM Groq)
-             └─► TTS (edge-tts / vozes Microsoft)
+             └─► TTS (edge-tts | Piper local | hybrid)
                   └─► VB-Cable (CABLE Input)
                        └─► Teams usa "CABLE Output" como mic
 ```
 
-Tradução e text-to-speech usam serviços públicos gratuitos (internet necessária). O reconhecimento de fala roda **na nuvem Groq** (mais preciso, recomendado) **ou** totalmente local com faster-whisper (offline).
+**O que precisa de internet?** Depende do motor escolhido em cada etapa — veja a seção [O que funciona offline vs online](#o-que-funciona-offline-vs-online) abaixo. Em resumo: a **tradução** quase sempre precisa de rede (Groq ou Google); o **áudio (TTS)** pode ser local com Piper; o **STT** pode ser local com faster-whisper.
 
 ---
 
@@ -36,9 +36,13 @@ O projeto é modular, com pipeline multi-thread:
 | `livelingo/groq_transcribe.py` | Whisper na nuvem Groq |
 | `livelingo/translate.py` | Google Translate (grátis) |
 | `livelingo/llm.py` | Tradução via LLM Groq (mais natural) |
-| `livelingo/synthesize.py` | Text-to-speech (edge-tts) |
+| `livelingo/synthesize.py` | Factory TTS (edge / Piper / hybrid) |
+| `livelingo/piper_tts.py` | TTS local Piper (ONNX, offline após download) |
+| `livelingo/hybrid_tts.py` | edge no 1º chunk + Piper no resto (baixa latência) |
 | `livelingo/playback.py` | Saída para VB-Cable / monitor |
-| `livelingo/pipeline.py` | Orquestração com 3 threads |
+| `livelingo/pipeline.py` | Orquestração com 3 threads + mute global de áudio |
+| `livelingo/vad_silero.py` | VAD neural opcional (Silero) |
+| `livelingo/tts_segments.py` | Divisão de texto para TTS em streaming |
 | `livelingo/db.py` | Persistência SQLite |
 | `livelingo/devices.py` | Descoberta e resolução de dispositivos |
 | `livelingo/ui.py` | Interface terminal colorida |
@@ -63,7 +67,8 @@ O projeto é modular, com pipeline multi-thread:
 
 - Captura contínua do microfone
 - VAD (Voice Activity Detection) para cortar em frases naturais
-- Latência típica de ~1–4 s após você parar de falar
+- Latência típica de ~3–6 s até o primeiro áudio (`hear`), ou ~5 s no total do chunk com perfil hybrid (Groq + edge + Piper)
+- Métricas por chunk: `STT`, `translate`, `TTS`, `first_audio`, `tts_start`, `hear`, `total`
 - Indicador visual animado no terminal (🎙️ ouvindo / 🤖 aguardando)
 - Modo verbose com `--verbose` para logs detalhados de debug
 
@@ -85,7 +90,17 @@ Se a key Groq ou a rede falharem na inicialização, o LiveLingo faz fallback au
 | **Google Translate** | Grátis, sem key, mais literal |
 | **Auto** | LLM se tiver `GROQ_API_KEY`, senão Google |
 
-### 4. Sessões persistentes (SQLite)
+### 4. Múltiplos motores de TTS
+
+| Motor | Internet | Latência | Observação |
+|-------|----------|----------|------------|
+| **edge** (`TTS_ENGINE=edge`) | Sim | Baixa (~0,5 s no 1º áudio) | Vozes Microsoft via edge-tts |
+| **piper** (`TTS_ENGINE=piper`) | Não* | Média/alta na CPU Windows | ONNX local; `pip install piper-tts onnxruntime` |
+| **hybrid** (`TTS_ENGINE=hybrid` ou `TTS_HYBRID=true` com piper) | Parcial | **Melhor equilíbrio** | 1º chunk edge (rápido) + resto Piper (local) |
+
+\* Após o download único do modelo de voz em `.cache/models/piper`.
+
+### 5. Sessões persistentes (SQLite)
 
 Ao iniciar, o aplicativo oferece:
 
@@ -95,7 +110,7 @@ Ao iniciar, o aplicativo oferece:
 
 Cada chunk é salvo em `.cache/audio_sessions/{session_id}/` e registrado em `livelingo.db`.
 
-### 5. Comandos interativos no terminal
+### 6. Comandos interativos no terminal
 
 Durante a escuta, digite comandos no terminal:
 
@@ -106,14 +121,17 @@ Durante a escuta, digite comandos no terminal:
 | `d` / `dN` | Deletar chunk (com confirmação) |
 | `f` / `fN` | Favoritar frase |
 | `F` | Listar favoritos (modal) |
-| `s` | Buscar sinônimos/significado de palavra em inglês |
+| `s` | **Ligar/desligar áudio** da tradução (global na sessão; texto continua) |
+| `w` | Buscar sinônimos/significado de palavra em inglês |
 | `c` | Exportar histórico para `.md` com resumo IA |
 | `l` | Listar mensagens da sessão atual |
 | `v` | Trocar ou reiniciar sessão |
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-### 6. Exportação com resumo executivo IA
+Com **som OFF** (`s`): o texto traduzido aparece na hora; o TTS roda em background só para cache/replay; nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
+
+### 7. Exportação com resumo executivo IA
 
 O comando `c` gera um arquivo Markdown (`AAAA-MM-DD_titulo.md`) contendo:
 
@@ -123,13 +141,74 @@ O comando `c` gera um arquivo Markdown (`AAAA-MM-DD_titulo.md`) contendo:
 
 Requer `GROQ_API_KEY` para o resumo automático.
 
-### 7. Auxiliar de vocabulário
+### 8. Auxiliar de vocabulário
 
-Comando `s`: explica uma palavra em inglês em português, com sinônimos e exemplos de frases. Requer o motor de tradução LLM (`TRANSLATION_ENGINE=llm` ou `auto` com key configurada).
+Comando `w`: explica uma palavra em inglês em português, com sinônimos e exemplos de frases. Requer o motor de tradução LLM (`TRANSLATION_ENGINE=llm` ou `auto` com key configurada).
 
-### 8. Monitor de áudio
+### 9. Monitor de áudio
 
 Com `MONITOR_PLAYBACK=true`, a tradução também é reproduzida nos seus fones/alto-falantes enquanto é enviada para o VB-Cable — útil para testes ou para ouvir a si mesmo durante a chamada.
+
+---
+
+## O que funciona offline vs online
+
+Cada etapa do pipeline é independente. **Não existe modo 100% offline completo** hoje (a tradução sempre usa Groq ou Google), mas dá para deixar **STT e TTS locais** e usar internet só na tradução.
+
+| Etapa | Motor típico (recomendado) | Precisa internet? |
+|-------|---------------------------|-------------------|
+| **STT** (voz → texto) | Groq Whisper | **Sim** |
+| **STT** | faster-whisper local | **Não** (após baixar o modelo) |
+| **Tradução** | Groq LLM | **Sim** |
+| **Tradução** | Google Translate | **Sim** |
+| **TTS 1º chunk** (modo `hybrid`) | edge-tts | **Sim** |
+| **TTS resto** (modo `hybrid`) | Piper | **Não** (após baixar a voz) |
+| **TTS completo** (modo `piper`) | Piper | **Não** (após baixar a voz) |
+| **TTS** (modo `edge`) | edge-tts | **Sim** |
+
+### Perfil atual típico (hybrid + Groq)
+
+```text
+Mic → Groq STT (internet)
+    → Groq tradução (internet)
+    → edge no 1º pedaço (internet) + Piper no resto (local)
+    → VB-Cable
+```
+
+Boa latência (`hear` ~3–4 s), mas **ainda depende de internet** para ouvir e traduzir.
+
+### Perfil “máximo offline possível” hoje
+
+No `.env`:
+
+```env
+STT_ENGINE=local
+TRANSLATION_ENGINE=google
+TTS_ENGINE=piper
+TTS_HYBRID=false
+```
+
+| Componente | Resultado |
+|------------|-----------|
+| Áudio (TTS) | Offline após download do modelo Piper |
+| STT | Offline (Whisper na CPU) |
+| Tradução | **Ainda precisa de internet** (Google) |
+
+> Tradução **100% offline** (LLM local, ex. Ollama) ainda **não está integrada** ao LiveLingo.
+
+### Perfil “máxima velocidade” (recomendado em chamadas)
+
+```env
+STT_ENGINE=groq
+TRANSLATION_ENGINE=llm
+GROQ_MODEL=llama-3.1-8b-instant
+TTS_ENGINE=hybrid
+# ou: TTS_ENGINE=piper + TTS_HYBRID=true
+LOW_LATENCY=true
+STREAMING_LLM=true
+STREAMING_TTS_OVERLAP=true
+PIPER_MERGE_TAIL=true
+```
 
 ---
 
@@ -140,7 +219,7 @@ Com `MONITOR_PLAYBACK=true`, a tradução também é reproduzida nos seus fones/
 | **Windows 10/11** | O tool usa APIs de áudio do Windows (MME via PortAudio). WSL/Linux via `livelingo.sh`. |
 | **Python 3.10+** | 3.10 – 3.12 recomendado. Verifique com `python --version`. |
 | **VB-CABLE** | Cabo de áudio virtual gratuito. Download: **https://vb-audio.com/Cable/** |
-| **Internet** | Necessária para tradução + TTS (e o primeiro download do modelo Whisper local). |
+| **Internet** | Necessária para tradução; TTS edge/hybrid no 1º chunk; opcional se usar só Piper + STT local (tradução Google ainda precisa de rede). |
 
 ### Instalar VB-CABLE
 
@@ -221,7 +300,13 @@ notepad .env
 | `WHISPER_MODEL` | `small` | Modelo local: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` |
 | `INPUT_DEVICE` | *(mic padrão)* | Índice ou substring do nome do microfone |
 | `OUTPUT_DEVICE` | `CABLE Input` | Dispositivo VB-Cable de reprodução |
+| `TTS_ENGINE` | `edge` | `edge` / `piper` / `hybrid` |
+| `TTS_HYBRID` | `true` (Windows) | Com `piper`: 1º chunk edge + resto Piper |
 | `TTS_VOICE` | `en-US-AriaNeural` | Voz Edge (`edge-tts --list-voices`) |
+| `PIPER_VOICE` | *(auto)* | Voz Piper local (ex. `en_US-lessac-medium`) |
+| `PIPER_QUALITY` | `fast` (Windows) | `fast` = voz `*-low` (CPU mais rápida) |
+| `PIPER_MERGE_TAIL` | `true` | Funde o resto do texto numa só chamada Piper |
+| `STREAMING_TTS_OVERLAP` | `true` | Inicia TTS na 1ª cláusula enquanto o LLM traduz |
 | `CHUNK_DURATION` | `4.0` | Duração alvo/fixa do chunk (segundos) |
 | `VAD_ENABLED` | `true` | Cortar nas pausas (true) vs chunks fixos (false) |
 | `SILENCE_THRESHOLD` | `0.015` | Limiar de volume para detecção de fala |
@@ -277,9 +362,12 @@ Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 Exemplo de saída por chunk:
 
 ```text
-[chunk 3] Heard: "bonjour tout le monde" -> Translated: "hello everyone"
-          ⏱  STT 1.20s | translate 0.30s | TTS 0.55s | total 2.05s
+[chunk 3] Heard: bonjour tout le monde
+          Translated: hello everyone
+          timing: STT 0.72s | translate 0.76s | TTS 3.78s | first_audio 2.14s | tts_start 1.49s | hear 3.63s | total 5.28s
 ```
+
+O cabeçalho do menu mostra `Sound: ON/OFF` e `TTS: hybrid (edge+piper / …)`.
 
 Pare a qualquer momento com **Ctrl+C** ou o comando `q`.
 
@@ -353,7 +441,9 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
     ├── groq_transcribe.py # STT Groq cloud Whisper
     ├── translate.py       # tradução Google (deep-translator)
     ├── llm.py             # tradução LLM Groq + resumo + sinônimos
-    ├── synthesize.py      # edge-tts TTS → áudio numpy
+    ├── synthesize.py      # factory TTS (edge / Piper / hybrid)
+    ├── piper_tts.py       # Piper ONNX local
+    ├── hybrid_tts.py      # edge 1º chunk + Piper tail
     ├── playback.py        # áudio → VB-Cable / monitor
     ├── pipeline.py        # orquestração threads + filas
     ├── devices.py         # descoberta de dispositivos
@@ -364,17 +454,20 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 ### Dependências
 
 ```text
-faster-whisper, deep-translator, edge-tts, sounddevice, soundfile,
-numpy, python-dotenv, colorama, requests
+faster-whisper, deep-translator, edge-tts, piper-tts, onnxruntime,
+sounddevice, soundfile, numpy, python-dotenv, colorama, requests
 ```
+
+(`piper-tts` e `onnxruntime` só são necessários com `TTS_ENGINE=piper` ou `hybrid`.)
 
 ---
 
 ## Notas e limitações
 
-- **Não é interpretação simultânea** — é tradução por chunks, com latência inerente (~1–4 s após terminar a frase).
-- Qualidade de tradução e TTS depende dos serviços gratuitos Google/Edge/Groq.
-- **Privacidade** depende dos motores: com `STT_ENGINE=local`, o áudio nunca sai da máquina (só o texto reconhecido e o pedido TTS). Com STT Groq, chunks de áudio vão para a nuvem.
+- **Não é interpretação simultânea** — é tradução por chunks, com latência inerente (~3–6 s até o primeiro áudio com hybrid; ~5 s total do chunk em perfil otimizado).
+- Qualidade de tradução e TTS depende dos serviços gratuitos Google/Edge/Groq (ou Piper local para áudio).
+- **Privacidade** depende dos motores: com `STT_ENGINE=local` + `TTS_ENGINE=piper`, o áudio da sua voz e o TTS ficam na máquina; o **texto** ainda vai para Google/Groq na tradução. Com STT Groq, chunks de áudio também vão para a nuvem.
+- Comando **`s`** muta o áudio globalmente; **`w`** abre o auxiliar de sinônimos (antes era `s`).
 - O histórico fica em `livelingo.db` e `.cache/audio_sessions/` — faça backup se precisar preservar reuniões.
 
 ---

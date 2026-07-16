@@ -27,8 +27,9 @@ from livelingo import db, devices, ui
 from livelingo.groq_transcribe import GroqSTTError, GroqTranscriber
 from livelingo.llm import GROQ_KEY_HELP, LLMError, LLMTranslator
 from livelingo.pipeline import Pipeline
-from livelingo.synthesize import Synthesizer
+from livelingo.synthesize import build_synthesizer
 from livelingo.transcribe import Transcriber
+from livelingo.synonyms import SynonymError, build_synonym_lookup
 from livelingo.translate import Translator
 
 
@@ -154,6 +155,41 @@ def _resolve_output():
         print(devices.VBCABLE_INSTALL_MESSAGE)
         sys.exit(1)
     return vb_idx, vb_name
+
+
+def _vad_label():
+    if not cfg.VAD_ENABLED:
+        return "off"
+    label = getattr(cfg, "VAD_MODE", "energy")
+    if getattr(cfg, "ROLLING_CHUNKS", False):
+        label += "+rolling"
+    return label
+
+
+def _tts_menu_label():
+    engine = (getattr(cfg, "TTS_ENGINE", "edge") or "edge").lower()
+    if engine == "hybrid" or (
+        engine == "piper" and getattr(cfg, "TTS_HYBRID", False)
+    ):
+        voice = getattr(cfg, "PIPER_VOICE", "") or f"auto:{cfg.TARGET_LANG}"
+        return f"hybrid (edge+piper / {voice})"
+    if engine == "piper":
+        voice = getattr(cfg, "PIPER_VOICE", "") or f"auto:{cfg.TARGET_LANG}"
+        return f"piper ({voice})"
+    return f"edge ({cfg.TTS_VOICE})"
+
+
+def _print_streaming_info():
+    if not (
+        getattr(cfg, "STREAMING_LLM", False)
+        or getattr(cfg, "STREAMING_TTS", False)
+    ):
+        return
+    ui.dim(
+        f"   streaming: LLM={'on' if cfg.STREAMING_LLM else 'off'} | "
+        f"TTS={'on' if cfg.STREAMING_TTS else 'off'} | "
+        f"playback_interrupt={'on' if cfg.PLAYBACK_INTERRUPT else 'off'}"
+    )
 
 
 def _print_device_overview(in_idx, in_name, out_idx, out_name):
@@ -286,11 +322,14 @@ def _print_menu(pipeline=None):
     """Print the configuration metadata (if pipeline provided) and the compact terminal menu in English."""
     if pipeline is not None:
         print()
+        sound = "ON" if pipeline.is_sound_enabled() else "OFF"
         ui.info(
             f"Languages: {cfg.SOURCE_LANG} -> {cfg.TARGET_LANG}   |   "
-            f"Voice: {cfg.TTS_VOICE}   |   "
-            f"VAD: {'on' if cfg.VAD_ENABLED else 'off'}"
+            f"TTS: {_tts_menu_label()}   |   "
+            f"Sound: {sound}   |   "
+            f"VAD: {_vad_label()}"
         )
+        _print_streaming_info()
 
         # Translation Engine status
         from livelingo.llm import LLMTranslator
@@ -316,23 +355,107 @@ def _print_menu(pipeline=None):
 
     print()
     ui.info("Terminal Commands:")
-    print("\r\033[K" + Fore.CYAN + "  [r]  Replay last audio" + Style.RESET_ALL + "             " + Fore.CYAN + "|  [rN] Replay specific chunk (ex: r3)" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [e]  Edit last sentence" + Style.RESET_ALL + "            " + Fore.CYAN + "|  [eN] Edit specific chunk (ex: e3)" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [d]  Delete last sentence" + Style.RESET_ALL + "          " + Fore.CYAN + "|  [dN] Delete specific chunk (ex: d3)" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [f]  Favorite last sentence" + Style.RESET_ALL + "        " + Fore.CYAN + "|  [fN] Favorite specific chunk (ex: f3)" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [F]  List favorites (Modal)" + Style.RESET_ALL + "        " + Fore.CYAN + "|  [c]  Export history (.md)" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [s]  Synonyms / Word meaning" + Style.RESET_ALL + "       " + Fore.CYAN + "|  [l]  List session messages" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [v]  Switch/Restart session" + Style.RESET_ALL + "        " + Fore.CYAN + "|  [q]  Exit application (Quit)" + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "  [m]  Show this menu" + Style.RESET_ALL + "                " + Fore.CYAN + "|" + Style.RESET_ALL)
+    sound_hint = "ON/OFF"
+    if pipeline is not None:
+        sound_hint = "ON" if pipeline.is_sound_enabled() else "OFF"
+
+    # Fixed-width two-column menu so the "|" divider always lines up.
+    left_w = 42
+    rows = [
+        ("[r]  Replay last (gera TTS se faltar)", "[rN] Replay chunk N (ex: r3, r99)"),
+        ("[e]  Edit last sentence", "[eN] Edit specific chunk (ex: e3)"),
+        ("[d]  Delete last sentence", "[dN] Delete specific chunk (ex: d3)"),
+        ("[f]  Favorite last sentence", "[fN] Favorite specific chunk (ex: f3)"),
+        ("[F]  List favorites (Modal)", "[c]  Export history (.md)"),
+        (f"[s]  Sound ({sound_hint})", "[o]  Synonyms / Word meaning"),
+        ("[x]  Stop playback (interrupt reading)", "[l]  List session messages"),
+        ("[v]  Switch/Restart session", "[q]  Exit application (Quit)"),
+        ("[m]  Show this menu", ""),
+    ]
+    for left, right in rows:
+        left_pad = left.ljust(left_w)
+        if right:
+            line = f"  {left_pad} |  {right}"
+        else:
+            line = f"  {left_pad} |"
+        print("\r\033[K" + Fore.CYAN + line + Style.RESET_ALL)
     print("\r\033[K" + "-" * 76)
 
 
-def _input_loop(pipeline):
+def _unpack_transcript_entry(entry):
+    """
+    Normalize full_transcript rows.
+
+    New format: (chunk_num, heard, translated, created_at, timing_dict)
+    Legacy:     (chunk_num, heard, translated)
+    """
+    if not entry:
+        return None, "", "", "", {}
+    chunk_num = entry[0]
+    heard = entry[1] if len(entry) > 1 else ""
+    translated = entry[2] if len(entry) > 2 else ""
+    created_at = entry[3] if len(entry) > 3 else ""
+    timing = entry[4] if len(entry) > 4 else {}
+    if not isinstance(timing, dict):
+        timing = {}
+    return chunk_num, heard or "", translated or "", created_at or "", timing
+
+
+def _entry_heard(entry):
+    return _unpack_transcript_entry(entry)[1]
+
+
+# Stopwords ignored by export word counter (as requested).
+_WORD_COUNT_STOP = frozenset({"e", "a", "ou", "para", "ao", "à"})
+_VOWELS_PT = set("aeiouáéíóúâêôãõàäëïöüýy")
+
+
+def _pt_syllable_count(word):
+    """
+    Approximate Portuguese syllable count via vowel-group runs.
+    Good enough for filtering mono vs multi-syllable words.
+    """
+    w = unicodedata.normalize("NFC", (word or "").lower())
+    w = re.sub(r"[^a-zàáâãäèéêëìíîïòóôõöùúûüçýÿ]", "", w)
+    if not w:
+        return 0
+    count = 0
+    prev_vowel = False
+    for ch in w:
+        is_v = ch in _VOWELS_PT
+        if is_v and not prev_vowel:
+            count += 1
+        prev_vowel = is_v
+    return count if count > 0 else 1
+
+
+def _count_content_words(texts):
+    """
+    Count words with more than one syllable, excluding short stopwords
+    (e, a, ou, para, ao, à, …).
+    """
+    total = 0
+    for text in texts:
+        for raw in re.findall(r"[A-Za-zÀ-ÿ]+(?:'[A-Za-zÀ-ÿ]+)?", text or ""):
+            # Strip trailing/leading punctuation already handled by regex.
+            key = unicodedata.normalize("NFC", raw.lower())
+            # Compare stopwords with and without combining marks for "à".
+            key_plain = "".join(
+                c for c in unicodedata.normalize("NFD", key) if not unicodedata.combining(c)
+            )
+            if key in _WORD_COUNT_STOP or key_plain in _WORD_COUNT_STOP:
+                continue
+            if _pt_syllable_count(key) > 1:
+                total += 1
+    return total
+
+
+def _input_loop(pipeline, synonym_lookup):
     """
     Read user input from standard input in a daemon thread.
     Supported commands:
-      r       -> Replay the last chunk
-      r<num>  -> Replay the absolute chunk <num> (e.g. r5)
+      r       -> Replay last chunk (synthesize TTS if no WAV from sound-OFF)
+      r<num>  -> Replay chunk <num> (e.g. r5, r99); generate audio if missing
       e       -> Edit the last transcribed chunk
     """
     while not pipeline.stop_event.is_set():
@@ -481,20 +604,37 @@ def _input_loop(pipeline):
                 chunk_num = int(cmd[1:])
                 pipeline.add_favorite(chunk_num)
             elif cmd == "s":
+                enabled = pipeline.toggle_sound()
+                if enabled:
+                    ui.success(
+                        "Sound ON — próximas traduções tocam. "
+                        "Use [r] / [rN] para ouvir chunks sem áudio (gera TTS se faltar)."
+                    )
+                else:
+                    ui.warn(
+                        "Sound OFF — só texto (TTS omitido se TTS_SKIP_WHEN_MUTED). "
+                        "Ligue [s] e use [r]/[rN] para gerar e tocar áudio depois."
+                    )
+                _print_menu(pipeline)
+            elif cmd == "x":
+                if pipeline.stop_playback():
+                    ui.info("Playback stopped — remaining audio for this chunk skipped.")
+                else:
+                    ui.warn("Sound is OFF — nothing playing to stop.")
+            elif cmd == "o":
                 print("Enter a word in English: ", end="", flush=True)
                 word = sys.stdin.readline().strip()
                 if not word:
                     continue
-                if hasattr(pipeline.translator, "explain_synonyms"):
-                    ui.info(f"Searching meaning and synonyms for '{word}'...")
-                    try:
-                        explanation = pipeline.translator.explain_synonyms(word)
-                        pipeline.add_synonym(word, explanation)
-                        ui.synonyms_result(word, explanation)
-                    except Exception as exc:
-                        ui.error(f"Error searching synonyms: {exc}")
-                else:
-                    ui.warn("The command 's' requires the 'llm' translation engine (Groq/OpenAI) to be enabled.")
+                ui.info(f"Searching meaning and synonyms for '{word}'...")
+                try:
+                    explanation = synonym_lookup.explain(word)
+                    pipeline.add_synonym(word, explanation)
+                    ui.synonyms_result(word, explanation)
+                except SynonymError as exc:
+                    ui.error(f"Synonym lookup failed: {exc}")
+                except Exception as exc:
+                    ui.error(f"Error searching synonyms: {exc}")
             elif cmd == "c":
                 full_trans = pipeline.get_full_transcript()
                 if not full_trans:
@@ -544,7 +684,9 @@ def _input_loop(pipeline):
                         summary_generator = LLMTranslator(cfg)
 
                     # Concatenate all original heard lines for analysis
-                    transcript_full = "\n".join(f"- {heard}" for _, heard, _ in full_trans)
+                    transcript_full = "\n".join(
+                        f"- {_entry_heard(e)}" for e in full_trans
+                    )
                     try:
                         summary_text = summary_generator.generate_meeting_summary(transcript_full)
                     except Exception as exc:
@@ -563,11 +705,15 @@ def _input_loop(pipeline):
                             f.write("---\n\n")  # horizontal rule before content
                         
                         f.write("## 💬 Transcrição Detalhada\n\n")
-                        for chunk_num, heard, translated in full_trans:
+                        for entry in full_trans:
+                            chunk_num, heard, translated, _created_at, _timing = (
+                                _unpack_transcript_entry(entry)
+                            )
                             f.write(f"### Chunk {chunk_num}\n")
-                            # Flip order: Target (translated) first, Source (heard) second
                             f.write(f"{tgt_lang}: {translated}\n")
-                            f.write(f"{src_lang}: {heard}\n\n")
+                            f.write("\n")
+                            f.write(f"{src_lang}: {heard}\n")
+                            f.write("\n")
                         
                         # Export synonym vocab searches chronologically
                         if synonyms:
@@ -576,9 +722,16 @@ def _input_loop(pipeline):
                                 f.write(f"### {word.upper()}\n")
                                 f.write(f"{explanation}\n\n")
 
+                        word_count = _count_content_words(
+                            _entry_heard(e) for e in full_trans
+                        )
                         f.write("---\n")
                         f.write(f"**Total de frases traduzidas:** {len(full_trans)}\n")
                         f.write(f"**Total de sinônimos consultados:** {len(synonyms)}\n")
+                        f.write(
+                            f"**Total de palavras** (fonte; >1 sílaba; "
+                            f"sem e/a/ou/para/ao/à): {word_count}\n"
+                        )
                     ui.success(f"File generated and exported successfully: '{filename}'")
                 except Exception as exc:
                     ui.error(f"Error saving share file: {exc}")
@@ -604,11 +757,14 @@ def _input_loop(pipeline):
                 src_lang = lang_map.get(cfg.SOURCE_LANG.lower(), cfg.SOURCE_LANG.upper())
                 tgt_lang = lang_map.get(cfg.TARGET_LANG.lower(), cfg.TARGET_LANG.upper())
 
-                for chunk_num, heard, translated in full_trans:
+                for entry in full_trans:
+                    chunk_num, heard, translated, created_at, timing = (
+                        _unpack_transcript_entry(entry)
+                    )
                     prefix = f"[Chunk {chunk_num}] "
                     indent = " " * len(prefix)
 
-                    # 1. First line: Chunk ID and Target (translated) text in White, with Blue label
+                    # 1. Target (translated) — main content
                     print(
                         Fore.YELLOW
                         + Style.BRIGHT
@@ -620,8 +776,7 @@ def _input_loop(pipeline):
                         + Fore.WHITE
                         + translated
                     )
-                    # 2. Second line: Source (heard) text in Green, with White label
-                    # Aligned dynamically under the target language text start
+                    # 2. Source (heard) — main content
                     print(
                         indent
                         + Fore.WHITE
@@ -630,6 +785,19 @@ def _input_loop(pipeline):
                         + heard
                         + Style.RESET_ALL
                     )
+                    # 3. Meta (timing + timestamp) below source, separated by a blank line
+                    timing_line = ui.format_timing_line(timing)
+                    if timing_line or created_at:
+                        print()
+                        if timing_line:
+                            print(indent + Style.DIM + timing_line + Style.RESET_ALL)
+                        if created_at:
+                            print(
+                                indent
+                                + Style.DIM
+                                + f"registrado: {created_at}"
+                                + Style.RESET_ALL
+                            )
                     print()
 
                 print(Fore.CYAN + "=" * 64)
@@ -652,7 +820,10 @@ def _input_loop(pipeline):
                 pipeline.stop()
                 break
             else:
-                ui.warn(f"Unknown command: '{cmd}'. Use 'r', 'rN', 'e', 'eN', 'd', 'dN', 'f', 'fN', 'F', 's', 'c', 'l', 'v', 'm' or 'q'.")
+                ui.warn(
+                    f"Unknown command: '{cmd}'. Use 'r', 'rN', 'e', 'eN', 'd', 'dN', "
+                    f"'f', 'fN', 'F', 's', 'w', 'c', 'l', 'v', 'm' or 'q'."
+                )
         except Exception as exc:
             ui.error(f"Error inside input loop: {exc}")
             break
@@ -857,18 +1028,21 @@ def main():
         print()
         ui.info(
             f"Languages: {cfg.SOURCE_LANG} -> {cfg.TARGET_LANG}   |   "
-            f"Voice: {cfg.TTS_VOICE}   |   "
-            f"VAD: {'on' if cfg.VAD_ENABLED else 'off'}"
+            f"TTS: {_tts_menu_label()}   |   "
+            f"Sound: ON   |   "
+            f"VAD: {_vad_label()}"
         )
+        _print_streaming_info()
 
         # --- Translation engine (validate key/model before the slow model load) ---
         translator = _build_translator()
+        synonym_lookup = build_synonym_lookup(cfg, translator, log=ui.info)
 
         # --- Speech-to-text engine (Groq cloud or local Whisper) ---
         transcriber = _build_transcriber()
 
-        # --- TTS ---
-        synthesizer = Synthesizer(cfg)
+        # --- TTS (edge online or Piper local) ---
+        synthesizer = build_synthesizer(cfg, log=ui.info)
 
         indicator = ListeningIndicator()
 
@@ -899,7 +1073,10 @@ def main():
 
         # Start terminal command listener in a daemon thread
         cmd_thread = threading.Thread(
-            target=_input_loop, args=(pipeline,), name="input_listener", daemon=True
+            target=_input_loop,
+            args=(pipeline, synonym_lookup),
+            name="input_listener",
+            daemon=True,
         )
         cmd_thread.start()
 
