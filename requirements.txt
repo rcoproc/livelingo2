@@ -37,6 +37,11 @@ python-dotenv==1.0.1
 # --- Colored terminal output on Windows ---
 colorama==0.4.6
 
+# --- Windows mic mute ([n]) via Core Audio ---
+# Optional outside Windows; required for OS-level mute / tray-visible control.
+pycaw>=20240210; platform_system=="Windows"
+comtypes>=1.4.0; platform_system=="Windows"
+
 # --- Offline synonyms ([o] command; WordNet downloaded on first use) ---
 nltk>=3.8
 

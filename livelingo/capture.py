@@ -14,6 +14,7 @@ The recorder runs in its own thread and stops cleanly when `stop_event` is set.
 """
 
 import queue
+import threading
 from collections import deque
 
 import numpy as np
@@ -45,6 +46,13 @@ class Recorder:
         self.on_listening = on_listening  # optional callback(bool is_speaking)
         self.paragraph_split_enabled = paragraph_split_enabled
         self.shorter_end_enabled = shorter_end_enabled
+        # App-level mic gate (OS mute is separate; both used by [n]).
+        # When cleared, blocks are still read (avoid PortAudio overflow) but
+        # never emitted as speech chunks.
+        self._capture_enabled = threading.Event()
+        self._capture_enabled.set()
+        # Drop in-progress VAD utterance immediately (language swap [g], etc.).
+        self._abort_utterance = threading.Event()
 
         self.sample_rate = config.SAMPLE_RATE
         self.block_frames = max(1, int(config.SAMPLE_RATE * config.BLOCK_DURATION))
@@ -127,6 +135,23 @@ class Recorder:
             return bool(self.paragraph_split_enabled())
         return not getattr(self.cfg, "PARAGRAPH_SPLIT_SOUND_OFF_ONLY", True)
 
+    def set_capture_enabled(self, enabled: bool):
+        """Enable/disable emitting speech chunks (app-level mic mute)."""
+        if enabled:
+            self._capture_enabled.set()
+        else:
+            self._capture_enabled.clear()
+
+    def is_capture_enabled(self) -> bool:
+        return self._capture_enabled.is_set()
+
+    def abort_utterance(self):
+        """
+        Discard the current partial utterance (do not emit).
+        Used so [g] language swap takes effect immediately mid-listen.
+        """
+        self._abort_utterance.set()
+
     # ------------------------------------------------------------------ #
     def run(self):
         """Blocking capture loop; intended to run in a dedicated thread."""
@@ -182,6 +207,29 @@ class Recorder:
 
         while not self.stop_event.is_set():
             block = self._read_block(stream)
+            if self._abort_utterance.is_set() or not self._capture_enabled.is_set():
+                # Soft-mute or explicit abort: drain stream, drop partial utterance.
+                aborted = self._abort_utterance.is_set()
+                if aborted:
+                    self._abort_utterance.clear()
+                if in_speech and self.on_listening:
+                    self.on_listening(False)
+                in_speech = False
+                speech = []
+                preroll.clear()
+                trailing_silence = 0
+                total_frames = 0
+                if self._silero is not None:
+                    try:
+                        self._silero.reset()
+                    except Exception:
+                        pass
+                # After abort, keep capturing with next blocks (unlike sustained mute).
+                if aborted:
+                    continue
+                if not self._capture_enabled.is_set():
+                    continue
+
             loud = self._block_is_speech(block, in_speech=in_speech)
 
             if not in_speech:
@@ -255,6 +303,15 @@ class Recorder:
         frames = 0
         while not self.stop_event.is_set():
             block = self._read_block(stream)
+            if self._abort_utterance.is_set():
+                self._abort_utterance.clear()
+                buffer = []
+                frames = 0
+                continue
+            if not self._capture_enabled.is_set():
+                buffer = []
+                frames = 0
+                continue
             buffer.append(block)
             frames += block.size
             if frames >= self.fixed_chunk_frames:

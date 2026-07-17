@@ -28,6 +28,11 @@ __all__ = [
     "chunk_status",
     "chunk_timings",
     "format_timing_line",
+    "clock_hhmmss",
+    "format_recorded_stamp",
+    "resolve_share_path",
+    "format_audio_lines",
+    "print_audio_ref",
     "chunk_text_preview",
     "chunk_stream_start",
     "chunk_stream_update",
@@ -54,36 +59,81 @@ def _one_line(text, budget):
     return text[: budget - 1] + "…"
 
 
-def banner():
-    """Print the startup banner."""
+def _pad(indent):
+    """Left margin spaces (e.g. menu/list blocks use indent=3)."""
+    try:
+        n = int(indent or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return " " * max(0, n)
+
+
+def banner(indent=3):
+    """Print the startup banner (default 3-char left margin)."""
+    pad = _pad(indent)
     line = "=" * 64
     with _print_lock:
-        print(Fore.CYAN + line)
-        print(Fore.CYAN + Style.BRIGHT + "        L I V E L I N G O   \U0001f399️  ->  \U0001f30d")
-        print(Fore.CYAN + "        Real-time speech translation into a virtual mic")
-        print(Fore.CYAN + "        mic -> Whisper -> translate -> Edge TTS -> VB-Cable")
-        print(Fore.CYAN + line + Style.RESET_ALL)
+        print(pad + Fore.CYAN + line)
+        print(
+            pad
+            + Fore.CYAN
+            + Style.BRIGHT
+            + "        L I V E L I N G O   \U0001f399️  ->  \U0001f30d"
+        )
+        print(
+            pad
+            + Fore.CYAN
+            + "        Real-time speech translation into a virtual mic"
+        )
+        print(
+            pad
+            + Fore.CYAN
+            + "        mic -> Whisper -> translate -> Edge TTS -> VB-Cable"
+        )
+        print(pad + Fore.CYAN + line + Style.RESET_ALL)
 
 
-def info(msg):
-    with _print_lock:
-        print("\r\033[K" + Fore.CYAN + "[i] " + Style.RESET_ALL + str(msg))
-
-
-def success(msg):
-    with _print_lock:
-        print("\r\033[K" + Fore.GREEN + "[ok] " + Style.RESET_ALL + str(msg))
-
-
-def warn(msg):
-    with _print_lock:
-        print("\r\033[K" + Fore.YELLOW + "[!] " + Style.RESET_ALL + str(msg))
-
-
-def error(msg):
+def info(msg, indent=0):
     with _print_lock:
         print(
             "\r\033[K"
+            + _pad(indent)
+            + Fore.CYAN
+            + "[i] "
+            + Style.RESET_ALL
+            + str(msg)
+        )
+
+
+def success(msg, indent=0):
+    with _print_lock:
+        print(
+            "\r\033[K"
+            + _pad(indent)
+            + Fore.GREEN
+            + "[ok] "
+            + Style.RESET_ALL
+            + str(msg)
+        )
+
+
+def warn(msg, indent=0):
+    with _print_lock:
+        print(
+            "\r\033[K"
+            + _pad(indent)
+            + Fore.YELLOW
+            + "[!] "
+            + Style.RESET_ALL
+            + str(msg)
+        )
+
+
+def error(msg, indent=0):
+    with _print_lock:
+        print(
+            "\r\033[K"
+            + _pad(indent)
             + Fore.RED
             + Style.BRIGHT
             + "[x] "
@@ -93,17 +143,24 @@ def error(msg):
         )
 
 
-def dim(msg):
+def dim(msg, indent=0):
     with _print_lock:
-        print("\r\033[K" + Style.DIM + str(msg) + Style.RESET_ALL)
+        print(
+            "\r\033[K"
+            + _pad(indent)
+            + Style.DIM
+            + str(msg)
+            + Style.RESET_ALL
+        )
 
 
-def device_line(role, index, name):
+def device_line(role, index, name, indent=0):
     """Pretty one-liner confirming a selected device."""
     idx = "default" if index is None else f"#{index}"
     with _print_lock:
         print(
             "\r\033[K"
+            + _pad(indent)
             + Fore.MAGENTA
             + f"  {role:<8}"
             + Style.RESET_ALL
@@ -114,12 +171,13 @@ def device_line(role, index, name):
         )
 
 
-def chunk_status(n, heard, translated, timings, finalize=False):
+def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     """
     Print the live per-chunk status line plus a dim timing breakdown.
 
     timings: dict with keys stt, translate, tts, total (seconds).
     finalize: when True, print the trailing blank line after timings.
+    at: optional timestamp for HH:MM:SS on the timing line (default: now).
     """
     heard = (heard or "").strip()
     translated = (translated or "").strip()
@@ -149,11 +207,9 @@ def chunk_status(n, heard, translated, timings, finalize=False):
             + Fore.WHITE
             + translated
         )
-        timing = (
-            "timing: STT {stt:.2f}s | translate {translate:.2f}s | "
-            "TTS {tts:.2f}s | total {total:.2f}s".format(**timings)
-        )
-        print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
+        timing = format_timing_line(timings or {}, at=at)
+        if timing:
+            print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
         if finalize:
             print()
 
@@ -188,12 +244,114 @@ def chunk_text_preview(n, heard, translated):
         )
 
 
-def format_timing_line(timings, extra=None):
+def clock_hhmmss(stamp=None):
+    """
+    Return HH:MM:SS for a DB/local timestamp string, datetime, or now.
+    Accepts 'YYYY-MM-DD HH:MM:SS', 'HH:MM:SS', or empty → current time.
+    """
+    import datetime as _dt
+
+    if stamp is None or stamp == "":
+        return _dt.datetime.now().strftime("%H:%M:%S")
+    if hasattr(stamp, "strftime"):
+        return stamp.strftime("%H:%M:%S")
+    text = str(stamp).strip()
+    # '2026-07-16 14:32:05' or '14:32:05'
+    if len(text) >= 19 and text[10] in (" ", "T"):
+        return text[11:19]
+    if len(text) >= 8 and text[2] == ":" and text[5] == ":":
+        return text[:8]
+    return _dt.datetime.now().strftime("%H:%M:%S")
+
+
+def format_recorded_stamp(stamp):
+    """Human label for DB created_at (date + time)."""
+    if not stamp:
+        return ""
+    text = str(stamp).strip().replace("T", " ")
+    if len(text) >= 19:
+        return text[:19]
+    return text
+
+
+def resolve_share_path(path):
+    """
+    Absolute path suited for attaching/opening on the host OS.
+
+    Converts WSL ``/mnt/c/...`` → ``C:\\...`` so Explorer / Teams / WhatsApp
+    Desktop can open the file when LiveLingo runs under WSL.
+    """
+    import os
+    import re
+
+    if not path:
+        return ""
+    text = str(path).strip()
+    if not text:
+        return ""
+    try:
+        abs_path = os.path.abspath(text)
+    except OSError:
+        abs_path = text
+
+    # WSL mount: /mnt/c/Users/... → C:\Users\...
+    m = re.match(r"^/mnt/([a-zA-Z])/(.*)$", abs_path.replace("\\", "/"))
+    if m:
+        drive = m.group(1).upper()
+        rest = m.group(2).replace("/", "\\")
+        return f"{drive}:\\{rest}"
+
+    # Already Windows-style or native POSIX outside /mnt
+    if os.name == "nt":
+        return os.path.normpath(abs_path)
+    return abs_path
+
+
+def format_audio_lines(path, missing_hint="(ainda não gerado — use r / rN)"):
+    """
+    Return list of plain display lines for a chunk audio reference.
+    Empty path → one 'sem áudio' line. Existing path → full file path only
+    (folder alone is redundant — path already includes directory + filename).
+    """
+    import os
+
+    if not path or not str(path).strip():
+        return [f"audio: {missing_hint}"]
+
+    share = resolve_share_path(path)
+    exists = False
+    try:
+        exists = os.path.isfile(path) or os.path.isfile(share)
+    except OSError:
+        exists = False
+
+    if not exists:
+        return [f"audio: {share or path}  (arquivo ausente — use r / rN)"]
+
+    return [f"audio: {share}"]
+
+
+def print_audio_ref(n, path, indent=None):
+    """Print dim audio/pasta lines under a chunk block (same indent as timing)."""
+    prefix = f"[chunk {n}] "
+    pad = " " * len(prefix) if indent is None else " " * int(indent)
+    lines = format_audio_lines(path)
+    with _print_lock:
+        for line in lines:
+            print("\r\033[K" + pad + Style.DIM + line + Style.RESET_ALL)
+
+
+def format_timing_line(timings, extra=None, at=None, include_clock=True):
     """
     Build the same timing string used in live logs, e.g.
-    timing: STT 1.61s | translate 0.73s | TTS 15.47s | ...
+    timing: STT 1.61s | translate 0.73s | TTS 15.47s | ... | 14:32:05
+
+    at: DB/local stamp used for HH:MM:SS (if set).
+    include_clock: when True and at is empty, use current time (live logs).
     """
     if not timings:
+        if include_clock and at:
+            return f"timing: — | {clock_hhmmss(at)}"
         return ""
     parts = []
     if "stt" in timings:
@@ -217,18 +375,25 @@ def format_timing_line(timings, extra=None):
     line = "timing: " + " | ".join(parts)
     if extra:
         line = f"{line}  {extra}"
+    # Right-side clock: when the translation was produced / recorded.
+    if at:
+        line = f"{line} | {clock_hhmmss(at)}"
+    elif include_clock:
+        line = f"{line} | {clock_hhmmss()}"
     return line
 
 
-def chunk_timings(n, timings, extra=None):
-    """Print final timing line once TTS completes."""
+def chunk_timings(n, timings, extra=None, at=None, audio_path=None):
+    """Print final timing line once TTS completes (includes HH:MM:SS)."""
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
-    timing = format_timing_line(timings, extra=extra)
-    if not timing:
-        return
+    timing = format_timing_line(timings, extra=extra, at=at, include_clock=True)
     with _print_lock:
-        print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
+        if timing:
+            print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
+        if audio_path is not None:
+            for line in format_audio_lines(audio_path):
+                print("\r\033[K" + indent + Style.DIM + line + Style.RESET_ALL)
         print()
 
 

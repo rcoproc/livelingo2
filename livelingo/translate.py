@@ -16,6 +16,12 @@ class Translator:
             source=config.SOURCE_LANG, target=config.TARGET_LANG
         )
 
+    def set_language_pair(self, source=None, target=None):
+        """Recreate the Google client after a SOURCE/TARGET swap ([g])."""
+        src = source if source is not None else self.cfg.SOURCE_LANG
+        tgt = target if target is not None else self.cfg.TARGET_LANG
+        self._translator = GoogleTranslator(source=src, target=tgt)
+
     def translate(self, text):
         """
         Translate `text` from the source to the target language.

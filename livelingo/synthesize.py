@@ -18,12 +18,50 @@ from .synthesis_error import SynthesisError
 from .tts_segments import split_tts_segments
 
 
+# Elegant defaults when TTS_VOICE_ALT is empty and user swaps languages ([g]).
+DEFAULT_EDGE_VOICE_BY_LANG = {
+    "en": "en-US-ChristopherNeural",
+    "fr": "fr-FR-HenriNeural",
+    "es": "es-ES-AlvaroNeural",
+    "pt": "pt-BR-AntonioNeural",
+    "de": "de-DE-ConradNeural",
+    "it": "it-IT-DiegoNeural",
+    "nl": "nl-NL-MaartenNeural",
+    "ru": "ru-RU-DmitryNeural",
+    "ja": "ja-JP-KeitaNeural",
+    "ko": "ko-KR-InJoonNeural",
+    "zh": "zh-CN-YunxiNeural",
+    "ar": "ar-SA-HamedNeural",
+    "hi": "hi-IN-MadhurNeural",
+    "pl": "pl-PL-MarekNeural",
+    "tr": "tr-TR-AhmetNeural",
+}
+
+
+def default_edge_voice_for_lang(lang_code):
+    """Pick a solid meeting-style Edge voice for a 2-letter language code."""
+    code = (lang_code or "").lower().strip()
+    if code in DEFAULT_EDGE_VOICE_BY_LANG:
+        return DEFAULT_EDGE_VOICE_BY_LANG[code]
+    # Accept BCP-47 prefixes like pt-BR → pt
+    if "-" in code:
+        return DEFAULT_EDGE_VOICE_BY_LANG.get(code.split("-", 1)[0], "en-US-AriaNeural")
+    return "en-US-AriaNeural"
+
+
 class Synthesizer:
     def __init__(self, config):
         self.cfg = config
         self.voice = config.TTS_VOICE
         self.rate = config.TTS_RATE
         self.volume = config.TTS_VOLUME
+
+    def set_voice(self, voice_id):
+        """Change Edge voice after language swap ([g])."""
+        if voice_id:
+            self.voice = voice_id
+            if hasattr(self.cfg, "TTS_VOICE"):
+                self.cfg.TTS_VOICE = voice_id
 
     # ------------------------------------------------------------------ #
     async def _stream_mp3(self, text):
@@ -103,6 +141,43 @@ class Synthesizer:
         return np.concatenate(parts).astype(np.float32), sample_rate
 
 
+def _edge_voice_lang_prefix(voice: str) -> str:
+    """
+    Extract BCP-47 language from an edge-tts voice id.
+    'fr-FR-HenriNeural' -> 'fr', 'es-ES-AlvaroNeural' -> 'es', 'en-US-AriaNeural' -> 'en'.
+    """
+    parts = (voice or "").strip().split("-")
+    if not parts or not parts[0]:
+        return ""
+    return parts[0].lower()
+
+
+def warn_tts_voice_language(config, log=print):
+    """
+    Warn when TTS_VOICE locale does not match TARGET_LANG.
+
+    Edge multilingual voices can still *speak* foreign text, but keep the
+    training accent of the voice locale (e.g. es-ES voice reading French → Spanish accent).
+    """
+    engine = (getattr(config, "TTS_ENGINE", "edge") or "edge").lower()
+    if engine not in ("edge", "hybrid", ""):
+        return
+    voice = getattr(config, "TTS_VOICE", "") or ""
+    target = (getattr(config, "TARGET_LANG", "") or "").lower().strip()
+    if not voice or not target:
+        return
+    voice_lang = _edge_voice_lang_prefix(voice)
+    if not voice_lang or voice_lang == target:
+        return
+    # Multilingual voices still carry the locale accent of the base tag.
+    log(
+        f"[warn] TTS_VOICE='{voice}' is locale '{voice_lang}' but "
+        f"TARGET_LANG='{target}'. Text is fine; spoken accent will sound like "
+        f"{voice_lang.upper()}. Set TTS_VOICE to a {target}-* Neural voice "
+        f"(e.g. edge-tts --list-voices)."
+    )
+
+
 def build_synthesizer(config, log=print):
     """
     Return a TTS backend from config.TTS_ENGINE:
@@ -110,6 +185,8 @@ def build_synthesizer(config, log=print):
       piper  -> Piper ONNX (local); falls back to edge on error
       hybrid -> edge first chunk + Piper tail (or TTS_HYBRID=true with piper)
     """
+    warn_tts_voice_language(config, log=log)
+
     engine = (getattr(config, "TTS_ENGINE", "edge") or "edge").lower()
     use_hybrid = engine == "hybrid" or (
         engine == "piper" and getattr(config, "TTS_HYBRID", False)
@@ -135,4 +212,5 @@ def build_synthesizer(config, log=print):
             return PiperSynthesizer(config, log=log)
         except Exception as exc:
             log(f"Piper TTS unavailable ({exc}) — falling back to edge-tts.")
+    log(f"Text-to-speech: edge-tts ({getattr(config, 'TTS_VOICE', '')}).")
     return Synthesizer(config)

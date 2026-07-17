@@ -10,6 +10,7 @@ import unicodedata
 import numpy as np
 
 # Whole-chunk phrases (chunk is only hallucination).
+# Includes Whisper silence-tails: goodbye/goodnight after real speech + room noise.
 _HALLUCINATION_PATTERNS = (
     r"^legenda(?:s)?\s+por\b",
     r"^subtitle(?:s)?\s+by\b",
@@ -32,6 +33,35 @@ _HALLUCINATION_PATTERNS = (
     r"^music\.?$",
     r"^applause\.?$",
     r"^\[.*\]$",
+    # Farewells / outro (very common on quiet tails + fan/AC noise)
+    r"^good\s*bye\.?$",
+    r"^goodbye\.?$",
+    r"^good[\s\-]*bye\.?$",
+    r"^good\s*night\.?$",
+    r"^goodnight\.?$",
+    r"^good[\s\-]*night\.?$",
+    r"^bye(?:[\s\-]*bye)?\.?$",
+    r"^bye\s+bye\.?$",
+    r"^see\s+you(?:\s+(?:later|soon|tomorrow|next\s+time))?\.?$",
+    r"^see\s+ya\.?$",
+    r"^have\s+a\s+(?:nice|good)\s+day\.?$",
+    r"^the\s+end\.?$",
+    r"^so\s+long\.?$",
+    r"^farewell\.?$",
+    r"^boa\s+noite\.?$",
+    r"^bom\s+dia\.?$",
+    r"^boa\s+tarde\.?$",
+    r"^ate\s+logo\.?$",
+    r"^ate\s+mais\.?$",
+    r"^tchau\.?$",
+    r"^adeus\.?$",
+    r"^adios\.?$",
+    r"^buenas\s+noches\.?$",
+    r"^buenos\s+dias\.?$",
+    r"^hasta\s+luego\.?$",
+    r"^hasta\s+pronto\.?$",
+    r"^au\s+revoir\.?$",
+    r"^bonne\s+nuit\.?$",
 )
 
 # Trailing credit tails Whisper appends after real speech (often after silence).
@@ -53,6 +83,16 @@ _TAIL_STRIP_PATTERNS = (
     rf"[\s.,;:!?…\-–—]+inscreva-se(?:\s+no\s+canal)?{_END}",
     rf"[\s.,;:!?…\-–—]+subscribe(?:\s+to\s+(?:my|the)\s+channel)?{_END}",
     r"[\s.,;:!?…\-–—]+amara\.org\b.*$",
+    # Lonely farewell tail after real speech (silence hallucination)
+    rf"[\s.,;:!?…\-–—]+good[\s\-]*bye{_END}",
+    rf"[\s.,;:!?…\-–—]+good[\s\-]*night{_END}",
+    rf"[\s.,;:!?…\-–—]+bye(?:[\s\-]*bye)?{_END}",
+    rf"[\s.,;:!?…\-–—]+see\s+you(?:\s+(?:later|soon|tomorrow))?{_END}",
+    rf"[\s.,;:!?…\-–—]+boa\s+noite{_END}",
+    rf"[\s.,;:!?…\-–—]+tchau{_END}",
+    rf"[\s.,;:!?…\-–—]+buenas\s+noches{_END}",
+    rf"[\s.,;:!?…\-–—]+au\s+revoir{_END}",
+    rf"[\s.,;:!?…\-–—]+bonne\s+nuit{_END}",
 )
 
 

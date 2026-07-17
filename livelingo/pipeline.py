@@ -22,6 +22,7 @@ import soundfile as sf
 
 from . import db, ui
 from .capture import Recorder, is_capture_error
+from .mic_control import MicController, warn_if_muted
 from .playback import INTERRUPT, Player
 from .stt_filter import (
     clean_transcript,
@@ -53,12 +54,15 @@ class Pipeline:
         session_id,
         monitor_device=None,
         on_listening=None,
+        input_device_name=None,
     ):
         self.cfg = config
         self.input_device = input_device
         self.output_device = output_device
         self.monitor_device = monitor_device
         self.session_id = session_id
+        # Human-readable capture name (PortAudio) for Core Audio matching.
+        self.input_device_name = input_device_name or ""
 
         self.transcriber = transcriber
         self.translator = translator
@@ -67,6 +71,8 @@ class Pipeline:
         self.chunk_queue = queue.Queue()
         self.playback_queue = queue.Queue()
         self.stop_event = threading.Event()
+
+        self.mic = MicController(device_name=self.input_device_name)
 
         self.recorder = Recorder(
             config,
@@ -125,20 +131,59 @@ class Pipeline:
         self._executor = None
         self._player = None
         self._player_lock = threading.Lock()
-        self.sound_enabled = True
+        # Default OFF: text-only until user enables live TTS with [s].
+        self.sound_enabled = False
         self.sound_lock = threading.Lock()
         self._bg_tts_queue = queue.Queue()
         self._stt_lock = threading.Lock()
         self._playback_suppressed = False
         self._playback_suppress_lock = threading.Lock()
 
+        # Capture gate while TTS plays (anti acoustic feedback loop).
+        # Refcount covers streaming multi-segment play(); hangover covers speaker ring-out.
+        self._capture_hold_lock = threading.Lock()
+        self._capture_hold_count = 0
+        self._capture_hold_timer = None  # threading.Timer | None
+
+        # Deferred language swap ([g]): never drop in-flight STT/translate/TTS.
+        self._lang_swap_lock = threading.Lock()
+        self._processor_busy_count = 0
+        self._pending_language_swap = False
+        self._on_language_swapped = None  # optional callback(src, tgt, voice)
+
     def is_sound_enabled(self):
         with self.sound_lock:
             return self.sound_enabled
 
     def set_sound_enabled(self, enabled):
+        """
+        Enable/disable sound and apply pipeline side effects (interrupt,
+        parallel workers, ordered-release cursor). Idempotent if already
+        in the requested state.
+        """
+        enabled = bool(enabled)
         with self.sound_lock:
-            self.sound_enabled = bool(enabled)
+            if self.sound_enabled == enabled:
+                return enabled
+            self.sound_enabled = enabled
+        if not enabled:
+            self._playback_suppressed = True
+            self._interrupt_playback()
+            # Sound-ON path never advances ordered release — catch up now.
+            self._sync_ordered_release_cursor()
+            if getattr(self.cfg, "SOUND_OFF_PARALLEL", True):
+                self._ensure_executor()
+        else:
+            self._resume_chunk_playback()
+            with self._player_lock:
+                if self._player is not None:
+                    self._player.clear_interrupt()
+            if self._executor is not None:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+                self._executor = None
+            # After leaving parallel mode, keep cursor ready for next mute.
+            self._sync_ordered_release_cursor()
+        return enabled
 
     def _sync_ordered_release_cursor(self):
         """
@@ -160,26 +205,477 @@ class Pipeline:
 
     def toggle_sound(self):
         with self.sound_lock:
-            self.sound_enabled = not self.sound_enabled
-            enabled = self.sound_enabled
-        if not enabled:
-            self._playback_suppressed = True
-            self._interrupt_playback()
-            # Sound-ON path never advances ordered release — catch up now.
-            self._sync_ordered_release_cursor()
-            if getattr(self.cfg, "SOUND_OFF_PARALLEL", True):
-                self._ensure_executor()
+            target = not self.sound_enabled
+        return self.set_sound_enabled(target)
+
+    # ------------------------------------------------------------------ #
+    # Microphone mute (Windows OS + app capture gate)
+    # ------------------------------------------------------------------ #
+    def is_mic_muted(self):
+        return self.mic.is_muted()
+
+    def mic_endpoint_name(self):
+        return self.mic.resolved_name()
+
+    def toggle_mic(self):
+        """
+        Mute/unmute the capture mic.
+
+        Best path on Windows: Core Audio SetMute (tray-visible) + app gate.
+        If COM fails, app gate alone still blocks STT chunks.
+        While TTS holds the capture gate, unmute keeps the hold until playback ends.
+        """
+        muted, os_ok, name = self.mic.toggle()
+        if muted:
+            self.recorder.set_capture_enabled(False)
+        elif not self._is_capture_held_for_playback():
+            self.recorder.set_capture_enabled(True)
+        return muted, os_ok, name
+
+    def check_mic_muted_warn(self, indent=3):
+        """Startup / pre-listen warning if OS mic is muted or volume ~0."""
+        return warn_if_muted(
+            self.mic,
+            log_warn=lambda m: ui.warn(m, indent=indent),
+            log_info=lambda m: ui.info(m, indent=indent),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Language pair swap ([g]) — deferred if a chunk is in flight
+    # ------------------------------------------------------------------ #
+    def language_pair_label(self):
+        """Uppercase direction label, e.g. 'EN → PT'."""
+        src = (getattr(self.cfg, "SOURCE_LANG", "") or "?").upper()
+        tgt = (getattr(self.cfg, "TARGET_LANG", "") or "?").upper()
+        return f"{src} → {tgt}"
+
+    def set_language_swap_callback(self, callback):
+        """Optional ui callback(src, tgt, voice) after a deferred swap applies."""
+        self._on_language_swapped = callback
+
+    def _processor_is_busy(self) -> bool:
+        with self._lang_swap_lock:
+            return self._processor_busy_count > 0 or not self.chunk_queue.empty()
+
+    def _mark_processor_enter(self):
+        with self._lang_swap_lock:
+            self._processor_busy_count += 1
+
+    def _mark_processor_leave(self):
+        """End of one chunk; apply deferred swap if pipeline is idle."""
+        apply_now = False
+        with self._lang_swap_lock:
+            if self._processor_busy_count > 0:
+                self._processor_busy_count -= 1
+            if (
+                self._pending_language_swap
+                and self._processor_busy_count == 0
+                and self.chunk_queue.empty()
+            ):
+                self._pending_language_swap = False
+                apply_now = True
+        if apply_now:
+            result = self.apply_language_swap()
+            cb = self._on_language_swapped
+            if cb is not None:
+                try:
+                    cb(*result[:3])
+                except Exception:
+                    pass
+
+    def request_language_swap(self):
+        """
+        Invert languages now if idle; otherwise schedule after in-flight work.
+
+        Does NOT drain the chunk queue or stop current TTS mid-sentence.
+
+        Returns dict:
+          status: "applied" | "deferred" | "already_pending"
+          old_pair, new_pair (labels)
+          source, target, voice, warnings  (only when applied)
+        """
+        with self._lang_swap_lock:
+            busy = self._processor_busy_count > 0 or not self.chunk_queue.empty()
+            if self._pending_language_swap:
+                # Flip pending cancel? User pressed g twice while waiting:
+                # cancel the pending swap (back to original intent).
+                self._pending_language_swap = False
+                return {
+                    "status": "cancelled_pending",
+                    "old_pair": self.language_pair_label(),
+                    "new_pair": self.language_pair_label(),
+                }
+            if busy:
+                self._pending_language_swap = True
+                # Preview flipped label without mutating cfg yet.
+                src = (getattr(self.cfg, "SOURCE_LANG", "") or "?").upper()
+                tgt = (getattr(self.cfg, "TARGET_LANG", "") or "?").upper()
+                return {
+                    "status": "deferred",
+                    "old_pair": f"{src} → {tgt}",
+                    "new_pair": f"{tgt} → {src}",
+                }
+
+        old_pair = self.language_pair_label()
+        src, tgt, voice, warnings = self.apply_language_swap()
+        return {
+            "status": "applied",
+            "old_pair": old_pair,
+            "new_pair": self.language_pair_label(),
+            "source": src,
+            "target": tgt,
+            "voice": voice,
+            "warnings": warnings,
+        }
+
+    def swap_languages(self):
+        """
+        Backward-compatible entry: request swap; if applied return 4-tuple
+        like the old API. Prefer request_language_swap() for full status.
+        """
+        info = self.request_language_swap()
+        if info["status"] == "applied":
+            return (
+                info["source"],
+                info["target"],
+                info["voice"],
+                info.get("warnings") or [],
+            )
+        # Deferred / cancelled — no cfg change yet.
+        src = getattr(self.cfg, "SOURCE_LANG", "")
+        tgt = getattr(self.cfg, "TARGET_LANG", "")
+        voice = getattr(self.cfg, "TTS_VOICE", "")
+        return src, tgt, voice, []
+
+    def apply_language_swap(self):
+        """
+        Invert SOURCE_LANG ↔ TARGET_LANG and rebind STT / translate / TTS.
+
+        Safe only when no chunk is mid-pipeline (or after that chunk finishes).
+        Does not rewrite historical chunks. Does not drain the work queue.
+
+        Returns (new_source, new_target, new_voice, warnings_list).
+        """
+        from .synthesize import default_edge_voice_for_lang
+
+        warnings = []
+
+        # Drop only an unfinished mic partial (not yet a queued phrase).
+        try:
+            self.recorder.abort_utterance()
+        except Exception:
+            pass
+
+        old_src = (getattr(self.cfg, "SOURCE_LANG", "") or "").strip() or "en"
+        old_tgt = (getattr(self.cfg, "TARGET_LANG", "") or "").strip() or "en"
+        old_voice = (getattr(self.cfg, "TTS_VOICE", "") or "").strip()
+        alt_voice = (getattr(self.cfg, "TTS_VOICE_ALT", "") or "").strip()
+        if not alt_voice:
+            alt_voice = default_edge_voice_for_lang(old_src)
+
+        # 1) Swap language codes on the shared config object.
+        self.cfg.SOURCE_LANG = old_tgt
+        self.cfg.TARGET_LANG = old_src
+
+        # 2) Swap Edge voices.
+        new_voice = alt_voice
+        self.cfg.TTS_VOICE = new_voice
+        self.cfg.TTS_VOICE_ALT = old_voice
+
+        # 3) Rebind STT language cache if any.
+        tr = self.transcriber
+        if hasattr(tr, "language"):
+            tr.language = self.cfg.SOURCE_LANG
+
+        # 4) Rebind translator.
+        if hasattr(self.translator, "set_language_pair"):
+            try:
+                self.translator.set_language_pair(
+                    self.cfg.SOURCE_LANG, self.cfg.TARGET_LANG
+                )
+            except Exception as exc:
+                warnings.append(f"translator rebind: {exc}")
+        elif hasattr(self.translator, "refresh_prompt"):
+            try:
+                self.translator.refresh_prompt()
+            except Exception as exc:
+                warnings.append(f"LLM prompt refresh: {exc}")
+
+        # 5) TTS: edge sync now; Piper may run async.
+        synth = self.synthesizer
+        src_lang = self.cfg.SOURCE_LANG
+        tgt_lang = self.cfg.TARGET_LANG
+
+        def _rebind_tts():
+            try:
+                if hasattr(synth, "edge") and hasattr(synth.edge, "set_voice"):
+                    synth.edge.set_voice(new_voice)
+                if hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
+                    synth.set_voice(new_voice)
+                if hasattr(synth, "piper") and hasattr(synth.piper, "set_language_pair"):
+                    synth.piper.set_language_pair(src_lang, tgt_lang)
+                elif hasattr(synth, "set_language_pair") and not hasattr(synth, "edge"):
+                    synth.set_language_pair(src_lang, tgt_lang)
+            except Exception as exc:
+                ui.warn(f"TTS rebind after swap: {exc}")
+
+        if hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
+            try:
+                synth.set_voice(new_voice)
+            except Exception as exc:
+                warnings.append(f"TTS voice rebind: {exc}")
         else:
-            self._resume_chunk_playback()
-            with self._player_lock:
-                if self._player is not None:
-                    self._player.clear_interrupt()
-            if self._executor is not None:
-                self._executor.shutdown(wait=False, cancel_futures=True)
-                self._executor = None
-            # After leaving parallel mode, keep cursor ready for next mute.
-            self._sync_ordered_release_cursor()
-        return enabled
+            try:
+                if hasattr(synth, "edge") and hasattr(synth.edge, "set_voice"):
+                    synth.edge.set_voice(new_voice)
+            except Exception as exc:
+                warnings.append(f"Edge voice rebind: {exc}")
+            threading.Thread(
+                target=_rebind_tts, name="tts-rebind", daemon=True
+            ).start()
+
+        return self.cfg.SOURCE_LANG, self.cfg.TARGET_LANG, new_voice, warnings
+
+    # Codes accepted by runtime TARGET change ([t]) and docs.
+    TARGET_LANG_CHOICES = (
+        "en",
+        "pt",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "zh",
+        "ja",
+    )
+
+    @staticmethod
+    def normalize_lang_code(code: str) -> str:
+        """Normalize user input (EN, pt-BR, GERMAN…) to a 2-letter code."""
+        raw = (code or "").strip().lower()
+        if not raw:
+            return ""
+        # Full names / aliases
+        aliases = {
+            "english": "en",
+            "ingles": "en",
+            "inglês": "en",
+            "portuguese": "pt",
+            "portugues": "pt",
+            "português": "pt",
+            "spanish": "es",
+            "espanol": "es",
+            "español": "es",
+            "french": "fr",
+            "frances": "fr",
+            "français": "fr",
+            "german": "de",
+            "alemao": "de",
+            "alemão": "de",
+            "deutsch": "de",
+            "italian": "it",
+            "italiano": "it",
+            "chinese": "zh",
+            "chines": "zh",
+            "chinês": "zh",
+            "mandarin": "zh",
+            "japanese": "ja",
+            "japones": "ja",
+            "japonês": "ja",
+            "jp": "ja",
+            "cn": "zh",
+            "ger": "de",
+            "deu": "de",
+            "ita": "it",
+        }
+        if raw in aliases:
+            return aliases[raw]
+        # BCP-47 → primary subtag
+        if "-" in raw or "_" in raw:
+            raw = raw.replace("_", "-").split("-", 1)[0]
+        # Strip non-letters
+        raw = "".join(ch for ch in raw if ch.isalpha())
+        return raw[:2] if len(raw) >= 2 else raw
+
+    def set_target_language(self, code: str):
+        """
+        Change TARGET_LANG only (SOURCE unchanged). Rebinds translator + TTS.
+
+        Returns dict:
+          ok: bool
+          error: str (if not ok)
+          source, target, voice, old_target, warnings
+        """
+        from .synthesize import default_edge_voice_for_lang
+
+        new_tgt = self.normalize_lang_code(code)
+        if not new_tgt:
+            return {
+                "ok": False,
+                "error": "Código vazio. Use EN, PT, ES, FR, DE, IT, ZH ou JA.",
+            }
+        if new_tgt not in self.TARGET_LANG_CHOICES:
+            allowed = ", ".join(c.upper() for c in self.TARGET_LANG_CHOICES)
+            return {
+                "ok": False,
+                "error": f"Idioma '{code}' não suportado. Use: {allowed}.",
+            }
+
+        old_tgt = (getattr(self.cfg, "TARGET_LANG", "") or "").strip().lower() or "en"
+        if new_tgt == old_tgt:
+            return {
+                "ok": True,
+                "unchanged": True,
+                "source": self.cfg.SOURCE_LANG,
+                "target": new_tgt,
+                "voice": getattr(self.cfg, "TTS_VOICE", ""),
+                "old_target": old_tgt,
+                "warnings": [],
+            }
+
+        warnings = []
+        old_voice = (getattr(self.cfg, "TTS_VOICE", "") or "").strip()
+        new_voice = default_edge_voice_for_lang(new_tgt)
+
+        # Keep previous target voice as ALT for [g] swap convenience.
+        self.cfg.TARGET_LANG = new_tgt
+        self.cfg.TTS_VOICE = new_voice
+        if old_voice:
+            self.cfg.TTS_VOICE_ALT = old_voice
+
+        # Rebind translator (Google pair / LLM system prompt).
+        if hasattr(self.translator, "set_language_pair"):
+            try:
+                self.translator.set_language_pair(
+                    self.cfg.SOURCE_LANG, self.cfg.TARGET_LANG
+                )
+            except Exception as exc:
+                warnings.append(f"translator rebind: {exc}")
+        elif hasattr(self.translator, "refresh_prompt"):
+            try:
+                self.translator.refresh_prompt()
+            except Exception as exc:
+                warnings.append(f"LLM prompt refresh: {exc}")
+
+        # Rebind TTS (edge sync; piper async if needed).
+        synth = self.synthesizer
+        src_lang = self.cfg.SOURCE_LANG
+        tgt_lang = self.cfg.TARGET_LANG
+
+        def _rebind_tts():
+            try:
+                if hasattr(synth, "edge") and hasattr(synth.edge, "set_voice"):
+                    synth.edge.set_voice(new_voice)
+                if hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
+                    synth.set_voice(new_voice)
+                if hasattr(synth, "piper") and hasattr(synth.piper, "set_language_pair"):
+                    synth.piper.set_language_pair(src_lang, tgt_lang)
+                elif hasattr(synth, "set_language_pair") and not hasattr(synth, "edge"):
+                    synth.set_language_pair(src_lang, tgt_lang)
+            except Exception as exc:
+                ui.warn(f"TTS rebind after TARGET change: {exc}")
+
+        if hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
+            try:
+                synth.set_voice(new_voice)
+            except Exception as exc:
+                warnings.append(f"TTS voice rebind: {exc}")
+        else:
+            try:
+                if hasattr(synth, "edge") and hasattr(synth.edge, "set_voice"):
+                    synth.edge.set_voice(new_voice)
+            except Exception as exc:
+                warnings.append(f"Edge voice rebind: {exc}")
+            threading.Thread(
+                target=_rebind_tts, name="tts-rebind-target", daemon=True
+            ).start()
+
+        return {
+            "ok": True,
+            "unchanged": False,
+            "source": self.cfg.SOURCE_LANG,
+            "target": new_tgt,
+            "voice": new_voice,
+            "old_target": old_tgt,
+            "warnings": warnings,
+        }
+
+    # ------------------------------------------------------------------ #
+    # Mute capture during TTS (acoustic feedback guard)
+    # ------------------------------------------------------------------ #
+    def _mute_capture_during_playback_enabled(self) -> bool:
+        return bool(getattr(self.cfg, "MUTE_CAPTURE_DURING_PLAYBACK", True))
+
+    def _is_capture_held_for_playback(self) -> bool:
+        with self._capture_hold_lock:
+            return self._capture_hold_count > 0
+
+    def _cancel_capture_hold_timer_unlocked(self):
+        timer = self._capture_hold_timer
+        self._capture_hold_timer = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _hold_capture_for_playback(self):
+        """Pause STT chunk emission for the duration of one play() call."""
+        if not self._mute_capture_during_playback_enabled():
+            return
+        with self._capture_hold_lock:
+            self._cancel_capture_hold_timer_unlocked()
+            self._capture_hold_count += 1
+            if self._capture_hold_count == 1:
+                self.recorder.set_capture_enabled(False)
+
+    def _release_capture_after_playback(self):
+        """
+        Drop one play() hold. When count hits 0, reopen mic after hangover
+        (unless the user muted with [n] / OS mute).
+        """
+        if not self._mute_capture_during_playback_enabled():
+            return
+        hangover_ms = max(0, int(getattr(self.cfg, "MUTE_CAPTURE_HANGOVER_MS", 350)))
+        with self._capture_hold_lock:
+            if self._capture_hold_count <= 0:
+                return
+            self._capture_hold_count -= 1
+            if self._capture_hold_count > 0:
+                return
+            self._cancel_capture_hold_timer_unlocked()
+            if hangover_ms <= 0:
+                self._reenable_capture_if_allowed_unlocked()
+                return
+            timer = threading.Timer(
+                hangover_ms / 1000.0, self._on_capture_hold_hangover
+            )
+            timer.daemon = True
+            self._capture_hold_timer = timer
+            timer.start()
+
+    def _on_capture_hold_hangover(self):
+        with self._capture_hold_lock:
+            # Another play() started (or hold re-entered) while we waited.
+            if self._capture_hold_count > 0:
+                return
+            self._capture_hold_timer = None
+            self._reenable_capture_if_allowed_unlocked()
+
+    def _reenable_capture_if_allowed_unlocked(self):
+        """Re-open capture only if user mute is off and no hold is active."""
+        if self._capture_hold_count > 0:
+            return
+        if self.mic.is_muted():
+            self.recorder.set_capture_enabled(False)
+            return
+        self.recorder.set_capture_enabled(True)
+
+    def _force_release_capture_hold(self):
+        """Drop all playback holds (shutdown / player teardown)."""
+        with self._capture_hold_lock:
+            self._cancel_capture_hold_timer_unlocked()
+            self._capture_hold_count = 0
+            self._reenable_capture_if_allowed_unlocked()
 
     def _ensure_executor(self):
         if not self._use_parallel_processing():
@@ -326,9 +822,17 @@ class Pipeline:
             ui.chunk_stream_done(n, heard, translated)
         else:
             ui.chunk_text_preview(n, heard, translated)
-        if timing:
-            ui.chunk_timings(n, timing, extra=timing_extra)
         created_at = self._timestamp_now()
+        if timing:
+            ui.chunk_timings(
+                n,
+                timing,
+                extra=timing_extra,
+                at=created_at,
+                audio_path=audio_path or "",
+            )
+        elif audio_path is not None:
+            ui.print_audio_ref(n, audio_path or "")
         with self.history_lock:
             self.history.append((n, heard, translated, audio_path))
         self._record_transcript(n, heard, translated, created_at=created_at, timing=timing)
@@ -435,6 +939,29 @@ class Pipeline:
                     return heard
         return None
 
+    def get_audio_path_by_chunk(self, chunk_num):
+        """Return stored audio_path for chunk N, or '' if none."""
+        with self.history_lock:
+            for n, heard, translated, audio_path in self.history:
+                if n == chunk_num:
+                    return audio_path or ""
+        # Fallback: conventional cache path if file exists.
+        candidate = os.path.join(self.cache_dir, f"chunk_{chunk_num}.wav")
+        if os.path.isfile(candidate):
+            return candidate
+        return ""
+
+    def get_last_audio_path(self):
+        with self.history_lock:
+            if not self.history:
+                return ""
+            return self.history[-1][3] or ""
+
+    def get_audio_path_map(self):
+        """chunk_num → audio_path for list/export helpers."""
+        with self.history_lock:
+            return {n: (path or "") for n, _h, _t, path in self.history}
+
     def edit_chunk(self, chunk_num, new_text):
         """Translate, synthesize, play and overwrite a past chunk."""
         # Find the existing chunk to verify it exists
@@ -496,6 +1023,7 @@ class Pipeline:
             new_text,
             translated,
             {"stt": 0.0, "translate": 0.0, "tts": 0.0, "total": 0.0},
+            at=self._timestamp_now(),
         )
 
         self._resume_chunk_playback()
@@ -640,9 +1168,9 @@ class Pipeline:
             return
 
         n, heard, translated, audio_path = target_chunk
+        # Replay implies listening — re-enable sound if muted (no prompt).
         if not self.is_sound_enabled():
-            ui.warn("Sound is OFF — pressione [s] para ligar o som e usar [r]/rN].")
-            return
+            self.set_sound_enabled(True)
 
         cached = bool(audio_path and os.path.isfile(audio_path))
         if cached:
@@ -692,6 +1220,8 @@ class Pipeline:
             try:
                 item = self.chunk_queue.get(timeout=0.2)
             except queue.Empty:
+                # Idle tick: still apply deferred [g] if nothing is running.
+                self._try_apply_pending_language_swap()
                 continue
 
             # The recorder forwards device errors through the queue.
@@ -707,42 +1237,67 @@ class Pipeline:
             else:
                 self._handle_chunk(item, n)
 
+    def _try_apply_pending_language_swap(self):
+        """If [g] was deferred and the pipeline is idle, apply the swap now."""
+        apply_now = False
+        with self._lang_swap_lock:
+            if (
+                self._pending_language_swap
+                and self._processor_busy_count == 0
+                and self.chunk_queue.empty()
+            ):
+                self._pending_language_swap = False
+                apply_now = True
+        if not apply_now:
+            return
+        result = self.apply_language_swap()
+        cb = self._on_language_swapped
+        if cb is not None:
+            try:
+                cb(*result[:3])
+            except Exception:
+                pass
+
     def _handle_chunk(self, item, n):
-        sound_off = not self.is_sound_enabled()
-        ordered = self._should_order_chunks(sound_off)
-
-        def _abort(message=None, kind="dim"):
-            """Release ordered slot; defer filter messages so they print in chunk order."""
-            if ordered:
-                if message:
-                    self._finish_chunk_slot(n, _ChunkSkip(message, kind=kind))
-                else:
-                    self._finish_chunk_slot(n, None)
-            elif message:
-                if kind == "warn":
-                    ui.warn(message)
-                elif kind == "error":
-                    ui.error(message)
-                else:
-                    ui.dim(message)
-
-        if sound_off:
-            ui.info(f"[chunk {n}] Processing (sound OFF)…")
-
-        if self.cfg.VERBOSE:
-            ui.dim(f"[chunk {n}] [debug] Iniciando processamento do chunk...")
-        backlog = self.chunk_queue.qsize()
-        if backlog >= 3:
-            ui.warn(
-                f"processing is {backlog} chunks behind — "
-                f"a smaller WHISPER_MODEL would keep up better."
-            )
-
+        self._mark_processor_enter()
         try:
-            self._process_chunk_body(item, n, sound_off, ordered, _abort)
-        except Exception as exc:
-            ui.error(f"[chunk {n}] processing failed: {exc}")
-            _abort()
+            sound_off = not self.is_sound_enabled()
+            ordered = self._should_order_chunks(sound_off)
+
+            def _abort(message=None, kind="dim"):
+                """Release ordered slot; defer filter messages so they print in chunk order."""
+                if ordered:
+                    if message:
+                        self._finish_chunk_slot(n, _ChunkSkip(message, kind=kind))
+                    else:
+                        self._finish_chunk_slot(n, None)
+                elif message:
+                    if kind == "warn":
+                        ui.warn(message)
+                    elif kind == "error":
+                        ui.error(message)
+                    else:
+                        ui.dim(message)
+
+            if sound_off:
+                ui.info(f"[chunk {n}] Processing (sound OFF)…")
+
+            if self.cfg.VERBOSE:
+                ui.dim(f"[chunk {n}] [debug] Iniciando processamento do chunk...")
+            backlog = self.chunk_queue.qsize()
+            if backlog >= 3:
+                ui.warn(
+                    f"processing is {backlog} chunks behind — "
+                    f"a smaller WHISPER_MODEL would keep up better."
+                )
+
+            try:
+                self._process_chunk_body(item, n, sound_off, ordered, _abort)
+            except Exception as exc:
+                ui.error(f"[chunk {n}] processing failed: {exc}")
+                _abort()
+        finally:
+            self._mark_processor_leave()
 
     def _process_chunk_body(self, item, n, sound_off, ordered, _abort):
         sound_on = not sound_off
@@ -978,7 +1533,9 @@ class Pipeline:
                 return
             timing = _build_timing(t3, include_tts=True)
             if print_timings:
-                ui.chunk_timings(n, timing)
+                ui.chunk_timings(
+                    n, timing, at=record_created_at, audio_path=audio_path
+                )
             self._record_transcript(
                 n, heard, translated, created_at=record_created_at, timing=timing
             )
@@ -1158,13 +1715,17 @@ class Pipeline:
                             )
                             self.stop_event.set()
                             break
+                    self._hold_capture_for_playback()
                     try:
                         self._player.play(
                             audio, sample_rate, interruptible=interruptible
                         )
                     except Exception as exc:
                         ui.error(f"playback failed: {exc}")
+                    finally:
+                        self._release_capture_after_playback()
         finally:
+            self._force_release_capture_hold()
             with self._player_lock:
                 if self._player is not None:
                     self._player.close()

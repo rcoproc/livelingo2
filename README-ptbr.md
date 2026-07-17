@@ -40,7 +40,9 @@ O projeto é modular, com pipeline multi-thread:
 | `livelingo/piper_tts.py` | TTS local Piper (ONNX, offline após download) |
 | `livelingo/hybrid_tts.py` | edge no 1º chunk + Piper no resto (baixa latência) |
 | `livelingo/playback.py` | Saída para VB-Cable / monitor |
-| `livelingo/pipeline.py` | Orquestração com 3 threads + mute global de áudio |
+| `livelingo/pipeline.py` | Orquestração com 3 threads + mute de áudio + gate de mic no TTS |
+| `livelingo/mic_control.py` | Mute do mic no Windows (Core Audio / pycaw) + gate do app |
+| `livelingo/stt_filter.py` | Filtro de alucinações do Whisper (créditos, silêncio) |
 | `livelingo/vad_silero.py` | VAD neural opcional (Silero) |
 | `livelingo/tts_segments.py` | Divisão de texto para TTS em streaming |
 | `livelingo/db.py` | Persistência SQLite |
@@ -55,9 +57,9 @@ O projeto é modular, com pipeline multi-thread:
 [Playback Thread]  playback_queue → VB-Cable / monitor
 ```
 
-1. **Recorder** — captura áudio do microfone em chunks (VAD ou fixo)
+1. **Recorder** — captura áudio do microfone em chunks (VAD ou fixo); pode pausar emissão enquanto o TTS toca
 2. **Processor** — STT → tradução → TTS
-3. **Playback** — envia áudio sintetizado para o dispositivo virtual
+3. **Playback** — envia áudio sintetizado para o dispositivo virtual; com `MUTE_CAPTURE_DURING_PLAYBACK` fecha o gate de STT durante a reprodução
 
 ---
 
@@ -112,42 +114,123 @@ Cada chunk é salvo em `.cache/audio_sessions/{session_id}/` e registrado em `li
 
 ### 6. Comandos interativos no terminal
 
-Durante a escuta, digite comandos no terminal:
+Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe):
 
 | Comando | Ação |
 |---------|------|
-| `r` / `rN` | Repetir áudio do último chunk ou do chunk N |
+| `r` / `rN` | Repetir áudio do último chunk ou do chunk N (gera TTS sob demanda se faltar WAV) |
 | `e` / `eN` | Editar e retraduzir frase |
 | `d` / `dN` | Deletar chunk (com confirmação) |
 | `f` / `fN` | Favoritar frase |
 | `F` | Listar favoritos (modal) |
-| `s` | **Ligar/desligar áudio** da tradução (global na sessão; texto continua) |
-| `w` | Buscar sinônimos/significado de palavra em inglês |
-| `c` | Exportar histórico para `.md` com resumo IA |
-| `l` | Listar mensagens da sessão atual |
+| `c` | Exportar histórico para `.md` com resumo IA + contagem de palavras |
+| `s` | **Sound ON/OFF** — ligar/desligar áudio da tradução (texto continua) |
+| `g` | **Swap idiomas** — inverte `SOURCE ↔ TARGET` (STT + tradução + voz TTS) |
+| `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura do app |
+| `x` | Interromper leitura TTS em andamento |
+| `o` | Buscar sinônimos / significado de palavra |
+| `l` | Listar mensagens da sessão (com timing e timestamp) |
 | `v` | Trocar ou reiniciar sessão |
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-Com **som OFF** (`s`): o texto traduzido aparece na hora; o TTS roda em background só para cache/replay; nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
+Com **som OFF** (`s`): o texto traduzido aparece na hora; com `TTS_SKIP_WHEN_MUTED=true` o TTS é omitido (replay `r` sintetiza depois). Nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
+
+Com **mic mutado** (`n`): o Windows mostra o mic mudo (quando pycaw funciona) e o LiveLingo não emite chunks de STT. Pressione `n` de novo para reativar.
+
+Com **swap** (`g`): inverte a direção ao vivo (ex. `EN → PT` vira `PT → EN`). A linha amarela do menu mostra o par atual. O histórico antigo **não** é re-traduzido — só os próximos chunks. Configure `TTS_VOICE` (voz do target) e opcionalmente `TTS_VOICE_ALT` (voz do outro idioma do par) para o áudio trocar de sotaque corretamente.
 
 ### 7. Exportação com resumo executivo IA
 
 O comando `c` gera um arquivo Markdown (`AAAA-MM-DD_titulo.md`) contendo:
 
 - **Resumo executivo** (assunto principal, resumo objetivo, tarefas/ações) via LLM Groq
-- **Transcrição detalhada** chunk a chunk (idioma alvo + idioma de origem)
+- **Transcrição detalhada** chunk a chunk (idioma alvo + idioma de origem; layout limpo sem timing no corpo)
+- **Contagem de palavras** do texto de origem (conteúdo multissilábico; ignora `e` / `a` / `ou` / `para` / `ao` / `à`)
 - **Vocabulário e sinônimos** consultados durante a sessão
 
 Requer `GROQ_API_KEY` para o resumo automático.
 
 ### 8. Auxiliar de vocabulário
 
-Comando `w`: explica uma palavra em inglês em português, com sinônimos e exemplos de frases. Requer o motor de tradução LLM (`TRANSLATION_ENGINE=llm` ou `auto` com key configurada).
+Comando `o`: explica uma palavra (WordNet offline por padrão, ou LLM via Groq). Configure `SYNONYMS_ENGINE=wordnet|llm|auto` no `.env`.
 
 ### 9. Monitor de áudio
 
 Com `MONITOR_PLAYBACK=true`, a tradução também é reproduzida nos seus fones/alto-falantes enquanto é enviada para o VB-Cable — útil para testes ou para ouvir a si mesmo durante a chamada.
+
+### 10. Anti-feedback (loop speaker → microfone)
+
+Quando a saída de TTS e o microfone são do **mesmo notebook** (speakers abertos + mic interno), o app pode “ouvir” a própria tradução e entrar em loop.
+
+Com `MUTE_CAPTURE_DURING_PLAYBACK=true` (padrão):
+
+1. Enquanto o TTS toca, o gate de captura **pausa** a emissão de chunks de STT (só no app — **não** mexe no mute do tray).
+2. Após o fim do áudio, espera `MUTE_CAPTURE_HANGOVER_MS` (padrão 350 ms) para a cauda do speaker e reabre o mic.
+3. Coexiste com o mute manual `n`: se o mic estiver mutado pelo usuário, não reabre sozinho.
+
+**Recomendado em chamada real:** fones + `OUTPUT_DEVICE=CABLE Input` (Teams em CABLE Output). O gate é rede de segurança para testes no speaker.
+
+### 11. Idiomas alinhados (STT prompt + voz TTS)
+
+Trocar só `SOURCE_LANG` / `TARGET_LANG` **não basta** se outras chaves ficarem de um par antigo:
+
+| Config | Deve combinar com | Se errar |
+|--------|-------------------|----------|
+| `STT_INITIAL_PROMPT` | **Mesmo idioma** que `SOURCE_LANG` (ou vazio) | Whisper “Heard” no idioma errado → tradução tipo portunhol |
+| `TTS_VOICE` (edge) | Prefixo do locale = `TARGET_LANG` (`fr-FR-*`, `es-ES-*`, `en-US-*`…) | Texto certo, **sotaque** da voz errada |
+| `PIPER_VOICE` | Voz Piper do idioma alvo (ou vazio = auto por `TARGET_LANG`) | Sotaque / idioma falado errado |
+
+Na inicialização o app **avisa** se o prompt de STT parece de outro idioma que `SOURCE_LANG`, ou se o locale de `TTS_VOICE` não bate com `TARGET_LANG`.
+
+#### Vozes Edge elegantes (referência rápida)
+
+No `.env`: `TTS_VOICE=nome-exato` (locale deve bater com `TARGET_LANG`).
+
+**Listar todas as vozes disponíveis** (Microsoft Edge neural):
+
+```powershell
+edge-tts --list-voices
+```
+
+Filtrar EN / ES / FR (PowerShell):
+
+```powershell
+edge-tts --list-voices | Select-String "en-US|en-GB|es-ES|es-MX|fr-FR"
+```
+
+Linux / WSL / macOS:
+
+```bash
+edge-tts --list-voices | grep -E "en-US|en-GB|es-ES|es-MX|fr-FR"
+```
+
+Seleção **elegante / educada** (reuniões, apresentações) — 2 masculinas e 2 femininas por idioma:
+
+| Idioma | Gênero | `TTS_VOICE` | Perfil |
+|--------|--------|-------------|--------|
+| **Inglês** (`en`) | Feminino | `en-US-AriaNeural` | Clara, profissional (EUA) — padrão clássico |
+| **Inglês** (`en`) | Feminino | `en-GB-SoniaNeural` | Britânica polida, tom formal |
+| **Inglês** (`en`) | Masculino | `en-GB-RyanNeural` | Britânico sóbrio, reunião executiva |
+| **Inglês** (`en`) | Masculino | `en-US-ChristopherNeural` | Americano calmo e articulado |
+| **Espanhol** (`es`) | Feminino | `es-ES-ElviraNeural` | Espanha, dicção limpa e formal |
+| **Espanhol** (`es`) | Feminino | `es-MX-DaliaNeural` | México, natural e educada |
+| **Espanhol** (`es`) | Masculino | `es-ES-AlvaroNeural` | Espanha, grave e profissional |
+| **Espanhol** (`es`) | Masculino | `es-MX-JorgeNeural` | México, sóbrio e confiante |
+| **Francês** (`fr`) | Feminino | `fr-FR-DeniseNeural` | França, elegante e neutra |
+| **Francês** (`fr`) | Feminino | `fr-FR-EloiseNeural` | França, clara e cordial |
+| **Francês** (`fr`) | Masculino | `fr-FR-HenriNeural` | França, formal e pausado |
+| **Francês** (`fr`) | Masculino | `fr-FR-AlainNeural` | França, tom maduro e educado |
+
+Exemplo no `.env` (EN → FR, voz masculina elegante):
+
+```env
+SOURCE_LANG=en
+TARGET_LANG=fr
+TTS_VOICE=fr-FR-HenriNeural
+```
+
+> Multilingual (`*MultilingualNeural`) leem vários idiomas, mas **mantêm o sotaque do locale** da voz. Prefira `fr-FR-*` para francês nativo, `es-ES-*` / `es-MX-*` para espanhol, etc.
 
 ---
 
@@ -296,13 +379,15 @@ notepad .env
 | `TARGET_LANG` | `en` | Idioma que os outros ouvem |
 | `STT_ENGINE` | `auto` | `auto`/`groq`/`local` — Groq cloud vs local |
 | `GROQ_STT_MODEL` | `whisper-large-v3` | Modelo Groq STT (`whisper-large-v3-turbo` = mais rápido) |
-| `STT_INITIAL_PROMPT` | *(vazio)* | Dica de nomes/vocabulário para melhorar reconhecimento |
+| `STT_INITIAL_PROMPT` | *(vazio)* | Dica de vocabulário — **no mesmo idioma** que `SOURCE_LANG` (ou vazio) |
+| `STT_HALLUCINATION_FILTER` | `true` | Descarta créditos/alucinações de silêncio do Whisper |
 | `WHISPER_MODEL` | `small` | Modelo local: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` |
 | `INPUT_DEVICE` | *(mic padrão)* | Índice ou substring do nome do microfone |
 | `OUTPUT_DEVICE` | `CABLE Input` | Dispositivo VB-Cable de reprodução |
 | `TTS_ENGINE` | `edge` | `edge` / `piper` / `hybrid` |
 | `TTS_HYBRID` | `true` (Windows) | Com `piper`: 1º chunk edge + resto Piper |
-| `TTS_VOICE` | `en-US-AriaNeural` | Voz Edge (`edge-tts --list-voices`) |
+| `TTS_VOICE` | `en-US-AriaNeural` | Voz Edge do **target**; **locale = TARGET_LANG** (ver *Vozes Edge elegantes*) |
+| `TTS_VOICE_ALT` | *(auto no swap)* | Voz do outro idioma do par; usada no comando `[g]` (swap) |
 | `PIPER_VOICE` | *(auto)* | Voz Piper local (ex. `en_US-lessac-medium`) |
 | `PIPER_QUALITY` | `fast` (Windows) | `fast` = voz `*-low` (CPU mais rápida) |
 | `PIPER_MERGE_TAIL` | `true` | Funde o resto do texto numa só chamada Piper |
@@ -312,9 +397,15 @@ notepad .env
 | `SILENCE_THRESHOLD` | `0.015` | Limiar de volume para detecção de fala |
 | `MONITOR_PLAYBACK` | `false` | Também reproduzir a tradução nos seus alto-falantes |
 | `MONITOR_DEVICE` | *(saída padrão)* | Dispositivo do monitor (índice/nome) |
+| `MUTE_CAPTURE_DURING_PLAYBACK` | `true` | Pausa o gate STT enquanto o TTS toca (anti-loop acústico) |
+| `MUTE_CAPTURE_HANGOVER_MS` | `350` | Espera (ms) após o TTS antes de reabrir o mic |
+| `TTS_SKIP_WHEN_MUTED` | `true` | Com sound OFF (`s`), omite TTS (só texto; `r` sintetiza depois) |
+| `PLAYBACK_INTERRUPT` | `true` | Corta TTS antigo quando chega chunk novo |
 | `TRANSLATION_ENGINE` | `auto` | `auto`/`llm`/`google` |
-| `GROQ_API_KEY` | *(vazio)* | Key Groq gratuita → tradução muito melhor |
+| `GROQ_API_KEY` | *(vazio)* | Key Groq gratuita → STT cloud + tradução LLM melhores |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Modelo Groq (`llama-3.1-8b-instant` = mais rápido) |
+
+> **Nota:** chaves como `TRANSLATION_STYLE` / `TRANSLATION_PROMPT` no `.env` **não são lidas** pelo código atual. Google usa só `SOURCE_LANG`/`TARGET_LANG`; o LLM usa o system prompt interno em `livelingo/llm.py`.
 
 ### Melhor precisão na transcrição (recomendado, gratuito)
 
@@ -326,7 +417,8 @@ Se você fala mas saem *palavras erradas*, o modelo local `small` costuma ser o 
 Outros ajustes:
 
 - **Ficar offline?** `STT_ENGINE=local` e suba o modelo: `WHISPER_MODEL=large-v3-turbo` ou `medium`.
-- **Nomes/jargão errados?** `STT_INITIAL_PROMPT` com vocabulário esperado — influencia ambos os motores.
+- **Nomes/jargão errados?** `STT_INITIAL_PROMPT` com vocabulário esperado **no idioma de `SOURCE_LANG`** — influencia ambos os motores.
+- **Heard no idioma errado?** Prompt em português com `SOURCE_LANG=en` (ou o inverso) força o Whisper a “ouvir” no idioma do prompt. Limpe o prompt ou reescreva no idioma certo.
 
 ### Melhor qualidade de tradução (opcional, LLM gratuito)
 
@@ -352,12 +444,32 @@ python main.py
 
 Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 
+### Auto-reload em desenvolvimento
+
+O LiveLingo é um processo CLI longo: **Python não recarrega módulos sozinho** quando você salva `.py` (diferente de Flask/FastAPI com `--reload`).
+
+Para reiniciar automaticamente ao editar o código, **suba o app com o watcher** (não use só `python main.py`):
+
+```powershell
+python dev_reload.py
+# ou com logs de quais arquivos mudaram:
+python dev_reload.py -v
+```
+
+- Observa `*.py` por **hash de conteúdo** (funciona no WSL `/mnt/c`, onde mtime falha com frequência).
+- Em cada save: mata o `main.py` filho e sobe de novo.
+- Sessão/mic em memória **recomeça** a cada reload (processo novo).
+- Pare com **Ctrl+C** no terminal do `dev_reload`.
+
+Se não aparecer `[dev_reload] … file(s) changed — restarting…` ao salvar, você provavelmente está em `python main.py` sem o watcher.
+
 ### Fluxo de inicialização
 
 1. Banner e seleção de sessão (nova, retomar ou deletar)
 2. Detecção e confirmação dos dispositivos de áudio
-3. Self-test dos motores STT e tradução
-4. Menu de comandos e indicador de escuta
+3. Avisos opcionais: anti-feedback ativo, mic já mutado, prompt STT vs `SOURCE_LANG`, `TTS_VOICE` vs `TARGET_LANG`
+4. Self-test dos motores STT e tradução
+5. Menu de comandos e indicador de escuta
 
 Exemplo de saída por chunk:
 
@@ -367,7 +479,7 @@ Exemplo de saída por chunk:
           timing: STT 0.72s | translate 0.76s | TTS 3.78s | first_audio 2.14s | tts_start 1.49s | hear 3.63s | total 5.28s
 ```
 
-O cabeçalho do menu mostra `Sound: ON/OFF` e `TTS: hybrid (edge+piper / …)`.
+O cabeçalho do menu mostra `Languages: src -> tgt`, `Sound: ON/OFF`, `TTS: …` e estado do mic (`[n]`).
 
 Pare a qualquer momento com **Ctrl+C** ou o comando `q`.
 
@@ -416,6 +528,18 @@ deep-translator e edge-tts precisam de internet. Falhas transitórias pulam um c
 **Microfone errado capturado.**
 `INPUT_DEVICE` com o índice correto de `list_devices.py`.
 
+**Tradução entra em loop** (o app “ouve” o que ela mesma fala nos speakers).
+Use fones, ou `OUTPUT_DEVICE=CABLE Input` (setup Teams). Com speaker + mic do notebook, deixe `MUTE_CAPTURE_DURING_PLAYBACK=true` (padrão) e suba `MUTE_CAPTURE_HANGOVER_MS` (ex.: `600`) se ainda pegar a cauda do TTS. Mute manual: tecla `n`.
+
+**Heard em português (ou outro idioma errado) com `SOURCE_LANG=en` — portunhol na tradução.**
+O `STT_INITIAL_PROMPT` está em outro idioma que o source. Whisper enviesa a transcrição para o idioma do prompt. Corrija o prompt para o idioma de `SOURCE_LANG` ou deixe vazio. O boot avisa quando detecta conflito.
+
+**Texto da tradução ok, mas a voz tem sotaque errado** (ex.: francês com sotaque espanhol).
+`TTS_VOICE` não bate com `TARGET_LANG` (ex.: `es-ES-AlvaroNeural` com `TARGET_LANG=fr`). Troque para uma voz `fr-FR-*` (ex. `fr-FR-HenriNeural`). O texto vem da tradução; o sotaque vem só da voz Edge/Piper.
+
+**Mic mute `n` não muda o tray do Windows.**
+No Windows precisa de `pycaw`/`comtypes` (`requirements.txt`). Fora do Windows, ou se o COM falhar, o gate do app ainda bloqueia o STT.
+
 **Aceleração GPU (opcional).**
 Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float16`.
 
@@ -439,13 +563,15 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
     ├── capture.py         # mic → chunks de áudio (VAD ou fixo)
     ├── transcribe.py      # STT local faster-whisper
     ├── groq_transcribe.py # STT Groq cloud Whisper
+    ├── stt_filter.py      # filtro de alucinações STT
     ├── translate.py       # tradução Google (deep-translator)
     ├── llm.py             # tradução LLM Groq + resumo + sinônimos
-    ├── synthesize.py      # factory TTS (edge / Piper / hybrid)
+    ├── synthesize.py      # factory TTS (edge / Piper / hybrid) + aviso de locale
     ├── piper_tts.py       # Piper ONNX local
     ├── hybrid_tts.py      # edge 1º chunk + Piper tail
     ├── playback.py        # áudio → VB-Cable / monitor
-    ├── pipeline.py        # orquestração threads + filas
+    ├── pipeline.py        # orquestração threads + filas + gate mic no TTS
+    ├── mic_control.py     # mute mic Windows (pycaw) + gate app
     ├── devices.py         # descoberta de dispositivos
     ├── db.py              # persistência SQLite
     └── ui.py              # banner, cores, status no terminal
@@ -455,10 +581,12 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 
 ```text
 faster-whisper, deep-translator, edge-tts, piper-tts, onnxruntime,
-sounddevice, soundfile, numpy, python-dotenv, colorama, requests
+sounddevice, soundfile, numpy, python-dotenv, colorama, requests,
+nltk (sinônimos WordNet), pycaw + comtypes (Windows, mute [n])
 ```
 
-(`piper-tts` e `onnxruntime` só são necessários com `TTS_ENGINE=piper` ou `hybrid`.)
+(`piper-tts` e `onnxruntime` só são necessários com `TTS_ENGINE=piper` ou `hybrid`.  
+`pycaw`/`comtypes` só no Windows, para mute de SO no comando `n`.)
 
 ---
 
@@ -467,7 +595,8 @@ sounddevice, soundfile, numpy, python-dotenv, colorama, requests
 - **Não é interpretação simultânea** — é tradução por chunks, com latência inerente (~3–6 s até o primeiro áudio com hybrid; ~5 s total do chunk em perfil otimizado).
 - Qualidade de tradução e TTS depende dos serviços gratuitos Google/Edge/Groq (ou Piper local para áudio).
 - **Privacidade** depende dos motores: com `STT_ENGINE=local` + `TTS_ENGINE=piper`, o áudio da sua voz e o TTS ficam na máquina; o **texto** ainda vai para Google/Groq na tradução. Com STT Groq, chunks de áudio também vão para a nuvem.
-- Comando **`s`** muta o áudio globalmente; **`w`** abre o auxiliar de sinônimos (antes era `s`).
+- Comando **`s`** muta o **áudio da tradução**; **`n`** muta o **microfone** (captura); **`o`** abre o auxiliar de sinônimos; **`x`** interrompe a leitura TTS.
+- Com `MUTE_CAPTURE_DURING_PLAYBACK=true`, você **não pode “falar por cima”** do TTS (o gate fecha o STT enquanto a voz toca). Em fones + VB-Cable full-duplex, pode desligar: `MUTE_CAPTURE_DURING_PLAYBACK=false`.
 - O histórico fica em `livelingo.db` e `.cache/audio_sessions/` — faça backup se precisar preservar reuniões.
 
 ---

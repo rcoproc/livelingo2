@@ -90,7 +90,11 @@ GROQ_STT_TIMEOUT = _get_float("GROQ_STT_TIMEOUT", 20.0)
 
 # Optional text that biases recognition toward expected words, names, acronyms,
 # and correct spelling/accents. Used by BOTH the Groq and local engines and can
-# noticeably reduce wrong-word errors on domain vocabulary. Example:
+# noticeably reduce wrong-word errors on domain vocabulary.
+# CRITICAL: write this prompt in the SAME language as SOURCE_LANG (or leave empty).
+# A Portuguese prompt with SOURCE_LANG=en makes Whisper emit Portuguese text even
+# when the speaker used English — then translation becomes "portunhol".
+# Example (SOURCE_LANG=fr):
 #   STT_INITIAL_PROMPT=Réunion sur LiveLingo, VB-Cable, Whisper, Groq, Teams.
 STT_INITIAL_PROMPT = _get_str("STT_INITIAL_PROMPT", "")
 
@@ -158,9 +162,13 @@ SYNONYMS_PT_TRANSLATE = _get_bool("SYNONYMS_PT_TRANSLATE", True)
 # Text-to-speech (edge-tts, needs internet)
 # --------------------------------------------------------------------------- #
 # Run `edge-tts --list-voices` to see every available voice.
-# A few English voices:
-#   en-US-AriaNeural   (female, US)   en-US-GuyNeural (male, US)
-#   en-GB-SoniaNeural  (female, UK)   en-US-JennyNeural (female, US)
+# Voice locale prefix MUST match TARGET_LANG (fr-FR-*, es-ES-*, en-US-*, …).
+# A Spanish voice can read French text but keeps a Spanish accent.
+# Examples by target:
+#   en: en-US-AriaNeural / en-US-GuyNeural / en-GB-SoniaNeural
+#   fr: fr-FR-DeniseNeural / fr-FR-HenriNeural / fr-FR-EloiseNeural
+#   es: es-ES-ElviraNeural / es-ES-AlvaroNeural / es-MX-DaliaNeural
+#   pt: pt-BR-FranciscaNeural / pt-BR-AntonioNeural
 # TTS engine: edge | piper | hybrid (edge first chunk + piper tail/cache).
 TTS_ENGINE = _get_str("TTS_ENGINE", "edge")
 
@@ -168,6 +176,10 @@ TTS_ENGINE = _get_str("TTS_ENGINE", "edge")
 TTS_HYBRID = _get_bool("TTS_HYBRID", _IS_WINDOWS)
 
 TTS_VOICE = _get_str("TTS_VOICE", "en-US-AriaNeural")
+# Voice for the *other* language in the pair — used when swapping with [g].
+# After swap, TTS_VOICE ↔ TTS_VOICE_ALT. Empty = pick a default elegant Edge voice
+# for SOURCE_LANG (the language that becomes the new target).
+TTS_VOICE_ALT = _get_str("TTS_VOICE_ALT", "")
 TTS_RATE = _get_str("TTS_RATE", "+0%")      # e.g. "+10%" faster, "-10%" slower
 TTS_VOLUME = _get_str("TTS_VOLUME", "+0%")  # e.g. "+20%" louder
 
@@ -331,6 +343,17 @@ PLAYBACK_INTERRUPT = _get_bool("PLAYBACK_INTERRUPT", True)
 
 # Playback write block size in milliseconds (smaller = more responsive interrupt).
 PLAYBACK_BLOCK_MS = _get_int("PLAYBACK_BLOCK_MS", 80)
+
+# Gate mic capture while TTS plays (app-level only — no Windows tray mute).
+# Breaks acoustic feedback when OUTPUT is the notebook speakers and INPUT is
+# the same notebook mic (speaker → mic → STT → TTS → speaker loop).
+# Side effect: you cannot barge-in while translation audio is playing.
+# Keep True for speaker testing; set False for headphones + VB-Cable full-duplex.
+MUTE_CAPTURE_DURING_PLAYBACK = _get_bool("MUTE_CAPTURE_DURING_PLAYBACK", True)
+
+# Extra silence after TTS ends before re-opening the mic (speaker ring-out).
+# Milliseconds. Raise if the loop still catches the last word of the TTS.
+MUTE_CAPTURE_HANGOVER_MS = _get_int("MUTE_CAPTURE_HANGOVER_MS", 350)
 
 # --------------------------------------------------------------------------- #
 # Debug / Verbose Mode

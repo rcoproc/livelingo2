@@ -192,6 +192,34 @@ class PiperSynthesizer:
             f"chunk_streaming={'on' if self.chunk_streaming else 'off'})."
         )
 
+    def set_language_pair(self, source=None, target=None):
+        """
+        Reload Piper voice for the current TARGET_LANG after [g] swap.
+        Uses PIPER_VOICE if still matching the new target locale; else default.
+        """
+        target = (target if target is not None else self.cfg.TARGET_LANG) or "en"
+        target = str(target).lower().strip()
+        explicit = getattr(self.cfg, "PIPER_VOICE", "").strip()
+        if explicit and explicit.lower().startswith(target[:2]):
+            voice_id = explicit
+        else:
+            voice_id = default_voice_for_lang(target)
+        if getattr(self.cfg, "PIPER_QUALITY", "medium").lower() == "fast":
+            voice_id = fast_voice_for(voice_id)
+        if voice_id == self.voice_id:
+            return
+        model_path = _ensure_model(voice_id, self.model_dir, log=self.log)
+        with self._synth_lock:
+            self._voice = _load_piper_voice(model_path, self.cfg, log=self.log)
+            self.voice_id = voice_id
+            self._sample_rate = None
+        self.log(f"Piper voice reloaded for TARGET={target}: {voice_id}")
+
+    def set_voice(self, voice_id):
+        """Edge-compatible hook; Piper maps target lang instead of Edge voice ids."""
+        if hasattr(self, "set_language_pair"):
+            self.set_language_pair()
+
     def _pcm_parts_to_audio(self, pcm_parts):
         if not pcm_parts:
             return None
