@@ -444,6 +444,25 @@ python main.py
 
 Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 
+### Interface (TUI)
+
+Por padrão (`UI_MODE=tui`) o LiveLingo sobe em **TUI Textual**:
+
+- **Log rolável** no centro (chunks, avisos, paths de áudio)
+- **Campo de comando** acima da barra de status
+- **Linha de escuta fixa embaixo** (robô + par de idiomas + áudio ON/OFF)
+
+```powershell
+pip install textual   # se ainda não instalou
+python main.py
+```
+
+Modo legado (prints + readline):
+
+```env
+UI_MODE=classic
+```
+
 ### Auto-reload em desenvolvimento
 
 O LiveLingo é um processo CLI longo: **Python não recarrega módulos sozinho** quando você salva `.py` (diferente de Flask/FastAPI com `--reload`).
