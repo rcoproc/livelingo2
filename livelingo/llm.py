@@ -83,6 +83,18 @@ class LLMTranslator:
         self.session = requests.Session()
         self.session.headers.update(self._headers())
 
+    def refresh_prompt(self):
+        """Rebuild system prompt after SOURCE/TARGET swap ([g])."""
+        self.system_prompt = _translation_prompt(self.cfg)
+
+    def set_language_pair(self, source=None, target=None):
+        """Alias for swap rebind — languages live on self.cfg."""
+        if source is not None:
+            self.cfg.SOURCE_LANG = source
+        if target is not None:
+            self.cfg.TARGET_LANG = target
+        self.refresh_prompt()
+
     def _headers(self):
         return {
             "Authorization": f"Bearer {self.api_key}",

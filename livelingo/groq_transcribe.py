@@ -65,14 +65,21 @@ class GroqTranscriber:
         wav_bytes = self._encode_wav(audio)
 
         files = {"file": ("chunk.wav", wav_bytes, "audio/wav")}
+        # Read language/prompt from cfg each call so [g] language swap works.
+        language = getattr(self.cfg, "SOURCE_LANG", None) or self.language
+        prompt = getattr(self.cfg, "STT_INITIAL_PROMPT", None)
+        if prompt is None:
+            prompt = self.prompt
+        self.language = language
+
         form = {
             "model": self.model,
-            "language": self.language,
+            "language": language,
             "temperature": "0",
             "response_format": "json",
         }
-        if self.prompt:
-            form["prompt"] = self.prompt
+        if prompt:
+            form["prompt"] = prompt
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         try:

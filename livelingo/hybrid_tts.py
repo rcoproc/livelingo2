@@ -40,6 +40,15 @@ class HybridSynthesizer:
         """Reset per-chunk state so the first clause uses edge-tts again."""
         self._first_played = False
 
+    def set_voice(self, voice_id):
+        """Update edge voice; Piper rebinds via set_language_pair if available."""
+        self.edge.set_voice(voice_id)
+        if hasattr(self.piper, "set_language_pair"):
+            try:
+                self.piper.set_language_pair()
+            except Exception as exc:
+                self.log(f"Piper rebind after language swap failed ({exc}).")
+
     def _to_cache_rate(self, audio, sample_rate):
         if audio is None:
             return None, sample_rate

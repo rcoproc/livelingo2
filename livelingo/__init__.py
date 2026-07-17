@@ -11,6 +11,7 @@ Modular building blocks for the LiveLingo real-time voice translation pipeline:
     playback.py     audio        -> VB-Cable output device
     pipeline.py     wires the stages together with threads + queues
     devices.py      audio-device discovery / resolution helpers
+    mic_control.py  Windows mic mute (Core Audio) + app capture gate
     ui.py           terminal banner, colors and status lines
 """
 
