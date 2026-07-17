@@ -722,6 +722,26 @@ def _print_menu(pipeline=None):
     margin = 3
     pad = " " * margin
 
+    # TUI: compact help into the scrollable log (no full-screen redraw).
+    if ui.get_log_sink() is not None:
+        sound = "ON" if pipeline and pipeline.is_sound_enabled() else "OFF"
+        mic = "MUTED" if pipeline and pipeline.is_mic_muted() else "LIVE"
+        ui.info(
+            f"Languages: {cfg.SOURCE_LANG} -> {cfg.TARGET_LANG} | "
+            f"TTS: {_tts_menu_label()} | Sound: {sound} | Mic: {mic}"
+        )
+        ui.dim(
+            "Sentence: e/eN d/dN f/fN F l c | "
+            "Audio: r/rN s n x a/aN p/pN | "
+            "Idiom: g t o | Session: v m q"
+        )
+        if pipeline is not None:
+            ui.success(
+                f"Pair {pipeline.language_pair_label()} · "
+                f"áudio {'ON' if pipeline.is_sound_enabled() else 'OFF [s]'}"
+            )
+        return
+
     if pipeline is not None:
         print()
         sound = "ON" if pipeline.is_sound_enabled() else "OFF"
@@ -1899,11 +1919,19 @@ def main():
         # --- TTS (edge online or Piper local) ---
         synthesizer = build_synthesizer(cfg, log=_log_info)
 
+        use_tui = (getattr(cfg, "UI_MODE", "tui") or "tui").lower() == "tui"
+        tui_holder = {"app": None}
         indicator = ListeningIndicator()
 
         def on_listening(is_speaking):
-            # Keep animation thread alive; only flip speaking/idle frames.
-            # Mic mute ([n]) and commands suspend drawing so the log stays readable.
+            app = tui_holder.get("app")
+            if app is not None:
+                try:
+                    app.call_from_thread(app.set_speaking, bool(is_speaking))
+                except Exception:
+                    pass
+                return
+            # Classic: keep animation thread alive; flip speaking/idle frames.
             if indicator.is_mic_muted_ui():
                 indicator.set_speaking(False)
                 return
@@ -1937,68 +1965,101 @@ def main():
             "Áudio de tradução DESLIGADO por padrão (só texto). "
             "Pressione [s] para ouvir ao vivo, ou [r]/[rN] para um chunk."
         )
-        _print_menu(pipeline)
+        if not use_tui:
+            _print_menu(pipeline)
 
         def _on_deferred_language_swap(src, tgt, voice):
             """UI when a scheduled [g] actually applies after the current phrase."""
             pair = f"{str(src).upper()} → {str(tgt).upper()}"
-            g_pad = "   "
-            print(
-                "\r\033[K"
-                + Fore.YELLOW
-                + Style.BRIGHT
-                + f"{g_pad}[g]  Swap aplicado: {pair}   (STT={src} · TTS={voice})"
-                + Style.RESET_ALL
+            ui.success(
+                f"[g] Swap aplicado: {pair}   (STT={src} · TTS={voice})",
+                indent=3,
             )
             ui.info(
                 f"Fale {str(src).upper()} agora — os outros ouvem {str(tgt).upper()}.",
                 indent=3,
             )
-            # Update the sticky yellow menu line to the new direction.
-            _print_swap_lang_menu_line(pipeline)
+            if not use_tui:
+                _print_swap_lang_menu_line(pipeline)
 
         pipeline.set_language_swap_callback(_on_deferred_language_swap)
         pipeline.start()
-        # Status icons only while mic is LIVE (muted = quiet screen for reading).
-        if pipeline.is_mic_muted():
-            indicator.set_mic_muted(True)
-            _log_dim("Mic already muted — listen icons off until [n].")
+
+        cmd_thread = None
+        if use_tui:
+            try:
+                from livelingo.tui_app import LiveLingoApp
+
+                app = LiveLingoApp(
+                    pipeline=pipeline,
+                    synonym_lookup=synonym_lookup,
+                    dispatch_command=_dispatch_command,
+                    listen_msgs_fn=_listen_status_messages,
+                )
+                tui_holder["app"] = app
+                if pipeline.is_mic_muted():
+                    app.set_mic_muted(True)
+                app.set_sound_on(pipeline.is_sound_enabled())
+                _log_info("UI_MODE=tui — log rolável · escuta fixa embaixo.")
+                try:
+                    app.run()
+                finally:
+                    tui_holder["app"] = None
+                    ui.set_log_sink(None)
+            except ImportError as exc:
+                ui.warn(
+                    f"TUI indisponível ({exc}). "
+                    f"Instale: pip install textual  — caindo para modo classic."
+                )
+                use_tui = False
+
+        session_switch = False
+        if not use_tui:
+            # Classic CLI: animated indicator + stdin command thread
+            if pipeline.is_mic_muted():
+                indicator.set_mic_muted(True)
+                _log_dim("Mic already muted — listen icons off until [n].")
+            else:
+                indicator.start()
+            cmd_thread = threading.Thread(
+                target=_input_loop,
+                args=(pipeline, synonym_lookup, indicator),
+                name="input_listener",
+                daemon=True,
+            )
+            cmd_thread.start()
+            try:
+                while not pipeline.stop_event.is_set():
+                    pipeline.stop_event.wait(0.2)
+            except KeyboardInterrupt:
+                print()
+                ui.info("Ctrl+C received — shutting down...")
+                pipeline.stop()
+                if cmd_thread is not None:
+                    cmd_thread.join(timeout=2.0)
+            finally:
+                indicator.stop()
+                pipeline.stop()
+                pipeline.join(timeout=5.0)
+                if cmd_thread is not None:
+                    cmd_thread.join(timeout=5.0)
+            session_switch = bool(getattr(pipeline, "switch_session", False))
         else:
-            indicator.start()
+            # TUI exited — clean pipeline
+            try:
+                pipeline.stop()
+                pipeline.join(timeout=5.0)
+            except Exception:
+                pass
+            session_switch = bool(getattr(pipeline, "switch_session", False))
 
-        # Start terminal command listener in a daemon thread
-        cmd_thread = threading.Thread(
-            target=_input_loop,
-            args=(pipeline, synonym_lookup, indicator),
-            name="input_listener",
-            daemon=True,
-        )
-        cmd_thread.start()
+        print("-" * 64)
+        ui.success("Stopped. Au revoir!")
+        _print_session_duration(session_start_time, session_title)
 
-        try:
-            # Block here until Ctrl+C or a switch session event stops us.
-            while not pipeline.stop_event.is_set():
-                pipeline.stop_event.wait(0.2)
-        except KeyboardInterrupt:
-            print()
-            ui.info("Ctrl+C received — shutting down...")
-            pipeline.stop()
-            cmd_thread.join(timeout=2.0)
-            break
-        finally:
-            indicator.stop()
-            pipeline.stop()
-            pipeline.join(timeout=5.0)
-            cmd_thread.join(timeout=5.0)
-            print("-" * 64)
-            ui.success("Stopped. Au revoir!")
-            _print_session_duration(session_start_time, session_title)
-
-        # Check if we should switch session, otherwise break and quit
-        if getattr(pipeline, "switch_session", False):
+        if session_switch:
             continue
-        else:
-            break
+        break
 
 
 if __name__ == "__main__":

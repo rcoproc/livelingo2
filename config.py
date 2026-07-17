@@ -356,6 +356,13 @@ MUTE_CAPTURE_DURING_PLAYBACK = _get_bool("MUTE_CAPTURE_DURING_PLAYBACK", True)
 MUTE_CAPTURE_HANGOVER_MS = _get_int("MUTE_CAPTURE_HANGOVER_MS", 350)
 
 # --------------------------------------------------------------------------- #
+# UI mode
+# --------------------------------------------------------------------------- #
+# classic = colorama prints + readline (legacy)
+# tui     = Textual full-screen: scrollable log + fixed listen status at bottom
+UI_MODE = _get_str("UI_MODE", "tui").lower()
+
+# --------------------------------------------------------------------------- #
 # Debug / Verbose Mode
 # --------------------------------------------------------------------------- #
 VERBOSE = False

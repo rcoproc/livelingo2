@@ -17,6 +17,33 @@ init(autoreset=True)
 # Heard/Translated lines with filter messages and corrupt the display.
 _print_lock = threading.RLock()
 
+# Optional TUI sink: callable(kind: str, text: str) — when set, prints go there.
+_log_sink = None
+
+
+def set_log_sink(sink):
+    """Route ui.* output to a TUI log (or None to restore classic terminal)."""
+    global _log_sink
+    with _print_lock:
+        _log_sink = sink
+
+
+def get_log_sink():
+    return _log_sink
+
+
+def _emit(kind, text):
+    """kind: info|success|warn|error|dim|raw"""
+    sink = _log_sink
+    if sink is not None:
+        try:
+            sink(kind, text)
+            return True
+        except Exception:
+            return False
+    return False
+
+
 __all__ = [
     "banner",
     "info",
@@ -39,6 +66,8 @@ __all__ = [
     "chunk_stream_done",
     "synonyms_result",
     "favorites_popup",
+    "set_log_sink",
+    "get_log_sink",
 ]
 
 
@@ -73,6 +102,12 @@ def banner(indent=3):
     pad = _pad(indent)
     line = "=" * 64
     with _print_lock:
+        if _emit("info", line):
+            _emit("info", "L I V E L I N G O   🎙️  ->  🌍")
+            _emit("dim", "Real-time speech translation into a virtual mic")
+            _emit("dim", "mic -> Whisper -> translate -> Edge TTS -> VB-Cable")
+            _emit("info", line)
+            return
         print(pad + Fore.CYAN + line)
         print(
             pad
@@ -94,43 +129,55 @@ def banner(indent=3):
 
 
 def info(msg, indent=0):
+    text = str(msg)
     with _print_lock:
+        if _emit("info", text):
+            return
         print(
             "\r\033[K"
             + _pad(indent)
             + Fore.CYAN
             + "[i] "
             + Style.RESET_ALL
-            + str(msg)
+            + text
         )
 
 
 def success(msg, indent=0):
+    text = str(msg)
     with _print_lock:
+        if _emit("success", text):
+            return
         print(
             "\r\033[K"
             + _pad(indent)
             + Fore.GREEN
             + "[ok] "
             + Style.RESET_ALL
-            + str(msg)
+            + text
         )
 
 
 def warn(msg, indent=0):
+    text = str(msg)
     with _print_lock:
+        if _emit("warn", text):
+            return
         print(
             "\r\033[K"
             + _pad(indent)
             + Fore.YELLOW
             + "[!] "
             + Style.RESET_ALL
-            + str(msg)
+            + text
         )
 
 
 def error(msg, indent=0):
+    text = str(msg)
     with _print_lock:
+        if _emit("error", text):
+            return
         print(
             "\r\033[K"
             + _pad(indent)
@@ -139,17 +186,20 @@ def error(msg, indent=0):
             + "[x] "
             + Style.RESET_ALL
             + Fore.RED
-            + str(msg)
+            + text
         )
 
 
 def dim(msg, indent=0):
+    text = str(msg)
     with _print_lock:
+        if _emit("dim", text):
+            return
         print(
             "\r\033[K"
             + _pad(indent)
             + Style.DIM
-            + str(msg)
+            + text
             + Style.RESET_ALL
         )
 
@@ -157,7 +207,10 @@ def dim(msg, indent=0):
 def device_line(role, index, name, indent=0):
     """Pretty one-liner confirming a selected device."""
     idx = "default" if index is None else f"#{index}"
+    line = f"{role:<8} {idx:>8}  {name}"
     with _print_lock:
+        if _emit("info", line):
+            return
         print(
             "\r\033[K"
             + _pad(indent)
@@ -181,11 +234,17 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     """
     heard = (heard or "").strip()
     translated = (translated or "").strip()
-
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
+    timing = format_timing_line(timings or {}, at=at)
 
     with _print_lock:
+        if _log_sink is not None:
+            _emit("success", f"{prefix}Heard: {heard}")
+            _emit("info", f"{indent}Translated: {translated}")
+            if timing:
+                _emit("dim", f"{indent}{timing}")
+            return
         print(
             "\r\033[K"
             + Fore.YELLOW
@@ -207,7 +266,6 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
             + Fore.WHITE
             + translated
         )
-        timing = format_timing_line(timings or {}, at=at)
         if timing:
             print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
         if finalize:
@@ -221,6 +279,10 @@ def chunk_text_preview(n, heard, translated):
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
     with _print_lock:
+        if _log_sink is not None:
+            _emit("success", f"{prefix}Heard: {heard}")
+            _emit("info", f"{indent}Translated: {translated}")
+            return
         print(
             "\r\033[K"
             + Fore.YELLOW
@@ -332,11 +394,15 @@ def format_audio_lines(path, missing_hint="(ainda não gerado — use r / rN)"):
 
 
 def print_audio_ref(n, path, indent=None):
-    """Print dim audio/pasta lines under a chunk block (same indent as timing)."""
+    """Print dim audio lines under a chunk block (same indent as timing)."""
     prefix = f"[chunk {n}] "
     pad = " " * len(prefix) if indent is None else " " * int(indent)
     lines = format_audio_lines(path)
     with _print_lock:
+        if _log_sink is not None:
+            for line in lines:
+                _emit("dim", f"{pad}{line}")
+            return
         for line in lines:
             print("\r\033[K" + pad + Style.DIM + line + Style.RESET_ALL)
 
@@ -389,6 +455,13 @@ def chunk_timings(n, timings, extra=None, at=None, audio_path=None):
     indent = " " * len(prefix)
     timing = format_timing_line(timings, extra=extra, at=at, include_clock=True)
     with _print_lock:
+        if _log_sink is not None:
+            if timing:
+                _emit("dim", f"{indent}{timing}")
+            if audio_path is not None:
+                for line in format_audio_lines(audio_path):
+                    _emit("dim", f"{indent}{line}")
+            return
         if timing:
             print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
         if audio_path is not None:
@@ -411,6 +484,10 @@ def chunk_stream_start(n, heard):
     heard_budget = max(8, width - len(prefix) - len("Heard: ") - 1)
     heard_disp = _one_line(heard, heard_budget)
     with _print_lock:
+        if _log_sink is not None:
+            _emit("success", f"{prefix}Heard: {heard_disp}")
+            _emit("info", f"{indent}Translated: …")
+            return
         print(
             "\r\033[K"
             + Fore.YELLOW
@@ -443,6 +520,10 @@ def chunk_stream_update(n, translated):
     budget = max(8, width - len(indent) - len("Translated: ") - 1)
     disp = _one_line(translated, budget)
     with _print_lock:
+        if _log_sink is not None:
+            # TUI: append stream ticks lightly (no cursor-up).
+            _emit("dim", f"{indent}Translated: {disp}")
+            return
         sys.stdout.write(
             "\033[1A\r\033[K"
             + indent
@@ -469,6 +550,10 @@ def chunk_stream_done(n, heard, translated):
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
     with _print_lock:
+        if _log_sink is not None:
+            _emit("success", f"{prefix}Heard: {heard}")
+            _emit("info", f"{indent}Translated: {translated}")
+            return
         # Clear compact Heard + Translated rows, then print full text.
         sys.stdout.write("\033[2A\r\033[K")
         print(

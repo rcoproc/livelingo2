@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ### Added
 
+- **TUI mode (`UI_MODE=tui`, default)** — Textual full-screen UI: scrollable log, command input, **fixed listen status bar at the bottom** (pair + áudio ON/OFF + localized wait text). Classic CLI via `UI_MODE=classic`. Requires `pip install textual`.
 - **Live TTS default OFF** — translation audio starts muted (text-only); enable with `[s]`. Robot status line highlights `🔇 ÁUDIO OFF → [s] para ouvir` (or `🔊 ÁUDIO ON`). Replay `[r]` still re-enables sound when needed.
 - **Audio file references** — each chunk log and command `l` show `audio:` (absolute host path only); `a`/`aN` copy path to clipboard; `p`/`pN` open Explorer on the WAV (attach in WhatsApp/Teams). WSL `/mnt/c` → `C:\` conversion.
 - **Set TARGET language (`t`)** — prompt for EN/PT/ES/FR/DE/IT/ZH/JA; updates `TARGET_LANG` + translator + Edge/Piper voice; SOURCE/STT unchanged. Next chunks use the new target.
