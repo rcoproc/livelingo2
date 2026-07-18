@@ -103,6 +103,23 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS chunk_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        chunk_num INTEGER NOT NULL,
+        comment_text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chunk_comments_session
+        ON chunk_comments(session_id, chunk_num, id)
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -125,6 +142,51 @@ def list_sessions(limit=5):
     cursor.execute(
         "SELECT id, title, created_at FROM sessions ORDER BY created_at DESC LIMIT ?",
         (limit,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_session(session_id):
+    """
+    Return (id, title, created_at) for an exact session id, or None.
+    """
+    if not session_id:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, title, created_at FROM sessions WHERE id = ?",
+        (str(session_id).strip(),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def find_sessions_by_prefix(prefix, limit=20):
+    """
+    Return list of (id, title, created_at) whose id starts with prefix
+    (case-sensitive, SQLite LIKE). Empty prefix → [].
+    """
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return []
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, title, created_at FROM sessions
+        WHERE id = ? OR id LIKE ? ESCAPE '\\'
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (
+            prefix,
+            prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",
+            int(limit),
+        ),
     )
     rows = cursor.fetchall()
     conn.close()
@@ -329,6 +391,10 @@ def delete_chunk(session_id, chunk_num):
         "DELETE FROM favorites WHERE session_id = ? AND chunk_num = ?",
         (session_id, chunk_num),
     )
+    cursor.execute(
+        "DELETE FROM chunk_comments WHERE session_id = ? AND chunk_num = ?",
+        (session_id, chunk_num),
+    )
     conn.commit()
     conn.close()
 
@@ -397,9 +463,91 @@ def load_session_favorites(session_id):
     return rows
 
 
+def insert_chunk_comment(session_id, chunk_num, comment_text):
+    """
+    Insert one free-text comment for a chunk.
+    Returns (id, created_at).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    created_at = _now()
+    cursor.execute(
+        """
+    INSERT INTO chunk_comments (session_id, chunk_num, comment_text, created_at)
+    VALUES (?, ?, ?, ?)
+    """,
+        (session_id, int(chunk_num), (comment_text or "").strip(), created_at),
+    )
+    comment_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return int(comment_id), created_at
+
+
+def load_session_comments(session_id):
+    """
+    Return list of (id, chunk_num, comment_text, created_at) for a session,
+    ordered by id (chronological per insert).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+    SELECT id, chunk_num, comment_text, created_at
+    FROM chunk_comments
+    WHERE session_id = ?
+    ORDER BY id ASC
+    """,
+        (session_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def load_session_comments_map(session_id):
+    """
+    chunk_num → list of (id, comment_text, created_at) for list/export helpers.
+    """
+    out = {}
+    for cid, chunk_num, text, created_at in load_session_comments(session_id):
+        out.setdefault(int(chunk_num), []).append(
+            (int(cid), text or "", created_at or "")
+        )
+    return out
+
+
+def delete_chunk_comment(session_id, comment_id):
+    """
+    Delete one comment by primary key id, scoped to session.
+    Returns (chunk_num, comment_text) of deleted row, or None if not found.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT chunk_num, comment_text FROM chunk_comments
+        WHERE id = ? AND session_id = ?
+        """,
+        (int(comment_id), session_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+    cursor.execute(
+        "DELETE FROM chunk_comments WHERE id = ? AND session_id = ?",
+        (int(comment_id), session_id),
+    )
+    conn.commit()
+    conn.close()
+    return int(row[0]), row[1] or ""
+
+
 def delete_session_atomic(session_id):
     """
-    Atomic deletion of a session and all its dependent chunks, synonyms, and favorites.
+    Atomic deletion of a session and all its dependent chunks, synonyms,
+    favorites, and comments.
     Returns True if deleted successfully, False otherwise.
     """
     conn = get_connection()
@@ -408,6 +556,7 @@ def delete_session_atomic(session_id):
     try:
         cursor.execute("BEGIN TRANSACTION")
 
+        cursor.execute("DELETE FROM chunk_comments WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM favorites WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM synonyms WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM chunks WHERE session_id = ?", (session_id,))

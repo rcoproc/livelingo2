@@ -122,6 +122,13 @@ class Pipeline:
         for chunk_num, heard, translated in existing_favorites:
             self.favorites.append((chunk_num, heard, translated))
 
+        # Load free-text comments per chunk: {chunk_num: [(text, created_at), ...]}
+        self.comments = {}
+        try:
+            self.comments = db.load_session_comments_map(session_id)
+        except Exception:
+            self.comments = {}
+
         self._chunk_count = max_chunk
         self._next_release = max_chunk + 1
         self._pending_chunks = {}
@@ -823,6 +830,8 @@ class Pipeline:
         else:
             ui.chunk_text_preview(n, heard, translated)
         created_at = self._timestamp_now()
+        # Path set but file may still be flushing (sound OFF + background TTS)
+        pending = bool(audio_path and str(audio_path).strip())
         if timing:
             ui.chunk_timings(
                 n,
@@ -830,9 +839,10 @@ class Pipeline:
                 extra=timing_extra,
                 at=created_at,
                 audio_path=audio_path or "",
+                audio_pending=pending,
             )
         elif audio_path is not None:
-            ui.print_audio_ref(n, audio_path or "")
+            ui.print_audio_ref(n, audio_path or "", pending_write=pending)
         with self.history_lock:
             self.history.append((n, heard, translated, audio_path))
         self._record_transcript(n, heard, translated, created_at=created_at, timing=timing)
@@ -1084,6 +1094,8 @@ class Pipeline:
             self.favorites = [
                 item for item in self.favorites if item[0] != chunk_num
             ]
+            if self.comments is not None:
+                self.comments.pop(int(chunk_num), None)
 
         ui.success(f"Chunk {chunk_num} removido com sucesso!")
         return True
@@ -1279,12 +1291,13 @@ class Pipeline:
                     else:
                         ui.dim(message)
 
-            if sound_off:
+            if sound_off and self.cfg.VERBOSE:
                 ui.info(f"[chunk {n}] Processing (sound OFF)…")
 
             if self.cfg.VERBOSE:
                 ui.dim(f"[chunk {n}] [debug] Iniciando processamento do chunk...")
             backlog = self.chunk_queue.qsize()
+            # Backlog is operational signal — keep always; rest of progress is VERBOSE
             if backlog >= 3:
                 ui.warn(
                     f"processing is {backlog} chunks behind — "
@@ -1319,7 +1332,12 @@ class Pipeline:
             ui.dim(f"[chunk {n}] [debug] STT concluído com sucesso.")
 
         if not heard:
-            _abort(f"[chunk {n}] (no speech detected — skipped)", kind="warn")
+            if self.cfg.VERBOSE:
+                _abort(
+                    f"[chunk {n}] (no speech detected — skipped)", kind="warn"
+                )
+            else:
+                _abort()
             return
 
         audio_item = item if isinstance(item, np.ndarray) else None
@@ -1329,29 +1347,38 @@ class Pipeline:
         if getattr(self.cfg, "STT_HALLUCINATION_FILTER", True) and is_hallucination(
             heard
         ):
-            _abort(
-                f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
-            )
+            if self.cfg.VERBOSE:
+                _abort(
+                    f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
+                )
+            else:
+                _abort()
             return
 
         # Long utterance + silence tail: strip trailing credit, keep real speech.
         original_heard = heard
         heard, stripped = clean_transcript(heard, self.cfg)
-        if stripped and heard:
+        if stripped and heard and self.cfg.VERBOSE:
             strip_note = (
                 f"[chunk {n}] (removed STT tail hallucination from transcript)"
             )
         if not heard:
-            _abort(
-                f'[chunk {n}] (only hallucination in STT — skipped): '
-                f'"{original_heard}"'
-            )
+            if self.cfg.VERBOSE:
+                _abort(
+                    f'[chunk {n}] (only hallucination in STT — skipped): '
+                    f'"{original_heard}"'
+                )
+            else:
+                _abort()
             return
 
         if should_discard_transcript(audio_item, heard, self.cfg):
-            _abort(
-                f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
-            )
+            if self.cfg.VERBOSE:
+                _abort(
+                    f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
+                )
+            else:
+                _abort()
             return
 
         if sound_on:
@@ -1462,7 +1489,12 @@ class Pipeline:
                 segment_queue.put(None)
             if tts_thread is not None:
                 tts_thread.join(timeout=2.0)
-            _abort(f"[chunk {n}] (empty translation — skipped)", kind="warn")
+            if self.cfg.VERBOSE:
+                _abort(
+                    f"[chunk {n}] (empty translation — skipped)", kind="warn"
+                )
+            else:
+                _abort()
             return
 
         # Shared stamp for DB + list history (updated when timings finalize).
@@ -1529,36 +1561,55 @@ class Pipeline:
             return timing
 
         def _finalize_chunk_timings(t3, print_timings=True):
-            if tts_audio is None:
+            nonlocal tts_audio, sample_rate
+            # Overlap path may only fill audio_parts — assemble before persist.
+            if tts_audio is None and audio_parts:
+                try:
+                    tts_audio = np.concatenate(audio_parts).astype(np.float32)
+                except Exception:
+                    tts_audio = None
+            if tts_audio is None or len(tts_audio) == 0:
+                timing = _build_timing(t3, include_tts=True)
+                if print_timings:
+                    ui.chunk_timings(
+                        n, timing, at=record_created_at, audio_path=""
+                    )
+                self._record_transcript(
+                    n, heard, translated, created_at=record_created_at, timing=timing
+                )
                 return
+
             timing = _build_timing(t3, include_tts=True)
+            # Write WAV *before* UI shows the path — background write was
+            # racing playback UI and often left the path with no file yet
+            # (or failed silently if the process moved on).
+            written_path = self._persist_chunk(
+                n,
+                heard,
+                translated,
+                tts_audio,
+                sample_rate,
+                audio_path,
+                timing,
+                record_created_at,
+            )
+            path_for_ui = written_path or audio_path or ""
             if print_timings:
                 ui.chunk_timings(
-                    n, timing, at=record_created_at, audio_path=audio_path
+                    n,
+                    timing,
+                    at=record_created_at,
+                    audio_path=path_for_ui,
+                    audio_pending=False,
                 )
             self._record_transcript(
                 n, heard, translated, created_at=record_created_at, timing=timing
             )
-            threading.Thread(
-                target=self._persist_chunk,
-                args=(
-                    n,
-                    heard,
-                    translated,
-                    tts_audio,
-                    sample_rate,
-                    audio_path,
-                    timing,
-                    record_created_at,
-                ),
-                name=f"persist-{n}",
-                daemon=True,
-            ).start()
 
             if self.cfg.VERBOSE:
                 ui.dim(
-                    f"[chunk {n}] [debug] Chunk enviado para reprodução; "
-                    f"persistência em background."
+                    f"[chunk {n}] [debug] Áudio persistido em disco; "
+                    f"reprodução já enfileirada."
                 )
 
         # --- Text-to-speech ---
@@ -1650,14 +1701,59 @@ class Pipeline:
         timing=None,
         created_at=None,
     ):
-        """Write WAV + SQLite off the hot path so playback starts sooner."""
+        """
+        Write WAV + SQLite. Returns absolute path written, or '' on failure.
+
+        Ensures cache dir exists and path is absolute so Explorer matches UI.
+        """
+        if tts_audio is None or len(tts_audio) == 0:
+            ui.warn(f"[chunk {n}] Sem áudio na memória — WAV não gravado.")
+            return ""
+
+        path = (audio_path or "").strip() or os.path.join(
+            self.cache_dir, f"chunk_{n}.wav"
+        )
         try:
-            sf.write(audio_path, tts_audio, sample_rate)
-            if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] Áudio WAV gravado em disco com sucesso.")
+            path = os.path.abspath(path)
+        except OSError:
+            pass
+
+        try:
+            parent = os.path.dirname(path) or self.cache_dir
+            os.makedirs(parent, exist_ok=True)
+        except Exception as exc:
+            ui.error(f"[chunk {n}] Não criou pasta de áudio ({parent}): {exc}")
+            return ""
+
+        rate = int(sample_rate or 24000)
+        try:
+            # soundfile wants float32 mono/array
+            audio = np.asarray(tts_audio, dtype=np.float32)
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1).astype(np.float32)
+            sf.write(path, audio, rate)
         except Exception as exc:
             ui.error(f"[chunk {n}] Erro ao salvar arquivo de áudio: {exc}")
-            return
+            ui.dim(f"   path={path}")
+            return ""
+
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            ui.error(f"[chunk {n}] WAV não encontrado após gravar: {path}")
+            return ""
+
+        if self.cfg.VERBOSE:
+            ui.dim(
+                f"[chunk {n}] [debug] Áudio WAV gravado "
+                f"({os.path.getsize(path)} bytes): {path}"
+            )
+
+        # Keep RAM history pointing at the real path
+        with self.history_lock:
+            for idx, entry in enumerate(self.history):
+                if entry[0] == n:
+                    h, t = entry[1], entry[2]
+                    self.history[idx] = (n, h, t, path)
+                    break
 
         try:
             created_at = db.upsert_chunk(
@@ -1665,7 +1761,7 @@ class Pipeline:
                 n,
                 heard,
                 translated,
-                audio_path,
+                path,
                 timing=timing,
                 created_at=created_at,
             )
@@ -1676,6 +1772,8 @@ class Pipeline:
                 ui.dim(f"[chunk {n}] [debug] Metadados gravados com sucesso no SQLite.")
         except Exception as exc:
             ui.error(f"[chunk {n}] Erro ao salvar no banco de dados: {exc}")
+            # File is on disk even if DB fails
+        return path
 
     # ------------------------------------------------------------------ #
     def _playback_loop(self):
@@ -1793,3 +1891,89 @@ class Pipeline:
         """Retrieve a copy of all favorited sentences for this session."""
         with self.history_lock:
             return list(self.favorites)
+
+    def get_comments_map(self):
+        """chunk_num → list of (id, comment_text, created_at)."""
+        with self.history_lock:
+            return {
+                int(k): list(v) for k, v in (self.comments or {}).items()
+            }
+
+    def get_comments_for_chunk(self, chunk_num):
+        """List of (id, comment_text, created_at) for one chunk."""
+        with self.history_lock:
+            return list((self.comments or {}).get(int(chunk_num), []))
+
+    def add_comment(self, chunk_num, comment_text):
+        """
+        Append a free-text comment to a chunk (SQLite + RAM).
+        Returns (id, created_at) or (None, None) on failure.
+        """
+        text = (comment_text or "").strip()
+        if not text:
+            return None, None
+
+        # Ensure chunk exists in session history / transcript
+        found = False
+        with self.history_lock:
+            for n, *_rest in self.history:
+                if n == chunk_num:
+                    found = True
+                    break
+            if not found:
+                for entry in self.full_transcript:
+                    if entry and entry[0] == chunk_num:
+                        found = True
+                        break
+        if not found:
+            ui.warn(
+                f"Chunk {chunk_num} não encontrado nesta sessão — "
+                f"não dá para comentar.",
+            )
+            return None, None
+
+        try:
+            comment_id, created_at = db.insert_chunk_comment(
+                self.session_id, chunk_num, text
+            )
+        except Exception as exc:
+            ui.error(f"Erro ao salvar comentário no banco: {exc}")
+            return None, None
+
+        with self.history_lock:
+            self.comments.setdefault(int(chunk_num), []).append(
+                (int(comment_id), text, created_at)
+            )
+        return int(comment_id), created_at
+
+    def delete_comment(self, comment_id):
+        """
+        Delete comment by primary key id (no confirmation).
+        Returns True if deleted.
+        """
+        try:
+            deleted = db.delete_chunk_comment(self.session_id, int(comment_id))
+        except Exception as exc:
+            ui.error(f"Erro ao excluir comentário #{comment_id}: {exc}")
+            return False
+        if not deleted:
+            ui.warn(
+                f"Comentário #{comment_id} não encontrado nesta sessão."
+            )
+            return False
+        chunk_num, text = deleted
+        with self.history_lock:
+            lst = (self.comments or {}).get(int(chunk_num), [])
+            self.comments[int(chunk_num)] = [
+                item for item in lst if int(item[0]) != int(comment_id)
+            ]
+            if not self.comments.get(int(chunk_num)):
+                self.comments.pop(int(chunk_num), None)
+        preview = (text or "").strip()
+        if len(preview) > 60:
+            preview = preview[:57] + "…"
+        ui.success(
+            f"Comentário #{comment_id} removido "
+            f"(chunk {chunk_num}): {preview}"
+        )
+        return True
