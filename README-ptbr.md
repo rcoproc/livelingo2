@@ -126,13 +126,23 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `c` | Exportar histórico para `.md` com resumo IA + contagem de palavras |
 | `s` | **Sound ON/OFF** — ligar/desligar áudio da tradução (texto continua) |
 | `g` | **Swap idiomas** — inverte `SOURCE ↔ TARGET` (STT + tradução + voz TTS) |
+| `t` / `t EN` | **TARGET** — muda só o idioma alvo (códigos em **CAIXA ALTA**; aceita one-liner) |
 | `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura do app |
 | `x` | Interromper leitura TTS em andamento |
 | `o` | Buscar sinônimos / significado de palavra |
-| `l` | Listar mensagens da sessão (com timing e timestamp) |
+| `l` | Listar mensagens da sessão (timing, timestamp, comentários `#id`) |
+| `lo` / `lt` | Listar só source (ouvido) / só target (traduzido) |
+| `co` / `coN` / `coN texto` | Comentar o último chunk ou o chunk N (SQLite; aparece no `l`) |
+| `codN` | Apagar comentário pela PK `#N` (sem confirmação) |
+| `cls` | Limpar o painel de log (TUI) / limpar terminal (classic) |
+| `gt` / `gf` | **Go top** / **Go footer** — início ou fim do log (`gt` desliga auto-scroll; `gf` religa) |
 | `v` | Trocar ou reiniciar sessão |
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
+
+**TUI (atalhos):** `F1` ajuda de entrada; `Ctrl+C` copia seleção do log; `Ctrl+Shift+C` / `F2` copia log inteiro; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+
+**Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
 
 Com **som OFF** (`s`): o texto traduzido aparece na hora; com `TTS_SKIP_WHEN_MUTED=true` o TTS é omitido (replay `r` sintetiza depois). Nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
 
@@ -448,9 +458,11 @@ Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 
 Por padrão (`UI_MODE=tui`) o LiveLingo sobe em **TUI Textual**:
 
-- **Log rolável** no centro (chunks, avisos, paths de áudio)
-- **Campo de comando** acima da barra de status
-- **Linha de escuta fixa embaixo** (robô + par de idiomas + áudio ON/OFF)
+- **Cabeçalho de escuta fixo** — robô + `g(swap) SRC→TGT t(alvo)` + status de áudio
+- **Log rolável** no centro (chunks, avisos, paths de áudio; seleção com mouse)
+- **Menu de comandos** em colunas dinâmicas (rótulos seguem `SOURCE_LANG`)
+- **Campo de comando** com histórico `↑`/`↓` e placeholder localizado
+- **Screenshot** (Ctrl+P → Screenshot): SVG + PNG em `.cache/screenshots/` e **imagem** na área de transferência (Windows/WSL)
 
 ```powershell
 pip install textual   # se ainda não instalou

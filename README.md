@@ -251,6 +251,35 @@ per chunk:
 
 Stop any time with **Ctrl+C**.
 
+### TUI (default)
+
+With `UI_MODE=tui` (default) you get a Textual UI: scrollable log, command field, fixed listen header (robot + language pair + audio), and a multi-column command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
+
+| Shortcut / command | Action |
+|--------------------|--------|
+| `F1` | Startup help (banner, devices, engines) into the log |
+| `Ctrl+C` | Copy selected log text |
+| `Ctrl+Shift+C` / `F2` | Copy entire log |
+| Palette → Screenshot | Save SVG+PNG under `.cache/screenshots/` and put the **image** on the clipboard |
+| `↑` / `↓` | Command history |
+| `g` | Swap SOURCE ↔ TARGET |
+| `t` / `t EN` | Change TARGET only (codes forced UPPERCASE) |
+| `gt` / `gf` | Go top / go footer of the log (`gt` disables auto-scroll; `gf` re-enables) |
+| `cls` | Clear the log panel |
+| `l` / `lo` / `lt` | List session / source-only / target-only |
+| `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
+| `s` / `n` / `r` / `rN` | Sound, mic mute, replay |
+| `a` / `aN` / `p` / `pN` | Copy audio path / open audio folder |
+| `q` | Quit |
+
+Resume a session without the picker:
+
+```powershell
+python main.py <session_id>
+# or
+livelingo <session_id>
+```
+
 ### Use it as your microphone in Microsoft Teams
 
 1. Keep `main.py` running.
@@ -341,6 +370,8 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
     ├── playback.py     # audio -> VB-Cable output device
     ├── pipeline.py     # threads + queues orchestration
     ├── devices.py      # device discovery / resolution
+    ├── tui_app.py      # Textual TUI (log, menu, screenshot, clipboard)
+    ├── db.py           # SQLite sessions, chunks, comments, favorites
     └── ui.py           # terminal banner, colors, status lines
 ```
 

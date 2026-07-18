@@ -19,6 +19,8 @@ _print_lock = threading.RLock()
 
 # Optional TUI sink: callable(kind: str, text: str) — when set, prints go there.
 _log_sink = None
+# Optional width provider: callable() -> int (usable columns inside the log panel).
+_width_provider = None
 
 
 def set_log_sink(sink):
@@ -30,6 +32,17 @@ def set_log_sink(sink):
 
 def get_log_sink():
     return _log_sink
+
+
+def set_width_provider(provider):
+    """Optional callable returning usable content width (TUI log panel columns)."""
+    global _width_provider
+    with _print_lock:
+        _width_provider = provider
+
+
+def get_width_provider():
+    return _width_provider
 
 
 def _emit(kind, text):
@@ -51,6 +64,8 @@ __all__ = [
     "warn",
     "error",
     "dim",
+    "raw",
+    "rich",
     "device_line",
     "chunk_status",
     "chunk_timings",
@@ -68,6 +83,9 @@ __all__ = [
     "favorites_popup",
     "set_log_sink",
     "get_log_sink",
+    "set_width_provider",
+    "get_width_provider",
+    "content_width",
 ]
 
 
@@ -75,7 +93,34 @@ def _term_width():
     try:
         return max(40, os.get_terminal_size().columns)
     except OSError:
-        return 80
+        # TUI often has no usable tty size — prefer a wide default over 80.
+        return 140 if _log_sink is not None else 80
+
+
+def content_width(margin=3, chrome=0):
+    """
+    Usable columns for wrapped list/menu blocks.
+
+    When a TUI width provider is set, uses the live RichLog panel width.
+    Otherwise falls back to terminal size (wide default under TUI sink).
+    """
+    provider = _width_provider
+    if provider is not None:
+        try:
+            w = int(provider())
+            if w >= 20:
+                return max(24, w - max(0, int(margin or 0)))
+        except Exception:
+            pass
+    try:
+        term_w = max(40, os.get_terminal_size().columns)
+    except OSError:
+        term_w = 140 if _log_sink is not None else 80
+    extra = int(chrome or 0)
+    if _log_sink is not None and extra <= 0:
+        # border + padding + margin + scrollbar when provider unavailable
+        extra = 12
+    return max(24, term_w - 2 * max(0, int(margin or 0)) - extra)
 
 
 def _one_line(text, budget):
@@ -100,13 +145,26 @@ def _pad(indent):
 def banner(indent=3):
     """Print the startup banner (default 3-char left margin)."""
     pad = _pad(indent)
+    # Classic print indents title block with 8 extra spaces after pad.
+    title_pad = pad + "        "
     line = "=" * 64
     with _print_lock:
-        if _emit("info", line):
-            _emit("info", "L I V E L I N G O   🎙️  ->  🌍")
-            _emit("dim", "Real-time speech translation into a virtual mic")
-            _emit("dim", "mic -> Whisper -> translate -> Edge TTS -> VB-Cable")
-            _emit("info", line)
+        if _log_sink is not None:
+            # TUI: keep same left margin as classic; no [i] prefix on art lines.
+            _emit("rich", f"{pad}[cyan]{line}[/]")
+            _emit(
+                "rich",
+                f"{title_pad}[bold cyan]L I V E L I N G O   🎙️  ->  🌍[/]",
+            )
+            _emit(
+                "rich",
+                f"{title_pad}[cyan]Real-time speech translation into a virtual mic[/]",
+            )
+            _emit(
+                "rich",
+                f"{title_pad}[cyan]mic -> Whisper -> translate -> Edge TTS -> VB-Cable[/]",
+            )
+            _emit("rich", f"{pad}[cyan]{line}[/]")
             return
         print(pad + Fore.CYAN + line)
         print(
@@ -131,7 +189,8 @@ def banner(indent=3):
 def info(msg, indent=0):
     text = str(msg)
     with _print_lock:
-        if _emit("info", text):
+        # TUI sink must get the same left margin as classic prints.
+        if _emit("info", _pad(indent) + text):
             return
         print(
             "\r\033[K"
@@ -146,7 +205,7 @@ def info(msg, indent=0):
 def success(msg, indent=0):
     text = str(msg)
     with _print_lock:
-        if _emit("success", text):
+        if _emit("success", _pad(indent) + text):
             return
         print(
             "\r\033[K"
@@ -161,7 +220,7 @@ def success(msg, indent=0):
 def warn(msg, indent=0):
     text = str(msg)
     with _print_lock:
-        if _emit("warn", text):
+        if _emit("warn", _pad(indent) + text):
             return
         print(
             "\r\033[K"
@@ -176,7 +235,7 @@ def warn(msg, indent=0):
 def error(msg, indent=0):
     text = str(msg)
     with _print_lock:
-        if _emit("error", text):
+        if _emit("error", _pad(indent) + text):
             return
         print(
             "\r\033[K"
@@ -193,7 +252,7 @@ def error(msg, indent=0):
 def dim(msg, indent=0):
     text = str(msg)
     with _print_lock:
-        if _emit("dim", text):
+        if _emit("dim", _pad(indent) + text):
             return
         print(
             "\r\033[K"
@@ -204,12 +263,48 @@ def dim(msg, indent=0):
         )
 
 
+def raw(msg, indent=0):
+    """Plain log line (no [ok]/[i] prefix). Prefer for multi-line list blocks in TUI."""
+    text = _pad(indent) + str(msg) if indent else str(msg)
+    with _print_lock:
+        if _emit("raw", text):
+            return
+        print("\r\033[K" + text)
+
+
+def _rich_escape(text):
+    """Escape user text for Rich markup (brackets etc.)."""
+    try:
+        from rich.markup import escape
+
+        return escape(str(text) if text is not None else "")
+    except Exception:
+        return str(text or "").replace("[", "\\[")
+
+
+def rich(msg, indent=0):
+    """
+    Log line with Rich markup (TUI only). Caller must escape user content via
+    _rich_escape / rich.markup.escape. Classic terminal strips tags.
+    """
+    text = _pad(indent) + str(msg) if indent else str(msg)
+    with _print_lock:
+        if _emit("rich", text):
+            return
+        # Classic fallback: drop simple [style] tags
+        import re
+
+        plain = re.sub(r"\[/?[^\]]*\]", "", text)
+        print("\r\033[K" + plain)
+
+
 def device_line(role, index, name, indent=0):
     """Pretty one-liner confirming a selected device."""
     idx = "default" if index is None else f"#{index}"
-    line = f"{role:<8} {idx:>8}  {name}"
+    # Same visual as classic: 2 spaces + role + index + name (after [i] in TUI).
+    line = f"  {role:<8} {idx:>8}  {name}"
     with _print_lock:
-        if _emit("info", line):
+        if _emit("info", _pad(indent) + line):
             return
         print(
             "\r\033[K"
@@ -224,13 +319,24 @@ def device_line(role, index, name, indent=0):
         )
 
 
+def _emit_chunk_blank():
+    """Blank separator line (TUI raw or classic empty print)."""
+    if _log_sink is not None:
+        _emit("raw", "")
+    else:
+        print()
+
+
 def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     """
     Print the live per-chunk status line plus a dim timing breakdown.
 
-    timings: dict with keys stt, translate, tts, total (seconds).
-    finalize: when True, print the trailing blank line after timings.
-    at: optional timestamp for HH:MM:SS on the timing line (default: now).
+    Layout:
+        (blank)
+        [chunk N] Heard: …
+                  Translated: …
+        (blank)
+                  timing: …
     """
     heard = (heard or "").strip()
     translated = (translated or "").strip()
@@ -239,9 +345,19 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     timing = format_timing_line(timings or {}, at=at)
 
     with _print_lock:
+        _emit_chunk_blank()  # blank before chunk block
         if _log_sink is not None:
-            _emit("success", f"{prefix}Heard: {heard}")
-            _emit("info", f"{indent}Translated: {translated}")
+            # Match classic colors: yellow chunk, green heard, blue→white translated
+            e = _rich_escape
+            _emit(
+                "rich",
+                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
+            )
+            _emit(
+                "rich",
+                f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
+            )
+            _emit_chunk_blank()  # blank after Translated
             if timing:
                 _emit("dim", f"{indent}{timing}")
             return
@@ -266,6 +382,7 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
             + Fore.WHITE
             + translated
         )
+        print()  # blank after Translated
         if timing:
             print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
         if finalize:
@@ -279,9 +396,18 @@ def chunk_text_preview(n, heard, translated):
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
     with _print_lock:
+        _emit_chunk_blank()  # blank before chunk block
         if _log_sink is not None:
-            _emit("success", f"{prefix}Heard: {heard}")
-            _emit("info", f"{indent}Translated: {translated}")
+            e = _rich_escape
+            _emit(
+                "rich",
+                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
+            )
+            _emit(
+                "rich",
+                f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
+            )
+            _emit_chunk_blank()  # blank after Translated
             return
         print(
             "\r\033[K"
@@ -304,6 +430,7 @@ def chunk_text_preview(n, heard, translated):
             + Fore.WHITE
             + translated
         )
+        print()  # blank after Translated
 
 
 def clock_hhmmss(stamp=None):
@@ -369,35 +496,150 @@ def resolve_share_path(path):
     return abs_path
 
 
-def format_audio_lines(path, missing_hint="(ainda não gerado — use r / rN)"):
-    """
-    Return list of plain display lines for a chunk audio reference.
-    Empty path → one 'sem áudio' line. Existing path → full file path only
-    (folder alone is redundant — path already includes directory + filename).
-    """
+# Audio status strings by TARGET_LANG (display only).
+_AUDIO_I18N = {
+    "en": {
+        "not_generated": "(not generated yet — use r / rN)",
+        "missing": "(file missing — use r / rN)",
+        "saving": "(saving to disk…)",
+    },
+    "pt": {
+        "not_generated": "(ainda não gerado — use r / rN)",
+        "missing": "(arquivo ausente — use r / rN)",
+        "saving": "(gravando em disco…)",
+    },
+    "es": {
+        "not_generated": "(aún no generado — use r / rN)",
+        "missing": "(archivo ausente — use r / rN)",
+        "saving": "(guardando en disco…)",
+    },
+    "fr": {
+        "not_generated": "(pas encore généré — utilisez r / rN)",
+        "missing": "(fichier absent — utilisez r / rN)",
+        "saving": "(enregistrement…)",
+    },
+    "de": {
+        "not_generated": "(noch nicht erzeugt — r / rN)",
+        "missing": "(Datei fehlt — r / rN)",
+        "saving": "(wird gespeichert…)",
+    },
+    "it": {
+        "not_generated": "(non ancora generato — usa r / rN)",
+        "missing": "(file assente — usa r / rN)",
+        "saving": "(salvataggio…)",
+    },
+    "zh": {
+        "not_generated": "(尚未生成 — 用 r / rN)",
+        "missing": "(文件不存在 — 用 r / rN)",
+        "saving": "(正在写入磁盘…)",
+    },
+    "ja": {
+        "not_generated": "(未生成 — r / rN)",
+        "missing": "(ファイルなし — r / rN)",
+        "saving": "(保存中…)",
+    },
+}
+
+
+def _target_lang_code():
+    try:
+        import config as cfg
+
+        code = (getattr(cfg, "TARGET_LANG", "en") or "en").lower().strip()
+    except Exception:
+        code = "en"
+    if "-" in code:
+        code = code.split("-", 1)[0]
+    if code in ("por", "pt-br", "pt_br"):
+        code = "pt"
+    if code in ("cn", "zh-cn", "zh-tw", "cmn"):
+        code = "zh"
+    if code in ("jp",):
+        code = "ja"
+    if code in ("ger", "deu"):
+        code = "de"
+    if code in ("ita",):
+        code = "it"
+    return code if code in _AUDIO_I18N else "en"
+
+
+def _audio_msg(key):
+    """Localized audio status snippet for current TARGET_LANG."""
+    pack = _AUDIO_I18N.get(_target_lang_code()) or _AUDIO_I18N["en"]
+    return pack.get(key) or _AUDIO_I18N["en"].get(key, "")
+
+
+def _audio_path_exists(path):
+    """True if path or its share form is a real file on this OS."""
     import os
 
     if not path or not str(path).strip():
-        return [f"audio: {missing_hint}"]
+        return False
+    candidates = [str(path).strip()]
+    try:
+        share = resolve_share_path(path)
+        if share and share not in candidates:
+            candidates.append(share)
+    except Exception:
+        pass
+    # Relative → absolute from cwd (project root when launched via livelingo.bat)
+    for p in list(candidates):
+        try:
+            abs_p = os.path.abspath(p)
+            if abs_p not in candidates:
+                candidates.append(abs_p)
+        except OSError:
+            pass
+    for p in candidates:
+        try:
+            if os.path.isfile(p):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def format_audio_lines(path, missing_hint=None, pending_write=False):
+    """
+    Return list of plain display lines for a chunk audio reference.
+
+    Empty path → not-generated hint (TARGET_LANG).
+    pending_write=True → path only (WAV still flushing in background; audio
+    may already have been played from memory — do NOT show "missing").
+    Missing on disk (and not pending) → path + missing note on next line,
+    aligned under the path after ``audio: ``.
+    """
+    label = "audio: "
+    if missing_hint is None:
+        missing_hint = _audio_msg("not_generated")
+
+    if not path or not str(path).strip():
+        return [f"{label}{missing_hint}"]
 
     share = resolve_share_path(path)
-    exists = False
-    try:
-        exists = os.path.isfile(path) or os.path.isfile(share)
-    except OSError:
-        exists = False
+    display = share or path
 
-    if not exists:
-        return [f"audio: {share or path}  (arquivo ausente — use r / rN)"]
+    if pending_write:
+        # File will appear shortly; optional quiet "saving" only if wanted —
+        # user asked not to see false "missing" after a spoken chunk.
+        return [f"{label}{display}"]
 
-    return [f"audio: {share}"]
+    if _audio_path_exists(path) or _audio_path_exists(share):
+        return [f"{label}{display}"]
+
+    # Truly missing on disk (e.g. deleted, or list history without WAV)
+    pad = " " * len(label)
+    return [
+        f"{label}{display}",
+        f"{pad}{_audio_msg('missing')}",
+    ]
 
 
-def print_audio_ref(n, path, indent=None):
+def print_audio_ref(n, path, indent=None, pending_write=False):
     """Print dim audio lines under a chunk block (same indent as timing)."""
     prefix = f"[chunk {n}] "
     pad = " " * len(prefix) if indent is None else " " * int(indent)
-    lines = format_audio_lines(path)
+    lines = format_audio_lines(path, pending_write=pending_write)
     with _print_lock:
         if _log_sink is not None:
             for line in lines:
@@ -449,8 +691,13 @@ def format_timing_line(timings, extra=None, at=None, include_clock=True):
     return line
 
 
-def chunk_timings(n, timings, extra=None, at=None, audio_path=None):
-    """Print final timing line once TTS completes (includes HH:MM:SS)."""
+def chunk_timings(n, timings, extra=None, at=None, audio_path=None, audio_pending=False):
+    """
+    Print final timing line once TTS completes (includes HH:MM:SS).
+
+    audio_pending: WAV still being written in a background thread (audio may
+    already have played from RAM). Show path without "file missing".
+    """
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
     timing = format_timing_line(timings, extra=extra, at=at, include_clock=True)
@@ -459,13 +706,17 @@ def chunk_timings(n, timings, extra=None, at=None, audio_path=None):
             if timing:
                 _emit("dim", f"{indent}{timing}")
             if audio_path is not None:
-                for line in format_audio_lines(audio_path):
+                for line in format_audio_lines(
+                    audio_path, pending_write=bool(audio_pending)
+                ):
                     _emit("dim", f"{indent}{line}")
             return
         if timing:
             print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
         if audio_path is not None:
-            for line in format_audio_lines(audio_path):
+            for line in format_audio_lines(
+                audio_path, pending_write=bool(audio_pending)
+            ):
                 print("\r\033[K" + indent + Style.DIM + line + Style.RESET_ALL)
         print()
 
@@ -484,9 +735,17 @@ def chunk_stream_start(n, heard):
     heard_budget = max(8, width - len(prefix) - len("Heard: ") - 1)
     heard_disp = _one_line(heard, heard_budget)
     with _print_lock:
+        _emit_chunk_blank()  # blank before chunk block
         if _log_sink is not None:
-            _emit("success", f"{prefix}Heard: {heard_disp}")
-            _emit("info", f"{indent}Translated: …")
+            e = _rich_escape
+            _emit(
+                "rich",
+                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard_disp)}[/]",
+            )
+            _emit(
+                "rich",
+                f"{indent}[bold blue]Translated: [/][bold white]…[/]",
+            )
             return
         print(
             "\r\033[K"
@@ -521,8 +780,12 @@ def chunk_stream_update(n, translated):
     disp = _one_line(translated, budget)
     with _print_lock:
         if _log_sink is not None:
-            # TUI: append stream ticks lightly (no cursor-up).
-            _emit("dim", f"{indent}Translated: {disp}")
+            # TUI: append stream ticks (no cursor-up) with classic blue/white.
+            e = _rich_escape
+            _emit(
+                "rich",
+                f"{indent}[bold blue]Translated: [/][bold white]{e(disp)}[/]",
+            )
             return
         sys.stdout.write(
             "\033[1A\r\033[K"
@@ -551,8 +814,18 @@ def chunk_stream_done(n, heard, translated):
     indent = " " * len(prefix)
     with _print_lock:
         if _log_sink is not None:
-            _emit("success", f"{prefix}Heard: {heard}")
-            _emit("info", f"{indent}Translated: {translated}")
+            # TUI: append final block (stream ticks already above); spacing as preview
+            e = _rich_escape
+            _emit_chunk_blank()
+            _emit(
+                "rich",
+                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
+            )
+            _emit(
+                "rich",
+                f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
+            )
+            _emit_chunk_blank()
             return
         # Clear compact Heard + Translated rows, then print full text.
         sys.stdout.write("\033[2A\r\033[K")
@@ -576,91 +849,350 @@ def chunk_stream_done(n, heard, translated):
             + Fore.WHITE
             + translated
         )
+        print()  # blank after Translated (timing follows)
         sys.stdout.flush()
 
 
+def _synonym_md_to_rich(line: str) -> str:
+    """
+    Convert simple Markdown (**bold**, *italic*) to Rich markup for TUI.
+    Section headers (1. **Title**:) get stronger color.
+    """
+    import re
+
+    e = _rich_escape
+    s = (line or "").rstrip()
+    if not s:
+        return ""
+
+    # Numbered section header: 1. **Significado e Uso**:
+    m = re.match(r"^(\d+\.\s*)\*\*(.+?)\*\*(\s*:?\s*)$", s)
+    if m:
+        return (
+            f"[bold magenta]{e(m.group(1))}{e(m.group(2))}{e(m.group(3))}[/]"
+        )
+
+    # Bullet with bold label: - **Frase em Inglês**: rest
+    m = re.match(r"^(\s*[-•]\s*)\*\*(.+?)\*\*(\s*:?\s*)(.*)$", s)
+    if m:
+        rest = m.group(4) or ""
+        rest_fmt = _synonym_inline_md(rest)
+        return (
+            f"[dim]{e(m.group(1))}[/]"
+            f"[bold cyan]{e(m.group(2))}{e(m.group(3))}[/]"
+            f"{rest_fmt}"
+        )
+
+    # Indented translation line: **Tradução**: ...
+    m = re.match(r"^(\s*)\*\*(.+?)\*\*(\s*:?\s*)(.*)$", s)
+    if m:
+        rest = m.group(4) or ""
+        return (
+            f"{e(m.group(1))}"
+            f"[bold green]{e(m.group(2))}{e(m.group(3))}[/]"
+            f"{_synonym_inline_md(rest)}"
+        )
+
+    # Plain bullet synonym list: - Quick (Rápido)
+    m = re.match(r"^(\s*[-•]\s*)(.+)$", s)
+    if m:
+        return f"[yellow]{e(m.group(1))}[/][white]{_synonym_inline_md(m.group(2))}[/]"
+
+    return f"[white]{_synonym_inline_md(s)}[/]"
+
+
+def _synonym_inline_md(s: str) -> str:
+    """Inline **bold** and *italic* → Rich; escape the rest."""
+    import re
+
+    e = _rich_escape
+    if not s:
+        return ""
+
+    # Tokenize by **...** then *...*
+    out = []
+    pos = 0
+    # Bold first
+    pattern = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`")
+    for m in pattern.finditer(s):
+        if m.start() > pos:
+            out.append(e(s[pos : m.start()]))
+        if m.group(1) is not None:
+            out.append(f"[bold yellow]{e(m.group(1))}[/]")
+        elif m.group(2) is not None:
+            out.append(f"[bold cyan]{e(m.group(2))}[/]")
+        else:
+            out.append(f"[dim]{e(m.group(3))}[/]")
+        pos = m.end()
+    if pos < len(s):
+        out.append(e(s[pos:]))
+    return "".join(out)
+
+
+def _synonym_md_to_ansi(line: str) -> str:
+    """Classic terminal: **bold** / *word* without raw asterisks."""
+    import re
+
+    s = (line or "").rstrip()
+    if not s:
+        return ""
+
+    m = re.match(r"^(\d+\.\s*)\*\*(.+?)\*\*(\s*:?\s*)$", s)
+    if m:
+        return (
+            Fore.MAGENTA
+            + Style.BRIGHT
+            + m.group(1)
+            + m.group(2)
+            + m.group(3)
+            + Style.RESET_ALL
+        )
+
+    def repl_bold(mo):
+        return Style.BRIGHT + Fore.YELLOW + mo.group(1) + Style.RESET_ALL
+
+    def repl_ital(mo):
+        return Fore.CYAN + Style.BRIGHT + mo.group(1) + Style.RESET_ALL
+
+    def repl_code(mo):
+        return Style.DIM + mo.group(1) + Style.RESET_ALL
+
+    # Strip markdown markers while coloring
+    s2 = re.sub(r"\*\*(.+?)\*\*", repl_bold, s)
+    s2 = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", repl_ital, s2)
+    s2 = re.sub(r"`(.+?)`", repl_code, s2)
+    if s.lstrip().startswith(("-", "•")):
+        return Fore.YELLOW + s2 + Style.RESET_ALL
+    return Fore.WHITE + s2 + Style.RESET_ALL
+
+
 def synonyms_result(word, text):
-    """Print the synonym explanation result elegantly and colored."""
-    print()
-    print("\r\033[K" + Fore.CYAN + "=" * 64)
-    print("\r\033[K" + Fore.CYAN + Style.BRIGHT + f" Requested word: {word.upper()}")
-    print("\r\033[K" + Fore.CYAN + "=" * 64)
-    print("\r\033[K" + Fore.YELLOW + Style.BRIGHT + text + Style.RESET_ALL)
-    print("\r\033[K" + Fore.CYAN + "=" * 64)
-    print()
+    """
+    Print synonym explanation with readable formatting.
+
+    Converts LLM Markdown (**headers**, *emphasis*) to Rich (TUI) or ANSI
+    (classic) instead of showing raw asterisks.
+    """
+    word = (word or "").strip()
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    rule = "=" * 64
+    pad = _pad(3)
+
+    lines_out = []
+    for raw_line in body.split("\n"):
+        # Soft-wrap very long lines for classic; TUI RichLog wraps too
+        lines_out.append(raw_line)
+
+    with _print_lock:
+        if _log_sink is not None:
+            _emit("rich", f"{pad}[bold cyan]{rule}[/]")
+            w_esc = _rich_escape((word or "").upper())
+            _emit(
+                "rich",
+                f"{pad}[bold cyan]  ★ Sinônimos / Meaning: [/]"
+                f"[bold yellow]{w_esc}[/]",
+            )
+            _emit("rich", f"{pad}[bold cyan]{rule}[/]")
+            _emit("raw", "")
+            for ln in lines_out:
+                if not ln.strip():
+                    _emit("raw", "")
+                    continue
+                _emit("rich", pad + _synonym_md_to_rich(ln))
+            _emit("raw", "")
+            _emit("rich", f"{pad}[bold cyan]{rule}[/]")
+            return
+
+        print()
+        print("\r\033[K" + pad + Fore.CYAN + rule)
+        print(
+            "\r\033[K"
+            + pad
+            + Fore.CYAN
+            + Style.BRIGHT
+            + f"  ★ Sinônimos / Meaning: "
+            + Fore.YELLOW
+            + (word or "").upper()
+            + Style.RESET_ALL
+        )
+        print("\r\033[K" + pad + Fore.CYAN + rule + Style.RESET_ALL)
+        print()
+        for ln in lines_out:
+            if not ln.strip():
+                print()
+                continue
+            print("\r\033[K" + pad + _synonym_md_to_ansi(ln))
+        print("\r\033[K" + pad + Fore.CYAN + rule + Style.RESET_ALL)
+        print()
 
 
 def favorites_popup(favs, src_lang, tgt_lang):
-    """Displays favorited sentences in a beautiful, retro ANSI popup frame."""
-    import textwrap
+    """
+    Favorited sentences in a box frame with aligned right borders.
 
-    # We use a strict internal width of 60 columns (64 total visual columns with borders)
-    # The format_line helper takes a string and pads it to exactly 60 internal visual columns.
-    def format_line(text):
-        padding = max(0, 60 - len(text))
-        return "║ " + text + " " * padding + " ║"
+    Box geometry (visual columns, not Python len()):
+        ╔ + INNER × ═ + ╗
+        ║ + INNER content + ║
+    Content is padded/truncated by display width so ★ / accents don't
+    push the right border out of line.
+    """
+    import textwrap
+    import unicodedata
+
+    INNER = 60  # columns between the two vertical borders
+
+    def _disp_w(s: str) -> int:
+        """Terminal display width (wide chars count as 2)."""
+        w = 0
+        for ch in s or "":
+            ea = unicodedata.east_asian_width(ch)
+            if ea in ("F", "W"):
+                w += 2
+            elif unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+                continue
+            else:
+                w += 1
+        return w
+
+    def _fit(s: str, width: int) -> str:
+        """Truncate/pad string to exactly `width` display columns."""
+        s = s or ""
+        # Truncate
+        out = []
+        w = 0
+        for ch in s:
+            cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+            if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+                out.append(ch)
+                continue
+            if w + cw > width:
+                break
+            out.append(ch)
+            w += cw
+        body = "".join(out)
+        pad = max(0, width - _disp_w(body))
+        return body + (" " * pad)
+
+    def format_line(text: str) -> str:
+        # ║ + INNER content + ║  → same total width as ╔ + INNER × ═ + ╗
+        return "║" + _fit(text, INNER) + "║"
+
+    def center(text: str) -> str:
+        tw = _disp_w(text)
+        if tw >= INNER:
+            return _fit(text, INNER)
+        left = (INNER - tw) // 2
+        return _fit((" " * left) + text, INNER)
 
     lines = []
-    lines.append("╔" + "═" * 60 + "╗")
-    lines.append(format_line("                     ★ MY FAVORITES ★"))
-    lines.append("╠" + "═" * 60 + "╣")
+    lines.append("╔" + "═" * INNER + "╗")
+    lines.append(format_line(center("★ MY FAVORITES ★")))
+    lines.append("╠" + "═" * INNER + "╣")
 
     if not favs:
         lines.append(format_line("  No favorited items in this session."))
     else:
         for chunk_num, heard, translated in favs:
-            header = f" [Chunk {chunk_num}]"
-            lines.append(format_line(header))
+            lines.append(format_line(f" [Chunk {chunk_num}]"))
 
             # Target language (translated) first
             tgt_prefix = f"   {tgt_lang}: "
+            # Wrap by character length ≈ display width for Latin; keep prefix indent
+            wrap_w = max(8, INNER - 1)
             tgt_wrapper = textwrap.TextWrapper(
-                width=58,
+                width=wrap_w,
                 initial_indent=tgt_prefix,
-                subsequent_indent=" " * len(tgt_prefix)
+                subsequent_indent=" " * len(tgt_prefix),
+                replace_whitespace=False,
+                drop_whitespace=True,
             )
-            for line in tgt_wrapper.wrap(translated):
+            for line in tgt_wrapper.wrap((translated or "").strip() or ""):
                 lines.append(format_line(line))
 
             # Source language (heard) second
             src_prefix = f"   {src_lang}: "
             src_wrapper = textwrap.TextWrapper(
-                width=58,
+                width=wrap_w,
                 initial_indent=src_prefix,
-                subsequent_indent=" " * len(src_prefix)
+                subsequent_indent=" " * len(src_prefix),
+                replace_whitespace=False,
+                drop_whitespace=True,
             )
-            for line in src_wrapper.wrap(heard):
+            for line in src_wrapper.wrap((heard or "").strip() or ""):
                 lines.append(format_line(line))
 
             lines.append(format_line(""))
 
-    lines.append("╠" + "═" * 60 + "╣")
+    lines.append("╠" + "═" * INNER + "╣")
     lines.append(format_line(" Press [Enter] to close this window..."))
-    lines.append("╚" + "═" * 60 + "╝")
+    lines.append("╚" + "═" * INNER + "╝")
 
+    # Color borders/title without breaking geometry (color codes are zero-width)
+    def _paint(line: str) -> str:
+        if line.startswith("╔") or line.startswith("╚") or line.startswith("╠"):
+            return Fore.CYAN + line + Style.RESET_ALL
+        if line.startswith("║") and line.endswith("║"):
+            mid = line[1:-1]
+            # Title row
+            if "MY FAVORITES" in mid:
+                # re-center already in mid; color the star title substring
+                colored_mid = mid.replace(
+                    "★ MY FAVORITES ★",
+                    Fore.YELLOW
+                    + Style.BRIGHT
+                    + "★ MY FAVORITES ★"
+                    + Style.RESET_ALL
+                    + Fore.CYAN,
+                )
+                return (
+                    Fore.CYAN
+                    + "║"
+                    + Style.RESET_ALL
+                    + colored_mid
+                    + Fore.CYAN
+                    + "║"
+                    + Style.RESET_ALL
+                )
+            if "Press [Enter]" in mid:
+                return (
+                    Fore.CYAN
+                    + "║"
+                    + Style.RESET_ALL
+                    + Style.DIM
+                    + mid
+                    + Style.RESET_ALL
+                    + Fore.CYAN
+                    + "║"
+                    + Style.RESET_ALL
+                )
+            return (
+                Fore.CYAN
+                + "║"
+                + Style.RESET_ALL
+                + mid
+                + Fore.CYAN
+                + "║"
+                + Style.RESET_ALL
+            )
+        return line
+
+    in_tui = False
     print()
-    for line in lines:
-        colored_line = (
-            line.replace("║", Fore.CYAN + "║" + Style.RESET_ALL)
-            .replace("╔", Fore.CYAN + "╔" + Style.RESET_ALL)
-            .replace("╗", Fore.CYAN + "╗" + Style.RESET_ALL)
-            .replace("╠", Fore.CYAN + "╠" + Style.RESET_ALL)
-            .replace("╣", Fore.CYAN + "╣" + Style.RESET_ALL)
-            .replace("╚", Fore.CYAN + "╚" + Style.RESET_ALL)
-            .replace("╝", Fore.CYAN + "╝" + Style.RESET_ALL)
-            .replace("═", Fore.CYAN + "═" + Style.RESET_ALL)
-            .replace(
-                "★ MY FAVORITES ★",
-                Fore.YELLOW + Style.BRIGHT + "★ MY FAVORITES ★" + Style.RESET_ALL,
-            )
-            .replace(
-                "Press [Enter] to close this window...",
-                Style.DIM + "Press [Enter] to close this window..." + Style.RESET_ALL,
-            )
-        )
-        print(colored_line)
+    with _print_lock:
+        in_tui = _log_sink is not None
+        if in_tui:
+            # TUI: plain geometry (no ANSI) so RichLog borders stay aligned
+            for line in lines:
+                _emit("raw", line)
+        else:
+            for line in lines:
+                print(_paint(line))
 
+    # Wait for Enter (outside print lock — TUI stdin proxy may block)
     try:
-        sys.__stdin__.readline()
+        sys.stdin.readline()
     except Exception:
-        pass
+        try:
+            sys.__stdin__.readline()
+        except Exception:
+            pass
