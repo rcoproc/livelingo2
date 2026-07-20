@@ -881,9 +881,9 @@ def _print_menu(pipeline=None):
             f"TTS: {_tts_menu_label()} | Sound: {sound} | Mic: {mic}"
         )
         ui.dim(
-            "Sentence: e/eN d/dN f/fN F l lo lt cls gt gf c | "
-            "Audio: r/rN s n x a/aN p/pN | "
-            "Idiom: g t o | Session: v m q"
+            "Sentence: e/eN enew d/dN f/fN F l lo lt cls gg/GG gt/gf c | "
+            "Audio: r/rN s n x a/aN p/pN ld lav lv ctts | "
+            "Idiom: g t o | Session: v m u(compact) q"
         )
         if pipeline is not None:
             ui.success(
@@ -985,6 +985,7 @@ def _print_menu(pipeline=None):
         [
             "[e]  Edit last",
             "[eN] Edit chunk N",
+            "[enew] New text (no mic)",
             "[d]  Delete last",
             "[dN] Delete chunk N",
             "[f]  Favorite last",
@@ -997,8 +998,8 @@ def _print_menu(pipeline=None):
             "[coN] Comment N",
             "[codN] Del comment #N",
             "[cls] Clear log",
-            "[gt] Go top",
-            "[gf] Go footer",
+            "[gg/gt] Go top",
+            "[GG/gf] Go bottom",
             "[c]  Export .md",
         ],
     )
@@ -1014,6 +1015,10 @@ def _print_menu(pipeline=None):
             "[aN] Copy path N",
             "[p]  Open audio folder",
             "[pN] Open folder N",
+            "[ld]  List devices",
+            "[lav] All TTS voices",
+            "[lv]  Voices (en/es/fr)",
+            "[ctts] Change TTS voice (ctts NomeVoz)",
         ],
     )
     _print_menu_group(
@@ -1124,6 +1129,7 @@ def _input_loop(pipeline, synonym_lookup, indicator=None):
       a / aN  -> Copy chunk audio file path to clipboard
       p / pN  -> Open Explorer on chunk audio file/folder
       e       -> Edit the last transcribed chunk
+      enew    -> New translation from typed text (no mic); TTS if sound ON
     """
     while not pipeline.stop_event.is_set():
         try:
@@ -1156,6 +1162,91 @@ def _input_loop(pipeline, synonym_lookup, indicator=None):
 # Single-letter terminal commands (animation can make the first keystroke hard to see).
 _SINGLE_LETTER_CMDS = frozenset("sngmxq")
 
+# ANSI CSI sequences (colorama / terminal) — strip before TUI log.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Locales shown by [lv] (edge-tts --list-voices filter).
+_LV_VOICE_RE = re.compile(r"en-US|en-GB|es-ES|es-MX|fr-FR")
+
+
+def _project_root():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text or "")
+
+
+def _edge_tts_list_voices_argv():
+    """Resolve `edge-tts --list-voices` (PATH, venv Scripts, or python -m)."""
+    import shutil
+
+    found = shutil.which("edge-tts")
+    if found:
+        return [found, "--list-voices"]
+    scripts = os.path.dirname(sys.executable)
+    for name in ("edge-tts.exe", "edge-tts"):
+        cand = os.path.join(scripts, name)
+        if os.path.isfile(cand):
+            return [cand, "--list-voices"]
+    return [sys.executable, "-m", "edge_tts", "--list-voices"]
+
+
+def _run_cmd_to_log(argv, title, *, timeout=90, line_filter=None):
+    """
+    Run an external command and print stdout/stderr lines into the UI log.
+    line_filter: optional compiled regex — keep matching lines only.
+    """
+    ui.info(title)
+    ui.dim("  $ " + " ".join(argv))
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=_project_root(),
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        ui.error(f"Comando não encontrado: {argv[0]}")
+        return
+    except subprocess.TimeoutExpired:
+        ui.error(f"Timeout ({timeout}s) ao executar: {argv[0]}")
+        return
+    except Exception as exc:
+        ui.error(f"Falha ao executar: {exc}")
+        return
+
+    out = _strip_ansi(proc.stdout or "")
+    err = _strip_ansi(proc.stderr or "").strip()
+    lines = [ln.rstrip() for ln in out.splitlines()]
+    if line_filter is not None:
+        lines = [ln for ln in lines if line_filter.search(ln)]
+    # Drop pure-empty leading/trailing clutter; keep internal blanks sparingly
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        if err:
+            for ln in err.splitlines():
+                ui.warn(ln)
+        else:
+            ui.warn("Nenhuma linha na saída.")
+        if proc.returncode not in (0, None):
+            ui.warn(f"exit code {proc.returncode}")
+        return
+    for ln in lines:
+        ui.raw(ln)
+    if err and proc.returncode not in (0, None):
+        for ln in err.splitlines()[:12]:
+            ui.warn(ln)
+    if proc.returncode not in (0, None):
+        ui.warn(f"exit code {proc.returncode} · {len(lines)} linha(s)")
+    else:
+        ui.success(f"{len(lines)} linha(s).")
+
 
 def _normalize_cmd(raw_cmd, cmd):
     """
@@ -1171,6 +1262,33 @@ def _normalize_cmd(raw_cmd, cmd):
         letter = cmd[0]
         return (letter.upper() if raw_cmd.isupper() else letter), letter
     return raw_cmd, cmd
+
+
+def _tui_prompt_prefill(indicator, text: str) -> None:
+    """
+    Prefill the TUI command field for the next stdin prompt (edit sentence).
+
+    Classic terminal keeps using readline pre_input_hook; TUI has no real
+    readline, so the #cmd Input must be filled explicitly.
+    """
+    if indicator is None:
+        return
+    value = text or ""
+    try:
+        # Store immediately so _wait_for_prompt_line sees it even before UI hop.
+        if hasattr(indicator, "_prompt_prefill"):
+            indicator._prompt_prefill = value
+        if not hasattr(indicator, "set_prompt_prefill"):
+            return
+        if hasattr(indicator, "call_from_thread"):
+            indicator.call_from_thread(indicator.set_prompt_prefill, value)
+        else:
+            indicator.set_prompt_prefill(value)
+    except Exception:
+        try:
+            indicator.set_prompt_prefill(value)
+        except Exception:
+            pass
 
 
 def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
@@ -1199,27 +1317,74 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         pipeline.replay_chunk(chunk_num)
         if indicator is not None:
             indicator.set_sound_on(pipeline.is_sound_enabled())
+    elif cmd == "enew" or cmd.startswith("enew "):
+        # New translation from typed text only (no mic / STT).
+        # Audio TTS follows current sound mode: ON → synthesize + play; OFF → text
+        # (optional background TTS if TTS_SKIP_WHEN_MUTED is false).
+        parts = (raw_cmd or "").split(None, 1)
+        text = (parts[1] if len(parts) == 2 else "").strip()
+        if not text:
+            print("Texto a traduzir (enew): ", end="", flush=True)
+            try:
+                text = sys.stdin.readline().strip()
+            except (KeyboardInterrupt, EOFError):
+                text = ""
+        if not text:
+            ui.warn(
+                "enew: informe o texto. Uso: enew <texto a traduzir>",
+                indent=3,
+            )
+            return
+        # Collapse accidental newlines from multi-line paste into one chunk.
+        text = " ".join(text.split()).strip()
+        if not text:
+            ui.warn("enew: texto vazio.", indent=3)
+            return
+        pipeline.chunk_queue.put(text)
+        sound_on = bool(pipeline.is_sound_enabled())
+        preview = text if len(text) <= 80 else text[:77] + "…"
+        if sound_on:
+            ui.success(
+                f"enew: enfileirado — traduz + áudio (sound ON): \"{preview}\"",
+                indent=3,
+            )
+        else:
+            ui.info(
+                f"enew: enfileirado — só texto (sound OFF; [s] para ouvir): "
+                f"\"{preview}\"",
+                indent=3,
+            )
     elif cmd == "e":
         last_heard = pipeline.get_last_heard()
         if not last_heard:
             ui.warn("No sentences in history to edit.")
             return
+        # TUI: prefill #cmd with the current sentence (readline hooks don't apply).
+        in_tui = indicator is not None and (
+            hasattr(indicator, "set_prompt_prefill") or ui.get_log_sink() is not None
+        )
         has_readline = False
-        try:
-            import readline
-            def hook():
-                readline.insert_text(last_heard)
-                readline.redisplay()
-            readline.set_pre_input_hook(hook)
-            has_readline = True
-        except ImportError:
-            ui.warn(
-                "Tip: Install 'pyreadline3' (on Windows) or 'gnureadline' (on Linux/macOS) "
-                "to pre-populate text inside the editor."
-            )
+        if not in_tui:
+            try:
+                import readline
+                def hook():
+                    readline.insert_text(last_heard)
+                    readline.redisplay()
+                readline.set_pre_input_hook(hook)
+                has_readline = True
+            except ImportError:
+                ui.warn(
+                    "Tip: Install 'pyreadline3' (on Windows) or 'gnureadline' (on Linux/macOS) "
+                    "to pre-populate text inside the editor."
+                )
 
         try:
-            if has_readline:
+            if in_tui:
+                _tui_prompt_prefill(indicator, last_heard)
+                ui.info("Edite a frase no campo (Enter=salvar · apague tudo=cancelar).")
+                print("Edit sentence: ", end="", flush=True)
+                new_text = sys.stdin.readline().strip()
+            elif has_readline:
                 new_text = input("Edit sentence: ").strip()
             else:
                 print(f'Last sentence: "{last_heard}"')
@@ -1229,7 +1394,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             new_text = ""
         finally:
             if has_readline:
-                readline.set_pre_input_hook(None)
+                try:
+                    readline.set_pre_input_hook(None)
+                except Exception:
+                    pass
+            if in_tui:
+                _tui_prompt_prefill(indicator, "")
 
         if new_text and new_text != last_heard:
             pipeline.chunk_queue.put(new_text)
@@ -1244,22 +1414,34 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         if not last_heard:
             ui.warn(f"Chunk {chunk_num} not found in history to edit.")
             return
+        in_tui = indicator is not None and (
+            hasattr(indicator, "set_prompt_prefill") or ui.get_log_sink() is not None
+        )
         has_readline = False
-        try:
-            import readline
-            def hook():
-                readline.insert_text(last_heard)
-                readline.redisplay()
-            readline.set_pre_input_hook(hook)
-            has_readline = True
-        except ImportError:
-            ui.warn(
-                "Tip: Install 'pyreadline3' (on Windows) or 'gnureadline' (on Linux/macOS) "
-                "to pre-populate text inside the editor."
-            )
+        if not in_tui:
+            try:
+                import readline
+                def hook():
+                    readline.insert_text(last_heard)
+                    readline.redisplay()
+                readline.set_pre_input_hook(hook)
+                has_readline = True
+            except ImportError:
+                ui.warn(
+                    "Tip: Install 'pyreadline3' (on Windows) or 'gnureadline' (on Linux/macOS) "
+                    "to pre-populate text inside the editor."
+                )
 
         try:
-            if has_readline:
+            if in_tui:
+                _tui_prompt_prefill(indicator, last_heard)
+                ui.info(
+                    f"Edite o chunk {chunk_num} no campo "
+                    "(Enter=salvar · apague tudo=cancelar)."
+                )
+                print(f"Edit sentence {chunk_num}: ", end="", flush=True)
+                new_text = sys.stdin.readline().strip()
+            elif has_readline:
                 new_text = input(f"Edit sentence {chunk_num}: ").strip()
             else:
                 print(f'Sentence of chunk {chunk_num}: "{last_heard}"')
@@ -1269,7 +1451,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             new_text = ""
         finally:
             if has_readline:
-                readline.set_pre_input_hook(None)
+                try:
+                    readline.set_pre_input_hook(None)
+                except Exception:
+                    pass
+            if in_tui:
+                _tui_prompt_prefill(indicator, "")
 
         if new_text and new_text != last_heard:
             pipeline.edit_chunk(chunk_num, new_text)
@@ -1278,6 +1465,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         else:
             ui.info("No changes made.")
     elif cmd == "d":
+
         last_heard = pipeline.get_last_heard()
         if not last_heard:
             ui.warn("No sentences in history to delete.")
@@ -1475,12 +1663,52 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 indent=3,
             )
         _print_menu(pipeline)
+    elif cmd in ("b", "bypass", "hot"):
+        # Direct voice to OUTPUT (CABLE) — no STT/translate. Toggle.
+        # Pause listen-to-translate; raw mic → Teams mic path.
+        try:
+            active = pipeline.toggle_voice_passthrough()
+        except Exception as exc:
+            ui.error(f"[b] Bypass falhou: {exc}")
+            return
+        if active:
+            ui.warn(
+                "[b] BYPASS ON — sua voz vai direto ao CABLE/Teams (sem tradução). "
+                "Escuta de tradução pausada. Pressione [b] de novo para voltar.",
+                indent=3,
+            )
+            ui.dim(
+                "  Dica: fale em inglês (ou o idioma da call). "
+                "Mic do Teams deve ser CABLE Output.",
+                indent=3,
+            )
+        else:
+            ui.success(
+                "[b] BYPASS OFF — escuta/tradução retomadas. Fale no idioma SOURCE.",
+                indent=3,
+            )
+        if indicator is not None:
+            # Optional header cue if the TUI supports it
+            try:
+                if hasattr(indicator, "set_passthrough"):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(
+                            indicator.set_passthrough, active
+                        )
+                    else:
+                        indicator.set_passthrough(active)
+            except Exception:
+                pass
     elif cmd == "n":
         muted, os_ok, mic_name = pipeline.toggle_mic()
         if indicator is not None:
             indicator.set_mic_muted(muted)
             if not muted:
-                indicator.start()  # resume icons after mute (or first LIVE)
+                # Classic ListenIndicator has an animation thread; TUI (LiveLingoApp)
+                # only needs set_mic_muted — it has no .start() (header ticks alone).
+                start_fn = getattr(indicator, "start", None)
+                if callable(start_fn):
+                    start_fn()
         if muted:
             if os_ok:
                 ui.warn(
@@ -1640,8 +1868,9 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         margin = 3
         pad = " " * margin
         in_tui = ui.get_log_sink() is not None
-        # Full panel/terminal width (TUI provider → live RichLog cols; not hardcoded 72/80)
+        # Body budget after pad: pad + body ≤ panel bake width (never overflow ===).
         content_w = ui.content_width(margin=margin)
+        rule = ui.rule_line(width=content_w, margin=margin)
 
         lang_map = {
             "fr": "Frances",
@@ -1657,10 +1886,16 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         tgt_lang = lang_map.get(cfg.TARGET_LANG.lower(), cfg.TARGET_LANG.upper())
 
         def _wrap_body(label_plain, body, width):
-            """Wrap body so first line fits after label; later lines align under body."""
+            """
+            Wrap body so first line fits after label; later lines align under body.
+
+            `width` is the full line budget *after* pad (label+body ≤ width).
+            """
             body = " ".join((body or "").split())
             if not body:
                 return [""]
+            # Clamp to content budget so pad+line never exceeds RichLog bake width
+            width = max(8, min(int(width), content_w))
             limit = max(8, width - len(label_plain))
             words = body.split(" ")
             lines = []
@@ -1680,14 +1915,19 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 lines.append(cur)
             return lines or [""]
 
-        rule = "=" * content_w
+        def _title_line(text: str) -> str:
+            """Title clipped to content_w so it never wraps mid-rule block."""
+            t = " ".join((text or "").split())
+            if len(t) <= content_w:
+                return t
+            return t[: max(1, content_w - 1)] + "…"
 
         # --- TUI: hang-indent + classic colors (yellow chunk / blue target / green source) ---
         if in_tui:
             e = ui._rich_escape
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             ui.rich(
-                f"{pad}[bold cyan]CURRENT SESSION HISTORY (Chronological)[/]"
+                f"{pad}[bold cyan]{e(_title_line('CURRENT SESSION HISTORY (Chronological)'))}[/]"
             )
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             for entry in full_trans:
@@ -1762,7 +2002,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 ui.raw("")  # blank between chunks
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             ui.rich(
-                f"{pad}[bold cyan]Total: {len(full_trans)} frase(s)[/]"
+                f"{pad}[bold cyan]{e(_title_line(f'Total: {len(full_trans)} frase(s)'))}[/]"
             )
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             return
@@ -1780,7 +2020,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         print()
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
         _print_plain(
-            "CURRENT SESSION HISTORY (Chronological)",
+            _title_line("CURRENT SESSION HISTORY (Chronological)"),
             Fore.CYAN + Style.BRIGHT,
         )
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
@@ -2043,26 +2283,10 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             except Exception:
                 print("\n" * 40)
         ui.success("Log limpo." if ui.get_log_sink() else "Tela limpa.")
-    elif cmd == "gt":
-        # Go top — scroll log to start (TUI). Silent on success (no log noise).
-        moved = False
-        if indicator is not None and hasattr(indicator, "scroll_log_top"):
-            try:
-                if hasattr(indicator, "call_from_thread"):
-                    indicator.call_from_thread(indicator.scroll_log_top)
-                else:
-                    indicator.scroll_log_top()
-                moved = True
-            except Exception:
-                try:
-                    indicator.scroll_log_top()
-                    moved = True
-                except Exception:
-                    pass
-        if not moved:
-            ui.warn("gt só funciona no modo TUI.", indent=3)
-    elif cmd == "gf":
-        # Go footer — scroll log to end (TUI). Silent on success.
+    elif raw_cmd == "GG" or cmd == "gf":
+        # Go bottom / footer — scroll log to end (TUI).
+        # GG case-sensitive (vim-style); gf lowercase alias.
+        # TUI usually handles this on the UI thread in _submit_command_line.
         moved = False
         if indicator is not None and hasattr(indicator, "scroll_log_footer"):
             try:
@@ -2078,7 +2302,103 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 except Exception:
                     pass
         if not moved:
-            ui.warn("gf só funciona no modo TUI.", indent=3)
+            ui.warn("GG/gf só funciona no modo TUI.", indent=3)
+    elif cmd in ("gt", "gg"):
+        # Go top — scroll log to start (TUI).
+        # gg (vim-style) + gt. After GG check so "GG" is not treated as top.
+        # TUI usually handles this on the UI thread in _submit_command_line.
+        moved = False
+        if indicator is not None and hasattr(indicator, "scroll_log_top"):
+            try:
+                if hasattr(indicator, "call_from_thread"):
+                    indicator.call_from_thread(indicator.scroll_log_top)
+                else:
+                    indicator.scroll_log_top()
+                moved = True
+            except Exception:
+                try:
+                    indicator.scroll_log_top()
+                    moved = True
+                except Exception:
+                    pass
+        if not moved:
+            ui.warn("gg/gt só funciona no modo TUI.", indent=3)
+    elif cmd == "lav":
+        # List all edge-tts voices → log
+        _run_cmd_to_log(
+            _edge_tts_list_voices_argv(),
+            "edge-tts — todas as vozes (edge-tts --list-voices)",
+            timeout=120,
+        )
+    elif cmd == "lv":
+        # Filtered edge-tts voices (en-US|en-GB|es-ES|es-MX|fr-FR) → log
+        _run_cmd_to_log(
+            _edge_tts_list_voices_argv(),
+            "edge-tts — vozes en-US|en-GB|es-ES|es-MX|fr-FR",
+            timeout=120,
+            line_filter=_LV_VOICE_RE,
+        )
+    elif cmd == "ld":
+        # Audio devices (python list_devices.py) → log
+        script = os.path.join(_project_root(), "list_devices.py")
+        _run_cmd_to_log(
+            [sys.executable, script],
+            "Dispositivos de áudio (python list_devices.py)",
+            timeout=60,
+        )
+    elif cmd == "ctts" or cmd.startswith("ctts "):
+        # Change TTS_VOICE (edge-tts ShortName) — command only, no modal/click.
+        # Prefer one-liner: ctts en-US-AndrewMultilingualNeural
+        # Without args: prompt in #cmd / stdin (classic readline style).
+        cur = (getattr(cfg, "TTS_VOICE", "") or "").strip() or "?"
+        parts = (raw_cmd or "").split(None, 1)
+        inline = (parts[1] or "").strip() if len(parts) == 2 else ""
+
+        if not inline:
+            ui.info(f"TTS_VOICE atual: {cur}", indent=3)
+            ui.dim(
+                "Uso: ctts <ShortName>  ·  lista: lav / lv  ·  "
+                "ex: ctts en-US-AndrewMultilingualNeural",
+                indent=3,
+            )
+            print(
+                "   Nova voz edge-tts (Enter vazio = cancelar): ",
+                end="",
+                flush=True,
+            )
+            try:
+                inline = sys.stdin.readline().strip()
+            except (KeyboardInterrupt, EOFError):
+                inline = ""
+            if not inline:
+                ui.info("TTS_VOICE inalterada (entrada vazia).", indent=3)
+                return
+
+        result = pipeline.set_tts_voice(inline)
+        if not result.get("ok"):
+            ui.warn(result.get("error") or "Falha ao alterar TTS_VOICE.", indent=3)
+            return
+        for w in result.get("warnings") or []:
+            ui.warn(w, indent=3)
+        voice = result.get("voice") or cfg.TTS_VOICE
+        old = result.get("old_voice") or "?"
+        if result.get("unchanged"):
+            ui.info(f"TTS_VOICE já era {voice} — sem mudança.", indent=3)
+        else:
+            ui.success(f"[ctts] TTS_VOICE: {old}  ⇒  {voice}")
+            ui.info("Próximos áudios usarão a nova voz.", indent=3)
+        if indicator is not None:
+            # Non-blocking UI refresh of TTS badge / menu
+            try:
+                if hasattr(indicator, "request_refresh_source_ui"):
+                    indicator.request_refresh_source_ui()
+                elif hasattr(indicator, "refresh_source_ui"):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator.refresh_source_ui)
+                    else:
+                        indicator.refresh_source_ui()
+            except Exception:
+                pass
     elif cmd == "lo":
         # List only SOURCE (heard) phrases, one per line
         full_trans = pipeline.get_full_transcript()
@@ -2114,6 +2434,22 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.info("Operation canceled.")
     elif cmd == "m":
         _print_menu(pipeline)
+    elif cmd in ("u", "ui", "compact"):
+        # Toggle compact TUI: hide command menu strip (command input stays).
+        # F4 does the same. Does not resize the Windows console (breaks Textual).
+        if indicator is not None and hasattr(indicator, "toggle_compact_ui"):
+            try:
+                if hasattr(indicator, "call_from_thread"):
+                    indicator.call_from_thread(indicator.toggle_compact_ui)
+                else:
+                    indicator.toggle_compact_ui()
+            except Exception as exc:
+                ui.warn(f"UI compacta falhou: {exc}", indent=3)
+        else:
+            ui.warn(
+                "Comando [u]/compact só funciona no modo TUI (UI_MODE=tui).",
+                indent=3,
+            )
     elif cmd in ("q", "quit"):
         ui.info("Stopping application...")
         pipeline.stop()
@@ -2121,10 +2457,10 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
     else:
         ui.warn(
             f"Unknown command: '{cmd}'. Use: "
-            f"r/rN, e/eN, d/dN, f/fN, F, s, g (swap), t (TARGET), "
+            f"r/rN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
             f"a/aN (copy audio path), p/pN (open audio folder), "
-            f"n (mic), x, o, c, l, lo, lt, co/coN, codN, cls, "
-            f"gt (top), gf (footer), v, m, q.",
+            f"n (mic), b (bypass voice), x, o, c, l, lo, lt, ld, lav, lv, ctts, "
+            f"co/coN, codN, cls, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
             indent=3,
         )
 
@@ -2511,6 +2847,11 @@ def main():
         indicator = ListeningIndicator()
 
         def on_listening(is_speaking):
+            # UX: always log listen start/end in the scrollback (TUI + classic).
+            try:
+                ui.listen_progress(bool(is_speaking))
+            except Exception:
+                pass
             app = tui_holder.get("app")
             if app is not None:
                 try:

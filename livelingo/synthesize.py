@@ -9,7 +9,9 @@ Requires internet access.
 """
 
 import asyncio
+import concurrent.futures
 import io
+import re
 
 import numpy as np
 import soundfile as sf
@@ -47,6 +49,147 @@ def default_edge_voice_for_lang(lang_code):
     if "-" in code:
         return DEFAULT_EDGE_VOICE_BY_LANG.get(code.split("-", 1)[0], "en-US-AriaNeural")
     return "en-US-AriaNeural"
+
+
+# Cached ShortName set from edge-tts list_voices (None = not loaded yet).
+_EDGE_VOICE_NAMES = None
+_EDGE_VOICE_LOAD_ERROR = None
+
+# Loose shape check when the online catalog is unavailable.
+_EDGE_VOICE_SHAPE = re.compile(r"^[A-Za-z]{2,3}-[A-Za-z]{2,4}-[\w]+$")
+
+
+def clear_edge_voice_cache():
+    """Drop cached voice catalog (e.g. after network recovery)."""
+    global _EDGE_VOICE_NAMES, _EDGE_VOICE_LOAD_ERROR
+    _EDGE_VOICE_NAMES = None
+    _EDGE_VOICE_LOAD_ERROR = None
+
+
+def _fetch_edge_voice_names_blocking():
+    """Fetch catalog (may block on network). Used with a timeout wrapper."""
+    import edge_tts
+
+    async def _list():
+        return await edge_tts.list_voices()
+
+    voices = asyncio.run(_list())
+    names = {
+        (v.get("ShortName") or "").strip()
+        for v in (voices or [])
+        if (v.get("ShortName") or "").strip()
+    }
+    if not names:
+        raise RuntimeError("edge-tts returned an empty voice list")
+    return frozenset(names)
+
+
+def get_edge_voice_names(force: bool = False, timeout: float = 3.0):
+    """
+    Return frozenset of edge-tts ShortName values (online catalog).
+    Caches on success. Raises on failure if never cached.
+    `timeout` avoids freezing the TUI when the catalog request hangs.
+    On timeout, the fetch thread is abandoned (shutdown wait=False) so
+    we never block the caller longer than `timeout`.
+    """
+    global _EDGE_VOICE_NAMES, _EDGE_VOICE_LOAD_ERROR
+    if _EDGE_VOICE_NAMES is not None and not force:
+        return _EDGE_VOICE_NAMES
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = pool.submit(_fetch_edge_voice_names_blocking)
+        try:
+            names = fut.result(timeout=float(timeout))
+        except concurrent.futures.TimeoutError:
+            _EDGE_VOICE_LOAD_ERROR = f"timeout after {timeout}s"
+            if _EDGE_VOICE_NAMES is not None:
+                return _EDGE_VOICE_NAMES
+            raise TimeoutError(
+                f"edge-tts list_voices excedeu {timeout}s"
+            ) from None
+        _EDGE_VOICE_NAMES = names
+        _EDGE_VOICE_LOAD_ERROR = None
+        return _EDGE_VOICE_NAMES
+    except TimeoutError:
+        raise
+    except Exception as exc:
+        _EDGE_VOICE_LOAD_ERROR = str(exc)
+        if _EDGE_VOICE_NAMES is not None:
+            return _EDGE_VOICE_NAMES
+        raise
+    finally:
+        # Do not wait for a hung list_voices — that starved STT/TTS threads.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)
+
+
+def resolve_edge_voice(voice_id: str, online: bool = False, timeout: float = 3.0):
+    """
+    Validate an edge-tts voice id.
+
+    Returns (ok, canonical_or_error, warnings_list).
+    ok=True → second value is canonical ShortName.
+    ok=False → second value is error message for the user.
+
+    By default (online=False) never hits the network — only uses an in-memory
+    catalog if already cached (e.g. after [lav]), otherwise accepts well-shaped
+    ShortNames. This keeps [ctts] off the STT/TTS critical path.
+    """
+    raw = (voice_id or "").strip()
+    if not raw:
+        return False, "Nome de voz vazio.", []
+    # Strip accidental quotes / surrounding whitespace
+    if (raw.startswith('"') and raw.endswith('"')) or (
+        raw.startswith("'") and raw.endswith("'")
+    ):
+        raw = raw[1:-1].strip()
+    if not raw:
+        return False, "Nome de voz vazio.", []
+
+    warnings = []
+    names = _EDGE_VOICE_NAMES
+
+    if names is None and online:
+        try:
+            names = get_edge_voice_names(timeout=min(float(timeout), 3.0))
+        except Exception as exc:
+            warnings.append(f"Catálogo online indisponível ({exc}).")
+            names = None
+
+    if names is not None:
+        if raw in names:
+            return True, raw, warnings
+        lower_map = {n.lower(): n for n in names}
+        canon = lower_map.get(raw.lower())
+        if canon:
+            return True, canon, warnings
+        # Catalog present but name missing — still allow shape-valid ids
+        # (catalog may be stale / incomplete).
+        if _EDGE_VOICE_SHAPE.match(raw):
+            warnings.append(
+                f"'{raw}' não está no catálogo em cache; aplicando mesmo assim. "
+                f"Se o TTS falhar, use [lav]/[lv]."
+            )
+            return True, raw, warnings
+        return (
+            False,
+            f"Voz inválida: '{raw}'. Use [lav] (todas) ou [lv] (filtro) "
+            f"para ver ShortNames válidos.",
+            [],
+        )
+
+    # No catalog in memory: accept BCP-47 edge ShortName shape only (no network).
+    if _EDGE_VOICE_SHAPE.match(raw):
+        return True, raw, warnings
+    return (
+        False,
+        f"Voz com formato inválido: '{raw}'. "
+        f"Use ex: en-US-AriaNeural (veja [lav]/[lv]).",
+        [],
+    )
 
 
 class Synthesizer:

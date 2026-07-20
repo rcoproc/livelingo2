@@ -2,11 +2,11 @@
 tui_app.py
 ==========
 Textual TUI for LiveLingo: fixed listen header (robot + source/target) +
-scrollable log + command input.
+two scrollable log tabs (Tradução / Sistema) + command input.
 
 Pipeline (mic/STT/TTS) keeps running in background threads; this module only
-owns the screen. Logs arrive via ui.set_log_sink; commands reuse main dispatch
-in a worker thread with stdin/stdout proxies for prompts and prints.
+owns the screen. Logs arrive via ui.set_log_sink(kind, text, panel); commands
+reuse main dispatch in a worker thread with stdin/stdout proxies.
 """
 
 from __future__ import annotations
@@ -22,9 +22,10 @@ from typing import Callable, Iterable
 from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.selection import Selection
-from textual.widgets import Footer, Header, Input, RichLog, Static
+from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedContent, TabPane
 
 from . import ui as ui_mod
 
@@ -287,6 +288,181 @@ def _clipboard_set_image(path: str) -> bool:
     return False
 
 
+def _terminal_log_width(fallback: int = 100) -> int:
+    """
+    Conservative usable columns for log wrap when a pane has no layout size.
+
+    Subtract enough for TUI chrome (header, tabs, borders, scrollbar, padding)
+    so baked lines never exceed the visible panel (avoids === rule wrap).
+    """
+    try:
+        cols = int(os.get_terminal_size().columns)
+        if cols >= 40:
+            # tabs bar + borders + pad + scrollbar ≈ 12–16 on typical layouts
+            return max(60, cols - 16)
+    except OSError:
+        pass
+    return max(60, int(fallback or 100))
+
+
+def _host_window_hwnd():
+    """
+    HWND of the visible host window (conhost or Windows Terminal frame).
+
+    Never touch console buffer size here — only used for pixel MoveWindow.
+    """
+    if sys.platform != "win32":
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            GA_ROOT = 2
+            try:
+                root = user32.GetAncestor(hwnd, GA_ROOT)
+                if root:
+                    hwnd = root
+            except Exception:
+                pass
+            # Prefer a visible, sizable window
+            if user32.IsWindowVisible(hwnd):
+                return int(hwnd)
+
+        # Windows Terminal / ConPTY often has no GetConsoleWindow — find by title
+        # or use the foreground window (user just pressed F4 here).
+        candidates: list[int] = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def _enum(hwnd_e, _lparam):
+            if not user32.IsWindowVisible(hwnd_e):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd_e)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd_e, buf, length + 1)
+            title = (buf.value or "").lower()
+            # LiveLingo title or Windows Terminal host
+            if (
+                "livelingo" in title
+                or "windows terminal" in title
+                or title.endswith("powershell")
+                or "cmd.exe" in title
+            ):
+                candidates.append(int(hwnd_e))
+            return True
+
+        try:
+            user32.EnumWindows(_enum, 0)
+        except Exception:
+            pass
+        if candidates:
+            return candidates[0]
+
+        fg = user32.GetForegroundWindow()
+        return int(fg) if fg else 0
+    except Exception:
+        return 0
+
+
+def _snapshot_window_geom() -> dict | None:
+    """Capture terminal char size + host window pixel rect for later restore."""
+    snap: dict = {}
+    try:
+        ts = os.get_terminal_size()
+        snap["cols"] = int(ts.columns)
+        snap["rows"] = int(ts.lines)
+    except OSError:
+        snap["cols"] = 120
+        snap["rows"] = 40
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = _host_window_hwnd()
+            if hwnd:
+                rect = wintypes.RECT()
+                if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    snap["hwnd"] = hwnd
+                    snap["left"] = int(rect.left)
+                    snap["top"] = int(rect.top)
+                    snap["width"] = int(rect.right - rect.left)
+                    snap["height"] = int(rect.bottom - rect.top)
+        except Exception:
+            pass
+    return snap
+
+
+def _safe_resize_host_window(
+    cols: int,
+    rows: int,
+    *,
+    restore: dict | None = None,
+) -> bool:
+    """
+    Resize the host window height without touching the console screen buffer.
+
+    Previous SetConsoleWindowInfo(1x1)+SetConsoleScreenBufferSize corrupted
+    Textual (ghost UI, dead tabs). Safe path:
+      1) CSI 8 (Windows Terminal / xterm)
+      2) MoveWindow on host HWND (pixel height only)
+    """
+    cols = max(40, int(cols))
+    rows = max(14, int(rows))
+    ok = False
+
+    # 1) VT window resize — WT applies this and fires a normal resize event
+    try:
+        sys.stdout.write(f"\x1b[8;{rows};{cols}t")
+        sys.stdout.flush()
+        ok = True
+    except Exception:
+        pass
+
+    # 2) Pixel MoveWindow (works when CSI is ignored; no buffer API)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            if restore and restore.get("hwnd"):
+                hwnd = int(restore["hwnd"])
+                left = int(restore["left"])
+                top = int(restore["top"])
+                width = int(restore["width"])
+                height = int(restore["height"])
+                if user32.MoveWindow(hwnd, left, top, width, height, True):
+                    ok = True
+            else:
+                hwnd = _host_window_hwnd()
+                if hwnd:
+                    rect = wintypes.RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        cur_w = max(1, rect.right - rect.left)
+                        cur_h = max(1, rect.bottom - rect.top)
+                        try:
+                            cur_rows = max(1, os.get_terminal_size().lines)
+                        except OSError:
+                            cur_rows = max(1, rows)
+                        # Scale pixel height by row ratio (keep width)
+                        cell_h = max(8, cur_h // cur_rows)
+                        new_h = max(200, cell_h * rows + 48)
+                        if user32.MoveWindow(
+                            hwnd, rect.left, rect.top, cur_w, new_h, True
+                        ):
+                            ok = True
+        except Exception:
+            pass
+    return ok
+
+
 class SelectableRichLog(RichLog):
     """
     RichLog with character-level mouse selection + plain-text export.
@@ -296,13 +472,51 @@ class SelectableRichLog(RichLog):
       2) does not call Strip.apply_offsets() — so the compositor never
          gets content (x,y) under the mouse → Textual falls back to
          SELECT_ALL (entire log blue).
+      3) with wrap=True + shrink, lines are baked at the *current* region
+         width. Inactive TabPane often has ~0 width → permanent 20-col wrap.
 
-    We mirror the built-in Log widget: apply_offsets + get_selection + highlight.
+    We mirror the built-in Log widget: apply_offsets + get_selection + highlight,
+    and force a sane render width when the pane is hidden / not laid out.
     """
 
     def __init__(self, **kwargs):
+        # Default min_width is 78 upstream; we used 20 and that became the
+        # baked wrap width for inactive tabs. Keep a wide floor.
+        kwargs.setdefault("min_width", 100)
         super().__init__(**kwargs)
         self._plain_lines: list[str] = []
+        # Last measured content width while the pane was visible (≥40).
+        self._last_good_width = 0
+
+    def _safe_render_width(self) -> int:
+        """
+        Width to bake wrapped lines at.
+
+        Prefer the live content region when the pane is visible and laid out.
+        When the tab is hidden (ContentSwitcher → width ~0), reuse the last
+        good width or a conservative terminal floor — never a tiny min_width
+        that column-wraps forever, and never wider than the real panel.
+        """
+        try:
+            region_w = int(self.scrollable_content_region.width or 0)
+        except Exception:
+            region_w = 0
+        if region_w >= 40:
+            # CSS padding 0 1 + scrollbar fudge — stay inside the visible area
+            w = max(40, region_w - 2)
+            self._last_good_width = w
+            return w
+
+        if int(getattr(self, "_last_good_width", 0) or 0) >= 40:
+            return int(self._last_good_width)
+
+        try:
+            app_w = int(getattr(self.app.size, "width", 0) or 0)
+            if app_w >= 40:
+                return max(60, app_w - 16)
+        except Exception:
+            pass
+        return max(60, _terminal_log_width(100))
 
     def write(
         self,
@@ -332,6 +546,15 @@ class SelectableRichLog(RichLog):
                 self._plain_lines = self._plain_lines[-max_n:]
         except Exception:
             pass
+
+        # Always bake wrap at a sane width. Default shrink+tiny inactive pane
+        # width permanently column-wraps lines (telas3/telas4). Explicit width
+        # bypasses shrink/expand and ignores a bad region size.
+        if width is None:
+            width = self._safe_render_width()
+            expand = False
+            shrink = False
+
         return super().write(
             content,
             width=width,
@@ -541,6 +764,7 @@ _FOOTER_I18N = {
         "idiom": "Idiom",
         "edit": "Edit",
         "edit_n": "Edit N",
+        "enew": "New text",
         "del": "Del",
         "del_n": "Del N",
         "fav": "Fav",
@@ -559,25 +783,32 @@ _FOOTER_I18N = {
         "replay_n": "Replay N",
         "snd": "Snd",
         "mic": "Mic",
+        "bypass": "Bypass",
         "stop": "Stop",
         "path": "Path",
         "path_n": "Path N",
         "folder": "Folder",
+        "list_dev": "Devices",
+        "list_voices": "All voices",
+        "list_voices_f": "Voices filter",
+        "ctts": "Chg TTS",
         "swap": "Swap",
         "target": "Target",
         "synonyms": "Synonyms",
         "session": "Session",
         "menu": "Menu",
+        "compact": "Compact",
         "quit": "Quit",
         "on": "ON",
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUTED",
-        "placeholder": "Type a command and Enter (e.g. s, g, gt, gf, cls, q)…",
+        "placeholder": "Type a command and Enter (e.g. s, g, b, enew, ctts, u, q)…",
         "prompt_placeholder": "Type the answer and Enter…",
         "starting": "starting listen…",
         "g_swap": "g(swap)",
         "t_target": "t(target)",
+        "cmd_tts": "TTS",
     },
     "pt": {
         "sentence": "Frase",
@@ -585,6 +816,7 @@ _FOOTER_I18N = {
         "idiom": "Idioma",
         "edit": "Editar",
         "edit_n": "Edit N",
+        "enew": "Novo txt",
         "del": "Apagar",
         "del_n": "Apag N",
         "fav": "Fav",
@@ -603,25 +835,32 @@ _FOOTER_I18N = {
         "replay_n": "Replay N",
         "snd": "Som",
         "mic": "Mic",
+        "bypass": "Bypass",
         "stop": "Parar",
         "path": "Path",
         "path_n": "Path N",
         "folder": "Pasta",
+        "list_dev": "Devices",
+        "list_voices": "Vozes",
+        "list_voices_f": "Vozes filt",
+        "ctts": "Mudar TTS",
         "swap": "Trocar",
         "target": "Alvo",
         "synonyms": "Sinonimos",
         "session": "Sessao",
         "menu": "Menu",
+        "compact": "Compacta",
         "quit": "Sair",
         "on": "ON",
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUDO",
-        "placeholder": "Digite um comando e Enter (ex: s, g, gt, gf, cls, q)…",
+        "placeholder": "Digite um comando e Enter (ex: s, g, b, enew, ctts, u, q)…",
         "prompt_placeholder": "Digite a resposta e Enter…",
         "starting": "iniciando escuta…",
         "g_swap": "g(trocar)",
         "t_target": "t(alvo)",
+        "cmd_tts": "TTS",
     },
     "es": {
         "sentence": "Frase",
@@ -629,6 +868,7 @@ _FOOTER_I18N = {
         "idiom": "Idioma",
         "edit": "Editar",
         "edit_n": "Edit N",
+        "enew": "Nvo txt",
         "del": "Borrar",
         "del_n": "Borr N",
         "fav": "Fav",
@@ -657,11 +897,12 @@ _FOOTER_I18N = {
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUDO",
-        "placeholder": "Escriba un comando y Enter (ej: s, g, gt, gf, l, q)…",
+        "placeholder": "Escriba un comando y Enter (ej: s, g, gg, GG, l, q)…",
         "prompt_placeholder": "Escriba la respuesta y Enter…",
         "starting": "iniciando escucha…",
         "g_swap": "g(cambiar)",
         "t_target": "t(destino)",
+        "cmd_tts": "TTS",
     },
     "fr": {
         "sentence": "Phrase",
@@ -669,6 +910,7 @@ _FOOTER_I18N = {
         "idiom": "Langue",
         "edit": "Edit",
         "edit_n": "Edit N",
+        "enew": "Nouv txt",
         "del": "Suppr",
         "del_n": "Suppr N",
         "fav": "Fav",
@@ -697,11 +939,12 @@ _FOOTER_I18N = {
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUET",
-        "placeholder": "Tapez une commande et Entree (ex: s, g, gt, gf, l, q)…",
+        "placeholder": "Tapez une commande et Entree (ex: s, g, gg, GG, l, q)…",
         "prompt_placeholder": "Tapez la reponse et Entree…",
         "starting": "demarrage ecoute…",
         "g_swap": "g(echange)",
         "t_target": "t(cible)",
+        "cmd_tts": "TTS",
     },
     "de": {
         "sentence": "Satz",
@@ -709,6 +952,7 @@ _FOOTER_I18N = {
         "idiom": "Sprache",
         "edit": "Edit",
         "edit_n": "Edit N",
+        "enew": "Neu txt",
         "del": "Losch",
         "del_n": "Losch N",
         "fav": "Fav",
@@ -737,11 +981,12 @@ _FOOTER_I18N = {
         "off": "AUS",
         "live": "LIVE",
         "muted": "STUMM",
-        "placeholder": "Befehl eingeben und Enter (z.B. s, g, gt, gf, l, q)…",
+        "placeholder": "Befehl eingeben und Enter (z.B. s, g, gg, GG, l, q)…",
         "prompt_placeholder": "Antwort eingeben und Enter…",
         "starting": "hoere zu…",
         "g_swap": "g(tausch)",
         "t_target": "t(ziel)",
+        "cmd_tts": "TTS",
     },
     "it": {
         "sentence": "Frase",
@@ -749,6 +994,7 @@ _FOOTER_I18N = {
         "idiom": "Lingua",
         "edit": "Modif",
         "edit_n": "Mod N",
+        "enew": "Nuovo",
         "del": "Elim",
         "del_n": "Elim N",
         "fav": "Fav",
@@ -777,11 +1023,12 @@ _FOOTER_I18N = {
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUTO",
-        "placeholder": "Digita un comando e Invio (es: s, g, gt, gf, l, q)…",
+        "placeholder": "Digita un comando e Invio (es: s, g, gg, GG, l, q)…",
         "prompt_placeholder": "Digita la risposta e Invio…",
         "starting": "avvio ascolto…",
         "g_swap": "g(scambia)",
         "t_target": "t(target)",
+        "cmd_tts": "TTS",
     },
     "zh": {
         "sentence": "句子",
@@ -789,6 +1036,7 @@ _FOOTER_I18N = {
         "idiom": "语言",
         "edit": "编辑",
         "edit_n": "编辑N",
+        "enew": "新文本",
         "del": "删除",
         "del_n": "删除N",
         "fav": "收藏",
@@ -817,11 +1065,12 @@ _FOOTER_I18N = {
         "off": "关",
         "live": "开麦",
         "muted": "静音",
-        "placeholder": "输入命令后回车 (如 s, g, gt, gf, l, q)…",
+        "placeholder": "输入命令后回车 (如 s, g, gg, GG, l, q)…",
         "prompt_placeholder": "输入回答后回车…",
         "starting": "开始监听…",
         "g_swap": "g(交换)",
         "t_target": "t(目标)",
+        "cmd_tts": "TTS",
     },
     "ja": {
         "sentence": "文",
@@ -829,6 +1078,7 @@ _FOOTER_I18N = {
         "idiom": "言語",
         "edit": "編集",
         "edit_n": "編集N",
+        "enew": "新規文",
         "del": "削除",
         "del_n": "削除N",
         "fav": "お気に",
@@ -857,11 +1107,12 @@ _FOOTER_I18N = {
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUTE",
-        "placeholder": "コマンドを入力してEnter (例: s, g, gt, gf, l, q)…",
+        "placeholder": "コマンドを入力してEnter (例: s, g, gg, GG, l, q)…",
         "prompt_placeholder": "回答を入力してEnter…",
         "starting": "待受中…",
         "g_swap": "g(入替)",
         "t_target": "t(対象)",
+        "cmd_tts": "TTS",
     },
 }
 
@@ -1046,7 +1297,7 @@ def _lang_pair_parts():
 
 
 class LiveLingoApp(App):
-    """Main LiveLingo TUI — fixed listen header (robot + langs) + scrollable log."""
+    """Main LiveLingo TUI — listen header + Tradução/Sistema log tabs + cmd."""
 
     TITLE = "LiveLingo"
     SUB_TITLE = "real-time voice translation"
@@ -1098,50 +1349,127 @@ class LiveLingoApp(App):
         background: $panel;
         height: 1;
     }
-    #log {
+    /* Dual log: Tradução (chunks/comandos) + Sistema (etapas/timing) */
+    #log-tabs {
+        height: 1fr;
+        width: 1fr;
+        margin: 0;
+        padding: 0;
+        background: $surface;
+        border: solid $accent;
+    }
+    #log-tabs > ContentSwitcher {
+        height: 1fr;
+    }
+    #log-tabs TabPane {
+        height: 1fr;
+        padding: 0;
+    }
+    #log, #log-app {
         height: 1fr;
         margin: 0;
         padding: 0 1;
         background: $surface;
-        border: solid $accent;
+        border: none;
         scrollbar-size: 1 1;
         width: 1fr;
+        min-width: 40;
+        overflow-y: auto;
+        overflow-x: auto;
     }
-    /* Menu + command input + 1 row air below input (before Textual Footer) */
+    /* Keep panes full-width so wrap width is sane when switching tabs */
+    #tab-main, #tab-app {
+        width: 1fr;
+        height: 1fr;
+    }
+    /*
+     * Menu + command bar (above docked Footer — do NOT dock #bottom).
+     *
+     * height 10 − border-top 1 = 9 content:
+     *   #hint 6 (≈5 menu lines + 1 blank) + #cmd-row 3
+     */
     #bottom {
-        dock: bottom;
         height: 10;
         layout: vertical;
         background: $panel;
         border-top: solid $accent;
-        padding: 0 0 1 0;
+        padding: 0 1 0 1;
     }
-    /* Fixed-column cheat-sheet */
+    /* Compact UI ([u]): menu hidden — only command row */
+    #bottom.-compact {
+        height: 4;
+    }
     #hint {
-        height: 5;
-        min-height: 4;
-        max-height: 5;
+        height: 6;
+        width: 1fr;
         color: $text;
-        padding: 0 1;
+        padding: 0;
         background: $panel;
         content-align: left top;
-        overflow: hidden;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+    #bottom.-compact #hint {
+        display: none;
+        height: 0;
+        min-height: 0;
+        max-height: 0;
     }
     #cmd-row {
-        height: 4;
-        min-height: 4;
-        padding: 0 1 1 1;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        width: 1fr;
+        layout: horizontal;
         background: $panel;
+        padding: 0;
+    }
+    /*
+     * Border on outer #cmd-box (height 3 = top + text + bottom).
+     * Use "round" for clear L-shaped corners on Windows Terminal; solid often
+     * only shows the top/bottom horizontals depending on glyph support.
+     */
+    #cmd-box {
+        width: 1fr;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
         layout: vertical;
+        align: left middle;
+        background: $surface;
+        border: round $accent;
+        padding: 0 1;
+    }
+    #cmd-box:focus-within {
+        border: round $primary;
+        background: $surface;
     }
     #cmd {
         width: 1fr;
-        height: 3;
-        border: solid $primary;
+        height: 1;
         background: $surface;
+        color: $text;
+        padding: 0 1;
+        border: none;
     }
     #cmd:focus {
-        border: solid $accent;
+        border: none;
+    }
+    #cmd-tts {
+        width: auto;
+        min-width: 12;
+        max-width: 42;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        margin-left: 1;
+        padding: 0 1;
+        background: #e0a020;
+        color: #1a1b26;
+        text-style: bold;
+        content-align: center middle;
+        border: round #c48910;
+        overflow: hidden;
     }
 
     /* ---- Command palette (Ctrl+P): continuous box lines, not hkey/???? ---- */
@@ -1173,6 +1501,7 @@ class LiveLingoApp(App):
     """
 
     # Ctrl+C = selection (or full log if none); Ctrl+Shift+C / F2 = always full log.
+    # F3 = toggle Tradução ↔ Sistema log tabs.
     BINDINGS = [
         Binding("ctrl+c", "copy_selection", "Copy", show=True, priority=True),
         Binding(
@@ -1185,6 +1514,8 @@ class LiveLingoApp(App):
         Binding("ctrl+q", "quit_app", "Quit", show=True, priority=True),
         Binding("f1", "show_help", "Help", show=True),
         Binding("f2", "copy_log", "Copy log", show=True, priority=True),
+        Binding("f3", "toggle_log_tab", "Log tab", show=True, priority=True),
+        Binding("f4", "toggle_compact_ui", "Compact UI", show=True, priority=True),
     ]
 
     ALLOW_SELECT = True
@@ -1208,15 +1539,24 @@ class LiveLingoApp(App):
         self._prompt_q: queue.Queue = queue.Queue()
         self._prompt_waiting = threading.Event()
         self._prompt_label = ""
+        # Prefill for #cmd while waiting a prompt (e.g. edit last sentence).
+        self._prompt_prefill = ""
         # When True, force #cmd keystrokes/value to UPPERCASE (command [t] only).
         self._prompt_force_upper = False
         self._cmd_busy = False
+        # Non-blocking UI actions from worker threads (e.g. open TTS modal).
+        self._ui_action_q: queue.Queue = queue.Queue()
         self._frame_i = 0
         self._speaking = False
         self._sound_on = False
         self._mic_muted = False
+        self._passthrough = False
         self._log_queue: queue.Queue = queue.Queue()
         self._cached_log_width = 120
+        # Compact UI: hide menu + safe host-window height shrink ([u] / F4).
+        # Never touch console buffer APIs (that corrupted Textual before).
+        self._compact_ui = False
+        self._saved_window_geom: dict | None = None
         # Command history (↑/↓) — list of past submissions; index -1 = draft line
         self._cmd_history: list[str] = []
         self._cmd_history_i: int = -1
@@ -1274,21 +1614,45 @@ class LiveLingoApp(App):
         yield Header(show_clock=True)
         # Fixed top listen bar — single row only (robot + pair + audio + status)
         yield Static(_footer_i18n()["starting"], id="listen-header", markup=False)
-        yield SelectableRichLog(
-            id="log",
-            highlight=False,  # avoid markup glitches on Windows legacy console
-            markup=True,
-            wrap=True,
-            auto_scroll=True,
-            max_lines=5000,
-            min_width=20,
-        )
+        # Two log panels: clean translation vs technical pipeline stages
+        # min_width must be wide: inactive TabPane has ~0 layout width, and
+        # RichLog bakes wrap at write time (min_width was 20 → column-of-chars).
+        _log_min_w = _terminal_log_width(100)
+        with TabbedContent(id="log-tabs", initial="tab-main"):
+            with TabPane("Tradução", id="tab-main"):
+                yield SelectableRichLog(
+                    id="log",
+                    highlight=False,  # avoid markup glitches on Windows legacy console
+                    markup=True,
+                    wrap=True,
+                    auto_scroll=True,
+                    max_lines=5000,
+                    min_width=_log_min_w,
+                )
+            with TabPane("Sistema", id="tab-app"):
+                yield SelectableRichLog(
+                    id="log-app",
+                    highlight=False,
+                    markup=True,
+                    wrap=True,
+                    auto_scroll=True,
+                    max_lines=8000,
+                    min_width=_log_min_w,
+                )
         with Vertical(id="bottom"):
             yield Static("", id="hint", markup=True)
-            with Vertical(id="cmd-row"):
-                yield Input(
-                    placeholder=_footer_i18n()["placeholder"],
-                    id="cmd",
+            with Horizontal(id="cmd-row"):
+                # Border lives on #cmd-box so left/right sides never clip
+                with Vertical(id="cmd-box"):
+                    yield Input(
+                        placeholder=_footer_i18n()["placeholder"],
+                        id="cmd",
+                    )
+                # Current TTS_VOICE badge (display only; change with [ctts nome])
+                yield Static(
+                    "TTS ?",
+                    id="cmd-tts",
+                    markup=False,
                 )
         yield Footer()
 
@@ -1296,18 +1660,18 @@ class LiveLingoApp(App):
         ui_mod.set_log_sink(self._sink_from_worker)
         ui_mod.set_width_provider(self._log_content_width)
         self._load_cmd_history()
-        # Drain queued log lines from UI thread (safe for RichLog).
-        self.set_interval(0.05, self._drain_log_queue)
+        # One drain tick: logs + deferred UI actions (keep light for STT latency).
+        self.set_interval(0.05, self._drain_pending)
         # ~0.15s tick so robot bounce feels smooth (classic was 0.12–0.25s)
         self.set_interval(0.15, self._tick_status)
         self.set_interval(0.5, self._refresh_log_width)
-        self.set_interval(1.0, self._refresh_cmd_menu)
+        # Menu is mostly static; refresh less often to free the UI thread for log lines.
+        self.set_interval(2.0, self._refresh_cmd_menu)
         self._refresh_log_width()
         self._refresh_cmd_menu()
         log = self.query_one("#log", SelectableRichLog)
         log.write(
-            "[bold cyan]LiveLingo TUI[/] — log rolavel | "
-            "[bold yellow]escuta fixa no header[/]"
+            "[bold cyan]LiveLingo TUI[/] — aba [bold]Tradução[/] (chunks + comandos)"
         )
         log.write(
             "[dim]Fale no microfone — Heard/Translated aparecem aqui. "
@@ -1320,17 +1684,35 @@ class LiveLingoApp(App):
         log.write(
             "[bold green]Copiar:[/] clique e arraste no log → [bold]Ctrl+C[/]  ·  "
             "log inteiro [bold]Ctrl+Shift+C[/] / F2  ·  "
-            "ou Shift+arrastar (selecao nativa do Windows Terminal)"
+            "etapas/timestamps: aba [bold]Sistema[/] ou [bold]F3[/]"
         )
         log.write(
             "[dim]Dica: Windows Terminal recomendado. Sair: Ctrl+Q ou [q].[/]"
         )
+        try:
+            app_log = self.query_one("#log-app", SelectableRichLog)
+            app_log.write(
+                "[bold cyan]Sistema[/] — etapas do pipeline, escuta VAD, "
+                "timestamps e timing (não polui a aba Tradução)"
+            )
+            app_log.write(
+                "[dim]Aqui: Transcrevendo / Traduzindo / TTS / Escutando… "
+                "com @hora · +s desde escuta · Δµs. Role com a barra ou mouse.[/]"
+            )
+            app_log.write(
+                "[dim]F3 alterna entre Tradução e Sistema · "
+                "Ctrl+Shift+C / F2 copia o log da aba ativa.[/]"
+            )
+        except Exception:
+            pass
         self.query_one("#cmd", Input).focus()
         try:
             self._sound_on = bool(self.pipeline.is_sound_enabled())
             self._mic_muted = bool(self.pipeline.is_mic_muted())
         except Exception:
             pass
+        self._cmd_tts_label = ""
+        self._refresh_cmd_tts()
         self._tick_status()
 
     def on_unmount(self) -> None:
@@ -1429,26 +1811,36 @@ class LiveLingoApp(App):
 
     def _refresh_log_width(self) -> None:
         """Cache log content width on the UI thread (safe for worker reads)."""
+        floor = _terminal_log_width(100)
         try:
-            log = self.query_one("#log")
+            log = self._active_log_widget() or self.query_one("#log")
+            # Keep min_width in sync with terminal so inactive-tab writes stay wide
+            for lid in ("#log", "#log-app"):
+                try:
+                    wlog = self.query_one(lid, SelectableRichLog)
+                    wlog.min_width = floor
+                except Exception:
+                    pass
+            try:
+                safe = int(log._safe_render_width())  # type: ignore[attr-defined]
+                if safe >= 40:
+                    self._cached_log_width = safe
+                    return
+            except Exception:
+                pass
             cs = getattr(log, "content_size", None)
             if cs is not None:
                 cw = int(getattr(cs, "width", 0) or 0)
-                if cw >= 24:
-                    self._cached_log_width = max(24, cw - 2)
+                if cw >= 40:
+                    self._cached_log_width = max(40, cw - 2)
                     return
             w = int(getattr(log.size, "width", 0) or 0)
-            if w >= 24:
-                self._cached_log_width = max(24, w - 4)
+            if w >= 40:
+                self._cached_log_width = max(40, w - 4)
                 return
         except Exception:
             pass
-        try:
-            import os
-
-            self._cached_log_width = max(40, os.get_terminal_size().columns - 12)
-        except OSError:
-            pass
+        self._cached_log_width = floor
 
     def _log_content_width(self) -> int:
         """Usable columns inside #log (thread-safe via cached value)."""
@@ -1458,21 +1850,50 @@ class LiveLingoApp(App):
     # ------------------------------------------------------------------ #
     # Logging (thread-safe via queue → UI timer)
     # ------------------------------------------------------------------ #
-    def _sink_from_worker(self, kind: str, text: str) -> None:
+    def _sink_from_worker(self, kind: str, text: str, panel: str = "main") -> None:
         try:
-            self._log_queue.put_nowait((kind, text))
+            self._log_queue.put_nowait((kind, text, panel or "main"))
         except Exception:
             pass
 
-    def post_log(self, kind: str, text: str) -> None:
-        """Must run on the UI thread (or via _drain_log_queue)."""
+    def _resolve_log_widget(self, panel: str = "main"):
+        """Return SelectableRichLog for panel main|app (fallback #log)."""
+        log_id = "#log-app" if str(panel or "main").lower() == "app" else "#log"
         try:
-            log = self.query_one("#log", SelectableRichLog)
+            return self.query_one(log_id, SelectableRichLog)
         except Exception:
             try:
-                log = self.query_one("#log", RichLog)
+                return self.query_one(log_id, RichLog)
             except Exception:
-                return
+                if log_id != "#log":
+                    try:
+                        return self.query_one("#log", SelectableRichLog)
+                    except Exception:
+                        try:
+                            return self.query_one("#log", RichLog)
+                        except Exception:
+                            return None
+                return None
+
+    def _active_log_panel(self) -> str:
+        """Which log tab is visible: main | app."""
+        try:
+            tabs = self.query_one("#log-tabs", TabbedContent)
+            active = str(getattr(tabs, "active", "") or "")
+            if active in ("tab-app", "log-app") or active.endswith("app"):
+                return "app"
+        except Exception:
+            pass
+        return "main"
+
+    def _active_log_widget(self):
+        return self._resolve_log_widget(self._active_log_panel())
+
+    def post_log(self, kind: str, text: str, panel: str = "main") -> None:
+        """Must run on the UI thread (or via _drain_log_queue). panel=main|app."""
+        log = self._resolve_log_widget(panel)
+        if log is None:
+            return
         # Preserve intentional blank separators (session list gaps).
         if text is None:
             return
@@ -1518,10 +1939,47 @@ class LiveLingoApp(App):
     def _drain_log_queue(self) -> None:
         for _ in range(200):
             try:
-                kind, text = self._log_queue.get_nowait()
+                item = self._log_queue.get_nowait()
             except queue.Empty:
                 break
-            self.post_log(kind, text)
+            if not item:
+                continue
+            if len(item) >= 3:
+                kind, text, panel = item[0], item[1], item[2]
+            else:
+                kind, text = item[0], item[1]
+                panel = "main"
+            self.post_log(kind, text, panel=panel)
+
+    def _drain_ui_actions(self) -> None:
+        """Run UI-only actions posted from worker threads (never block workers)."""
+        for _ in range(20):
+            try:
+                act = self._ui_action_q.get_nowait()
+            except queue.Empty:
+                break
+            if act == "refresh_source_ui":
+                try:
+                    self.refresh_source_ui()
+                except Exception:
+                    pass
+            elif act == "refocus_cmd":
+                try:
+                    self._refocus_cmd_if_idle()
+                except Exception:
+                    pass
+
+    def _drain_pending(self) -> None:
+        """Single interval: prioritize log drain (translations) over UI actions."""
+        self._drain_log_queue()
+        self._drain_ui_actions()
+
+    def _modal_open(self) -> bool:
+        """True when a ModalScreen is the active top screen."""
+        try:
+            return isinstance(self.screen, ModalScreen)
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ #
     # Fixed listen header (robot animation + source/target)
@@ -1535,10 +1993,18 @@ class LiveLingoApp(App):
     def set_mic_muted(self, muted: bool) -> None:
         self._mic_muted = bool(muted)
 
+    def set_passthrough(self, active: bool) -> None:
+        """UI cue: direct voice bypass ([b]) is active."""
+        self._passthrough = bool(active)
+
     def refresh_source_ui(self) -> None:
         """Re-apply footer/placeholder for current SOURCE_LANG (after [g] swap)."""
         try:
             self._refresh_cmd_menu()
+        except Exception:
+            pass
+        try:
+            self._refresh_cmd_tts()
         except Exception:
             pass
         try:
@@ -1547,33 +2013,32 @@ class LiveLingoApp(App):
             pass
 
     def clear_log(self) -> None:
-        """Clear the scrollable log panel (command [cls]). Must run on UI thread."""
-        try:
-            log = self.query_one("#log", SelectableRichLog)
-            log.clear()
-            log.write(
-                "[dim]Log limpo — [l] histórico · [lo] source · [lt] target[/]"
-            )
-        except Exception:
+        """Clear both log panels (command [cls]). Must run on UI thread."""
+        for log_id, note in (
+            ("#log", "[dim]Log limpo — [l] histórico · [lo] source · [lt] target · F3 Sistema[/]"),
+            (
+                "#log-app",
+                "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
+            ),
+        ):
             try:
-                log = self.query_one("#log", RichLog)
+                log = self.query_one(log_id, SelectableRichLog)
                 log.clear()
+                log.write(note)
             except Exception:
-                pass
+                try:
+                    log = self.query_one(log_id, RichLog)
+                    log.clear()
+                except Exception:
+                    pass
 
     def _log_widget(self):
-        """Return the scrollable log widget, or None."""
-        try:
-            return self.query_one("#log", SelectableRichLog)
-        except Exception:
-            try:
-                return self.query_one("#log", RichLog)
-            except Exception:
-                return None
+        """Return the active (visible) scrollable log widget, or #log."""
+        return self._active_log_widget() or self._resolve_log_widget("main")
 
     def scroll_log_top(self) -> None:
         """
-        [gt] Go top — jump to start of log.
+        [gg]/[gt] Go top — jump to start of the active log tab.
         Disables auto_scroll so new lines don't yank the viewport back down.
         Must run on UI thread.
         """
@@ -1584,17 +2049,37 @@ class LiveLingoApp(App):
             log.auto_scroll = False
         except Exception:
             pass
+        # Prefer immediate scroll when Textual supports it (avoids animation race).
+        for kwargs in (
+            {"animate": False, "immediate": True},
+            {"animate": False},
+            {},
+        ):
+            try:
+                log.scroll_home(**kwargs)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                break
         try:
-            log.scroll_home(animate=False)
+            log.scroll_to(0, 0, animate=False)
         except Exception:
             try:
-                log.scroll_to(0, 0, animate=False)
+                log.scroll_y = 0
+            except Exception:
+                pass
+        try:
+            log.refresh(layout=True)
+        except Exception:
+            try:
+                log.refresh()
             except Exception:
                 pass
 
     def scroll_log_footer(self) -> None:
         """
-        [gf] Go footer — jump to end of log.
+        [GG]/[gf] Go bottom — jump to end of the active log tab.
         Re-enables auto_scroll for live follow.
         Must run on UI thread.
         """
@@ -1605,25 +2090,181 @@ class LiveLingoApp(App):
             log.auto_scroll = True
         except Exception:
             pass
+        for kwargs in (
+            {"animate": False, "immediate": True},
+            {"animate": False},
+            {},
+        ):
+            try:
+                log.scroll_end(**kwargs)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                break
         try:
-            log.scroll_end(animate=False)
+            y = int(getattr(log, "max_scroll_y", 0) or 0)
+            log.scroll_to(0, y, animate=False)
         except Exception:
             try:
-                y = int(getattr(log, "max_scroll_y", 0) or 0)
-                log.scroll_to(0, y, animate=False)
+                log.scroll_y = int(getattr(log, "max_scroll_y", 0) or 0)
+            except Exception:
+                pass
+        try:
+            log.refresh(layout=True)
+        except Exception:
+            try:
+                log.refresh()
+            except Exception:
+                pass
+
+    def action_toggle_log_tab(self) -> None:
+        """F3: switch between Tradução and Sistema log tabs."""
+        try:
+            tabs = self.query_one("#log-tabs", TabbedContent)
+            cur = str(getattr(tabs, "active", "") or "tab-main")
+            nxt = "tab-app" if cur != "tab-app" else "tab-main"
+            tabs.active = nxt
+            # Keep command input focused after tab flip
+            try:
+                self.query_one("#cmd", Input).focus()
+            except Exception:
+                pass
+        except Exception as exc:
+            try:
+                self.notify(f"Aba de log: {exc}", severity="warning", timeout=2)
+            except Exception:
+                pass
+
+    def focus_log_tab(self, panel: str = "main") -> None:
+        """Show Tradução (main) or Sistema (app) log tab. UI thread only."""
+        try:
+            tabs = self.query_one("#log-tabs", TabbedContent)
+            want = "tab-app" if str(panel or "main").lower() == "app" else "tab-main"
+            tabs.active = want
+        except Exception:
+            pass
+
+    def action_toggle_compact_ui(self) -> None:
+        """F4 / command [u]: toggle compact TUI (hide menu, shrink window)."""
+        self.toggle_compact_ui()
+
+    def toggle_compact_ui(self) -> None:
+        """Toggle compact UI mode (must run on UI thread)."""
+        self.set_compact_ui(not bool(getattr(self, "_compact_ui", False)))
+
+    def set_compact_ui(self, compact: bool) -> None:
+        """
+        Compact mode: hide #hint menu strip, shrink #bottom to the command row,
+        and safely shrink the host window height (CSI + MoveWindow only — no
+        console buffer APIs).
+        """
+        compact = bool(compact)
+        was = bool(getattr(self, "_compact_ui", False))
+        self._compact_ui = compact
+        try:
+            bottom = self.query_one("#bottom")
+            bottom.set_class(compact, "-compact")
+            # CSS drives heights; clear leftover inline heights from old builds
+            try:
+                bottom.styles.height = None
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            hint = self.query_one("#hint")
+            if compact:
+                hint.display = False
+            else:
+                hint.display = True
+                try:
+                    hint.styles.height = None
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # --- Safe host-window resize (no SetConsoleScreenBufferSize) ---
+        win_ok = False
+        try:
+            if compact and not was:
+                snap = _snapshot_window_geom()
+                self._saved_window_geom = snap
+                cols = int(snap.get("cols") or 120)
+                rows = int(snap.get("rows") or 40)
+                # Hide ~6 menu rows + a little chrome; keep log + cmd usable
+                compact_rows = max(16, rows - 7)
+                win_ok = _safe_resize_host_window(cols, compact_rows)
+            elif not compact and was:
+                snap = getattr(self, "_saved_window_geom", None) or {}
+                cols = int(snap.get("cols") or 120)
+                rows = int(snap.get("rows") or 40)
+                win_ok = _safe_resize_host_window(cols, rows, restore=snap)
+                self._saved_window_geom = None
+        except Exception:
+            win_ok = False
+
+        # Let Textual re-layout after the host fires resize (async on WT)
+        def _after_resize() -> None:
+            try:
+                self.refresh(layout=True)
+            except Exception:
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+            try:
+                self.query_one("#cmd", Input).focus()
+            except Exception:
+                pass
+
+        try:
+            self.set_timer(0.12, _after_resize)
+        except Exception:
+            _after_resize()
+
+        try:
+            if compact:
+                extra = (
+                    " Janela reduzida."
+                    if win_ok
+                    else " (Se a janela não encolher: use Windows Terminal e "
+                    "permita resize por app, ou arraste a borda.)"
+                )
+                self.post_log(
+                    "info",
+                    "UI compacta: menu oculto; comando visível."
+                    f"{extra} [u]/F4 restaura.",
+                )
+            else:
+                self.post_log(
+                    "info",
+                    "UI completa: menu visível"
+                    + (" · janela restaurada." if win_ok else "."),
+                )
+        except Exception:
+            pass
+        if not compact:
+            try:
+                self._refresh_cmd_menu()
             except Exception:
                 pass
 
     def _refresh_cmd_menu(self) -> None:
         """
-        Footer menu with fixed columns; long groups wrap to continuation rows
-        (label only on first row of each group) so columns stay aligned.
+        Footer command menu using the full terminal width.
 
-        Labels follow SOURCE_LANG (startup + after [g] swap).
+        Packs items left-to-right into rows (no fixed 14-col cells that truncate
+        labels). Groups wrap to extra lines; label only on the first row of each
+        group. Labels follow SOURCE_LANG (startup + after [g] swap).
         """
         try:
             hint = self.query_one("#hint", Static)
         except Exception:
+            return
+        # Skip rebuild while compact (menu hidden) — keeps UI tick light
+        if getattr(self, "_compact_ui", False):
             return
         t = _footer_i18n()
         try:
@@ -1635,43 +2276,70 @@ class LiveLingoApp(App):
         except Exception:
             mic = t["live"]
 
-        # Available width for the hint strip
+        # Full width of the hint strip (prefer live size, else app/terminal)
         try:
             avail = int(getattr(hint.size, "width", 0) or 0)
         except Exception:
             avail = 0
         if avail < 48:
-            avail = int(getattr(self, "_cached_log_width", 0) or 0) or 100
+            try:
+                avail = int(getattr(self.size, "width", 0) or 0) - 2
+            except Exception:
+                avail = 0
+        if avail < 48:
+            avail = int(getattr(self, "_cached_log_width", 0) or 0) or _terminal_log_width(100)
         avail = max(48, avail - 2)  # CSS padding 0 1
 
-        lw = 8   # group label column
-        cw = 14  # each command cell (fits "[cls] Limpar", "[rN] Replay N")
-        cols = max(4, min(8, (avail - lw) // cw))
+        # Group label column — wide enough for "Frase"/"Sentence"/"Audio"/…
+        labels = [t.get("sentence", "Sentence"), t.get("audio", "Audio"), t.get("idiom", "Idiom")]
+        lw = max(8, min(12, max(len(s or "") for s in labels) + 1))
+        gap = "  "  # space between command cells (readable, not cramped)
+        body_budget = max(24, avail - lw)
+
+        def esc_cmd(s: str) -> str:
+            """Escape brackets for Rich markup; keep full label (no …)."""
+            return (s or "").replace("[", "\\[")
 
         def lab_plain(s: str) -> str:
             return (s or "")[:lw].ljust(lw)
 
-        def cell(s: str, w: int = cw) -> str:
-            plain = (s or "")
-            if len(plain) > w:
-                plain = plain[: w - 1] + "…"
-            plain = plain.ljust(w)
-            return plain.replace("[", "\\[")
+        def pack_row_cells(items: list[str], budget: int) -> list[list[str]]:
+            """Greedy pack full-text items into rows that fit `budget` columns."""
+            rows: list[list[str]] = []
+            cur: list[str] = []
+            cur_len = 0
+            gap_len = len(gap)
+            for it in items:
+                text = (it or "").strip()
+                if not text:
+                    continue
+                # Single item longer than budget → own row (still no mid-label …)
+                need = len(text) if not cur else gap_len + len(text)
+                if cur and cur_len + need > budget:
+                    rows.append(cur)
+                    cur = [text]
+                    cur_len = len(text)
+                else:
+                    if cur:
+                        cur_len += gap_len
+                    cur.append(text)
+                    cur_len += len(text)
+            if cur:
+                rows.append(cur)
+            return rows or [[]]
 
         def group_rows(label: str, items: list[str]) -> list[str]:
-            """First row has magenta label; overflow rows indent with spaces."""
+            """Magenta group label on first row; continuation rows indent."""
+            packed = pack_row_cells(items, body_budget)
             rows_out: list[str] = []
-            if not items:
-                return [f"[bold magenta]{lab_plain(label)}[/]"]
-            for i in range(0, len(items), cols):
-                chunk = items[i : i + cols]
-                cells = "".join(cell(it) for it in chunk)
+            for i, chunk in enumerate(packed):
+                cells = gap.join(esc_cmd(it) for it in chunk)
                 if i == 0:
                     rows_out.append(
                         f"[bold magenta]{lab_plain(label)}[/]{cells}"
                     )
                 else:
-                    rows_out.append(lab_plain("") + cells)
+                    rows_out.append(f"{lab_plain('')}{cells}")
             return rows_out
 
         lines: list[str] = []
@@ -1681,6 +2349,7 @@ class LiveLingoApp(App):
                 [
                     f"[e] {t['edit']}",
                     f"[eN] {t['edit_n']}",
+                    f"[enew] {t.get('enew', 'New text')}",
                     f"[d] {t['del']}",
                     f"[dN] {t['del_n']}",
                     f"[f] {t['fav']}",
@@ -1692,8 +2361,8 @@ class LiveLingoApp(App):
                     f"[coN] {t.get('comment_n', 'Comm N')}",
                     f"[codN] Del #N",
                     f"[cls] {t['cls']}",
-                    f"[gt] {t.get('go_top', 'Go top')}",
-                    f"[gf] {t.get('go_footer', 'Go foot')}",
+                    f"[gg/gt] {t.get('go_top', 'Go top')}",
+                    f"[GG/gf] {t.get('go_footer', 'Go foot')}",
                     f"[c] {t['export']}",
                 ],
             )
@@ -1706,10 +2375,15 @@ class LiveLingoApp(App):
                     f"[rN] {t['replay_n']}",
                     f"[s] {t['snd']} {sound}",
                     f"[n] {t['mic']} {mic}",
+                    f"[b] {t.get('bypass', 'Bypass')}",
                     f"[x] {t['stop']}",
                     f"[a] {t['path']}",
                     f"[aN] {t['path_n']}",
                     f"[p] {t['folder']}",
+                    f"[ld] {t.get('list_dev', 'Devices')}",
+                    f"[lav] {t.get('list_voices', 'Voices')}",
+                    f"[lv] {t.get('list_voices_f', 'Voices filter')}",
+                    f"[ctts] {t.get('ctts', 'Chg TTS')}",
                 ],
             )
         )
@@ -1722,23 +2396,83 @@ class LiveLingoApp(App):
                     f"[o] {t['synonyms']}",
                     f"[v] {t['session']}",
                     f"[m] {t['menu']}",
+                    f"[u] {t.get('compact', 'Compact')}",
                     f"[q] {t['quit']}",
                 ],
             )
         )
-        # No trailing blank line here — #cmd-row sits right under last menu row.
+        # #hint is 6 rows (CSS): ~5 menu lines + 1 blank before the command box.
+        while lines and not (lines[-1] or "").strip():
+            lines.pop()
         max_lines = 5
         if len(lines) > max_lines:
             lines = lines[:max_lines]
+        # Exactly one empty line after the last menu group (visual gap only).
+        lines.append("")
 
         hint.update("\n".join(lines))
 
         # Command field placeholder follows SOURCE_LANG (unless waiting a prompt)
         if not self._prompt_waiting.is_set():
             self._set_placeholder(t["placeholder"])
+        # TTS badge only when voice/label may have changed (not every menu tick)
+        self._refresh_cmd_tts()
+
+    def _refresh_cmd_tts(self) -> None:
+        """Update right-side TTS_VOICE badge next to the command input."""
+        try:
+            badge = self.query_one("#cmd-tts", Static)
+        except Exception:
+            return
+        try:
+            import config as cfg
+
+            voice = (getattr(cfg, "TTS_VOICE", "") or "").strip() or "?"
+        except Exception:
+            voice = "?"
+        ft = _footer_i18n()
+        prefix = ft.get("cmd_tts", "TTS")
+        text = f"{prefix} {voice}"
+        if len(text) > 40:
+            text = text[:37] + "…"
+        if getattr(self, "_cmd_tts_label", None) == text:
+            return
+        self._cmd_tts_label = text
+        try:
+            badge.update(text)
+            try:
+                badge.tooltip = f"TTS_VOICE atual\nTrocar: ctts <nome>\nLista: lav / lv\n{voice}"
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _refocus_cmd(self) -> None:
+        """UI-thread: restore focus to the command field."""
+        try:
+            self.query_one("#cmd", Input).focus()
+        except Exception:
+            pass
+
+    def _refocus_cmd_if_idle(self) -> None:
+        """UI-thread: focus #cmd only when no modal is open."""
+        if self._modal_open():
+            return
+        self._refocus_cmd()
+
+    def request_refresh_source_ui(self) -> None:
+        """Thread-safe non-blocking menu/TTS-badge refresh (after [ctts]/[g]/[t])."""
+        try:
+            self._ui_action_q.put_nowait("refresh_source_ui")
+        except Exception:
+            pass
 
     def _tick_status(self) -> None:
-        """Refresh fixed top header: robot/mic + pair + audio + listen status."""
+        """Refresh fixed top header: robot/mic + pair + audio + listen status.
+
+        Keep this hot path cheap: do NOT refresh TTS badge / menu here
+        (that starved log drain and made translations feel laggy).
+        """
         try:
             header = self.query_one("#listen-header", Static)
         except Exception:
@@ -1753,6 +2487,11 @@ class LiveLingoApp(App):
             self._mic_muted = bool(self.pipeline.is_mic_muted())
         except Exception:
             pass
+        try:
+            if hasattr(self.pipeline, "is_passthrough_active"):
+                self._passthrough = bool(self.pipeline.is_passthrough_active())
+        except Exception:
+            pass
 
         _src_u, _tgt_u, src_n, tgt_n, pair_short, pair_long = _lang_pair_parts()
         # g/t flanking the pair — PT shown as BR (display only); labels i18n
@@ -1764,21 +2503,35 @@ class LiveLingoApp(App):
         lang_block_long = (
             f"{g_lab} {src_d} ({src_n}) → {tgt_d} ({tgt_n}) {t_lab}"
         )
-        # Keep Textual window subtitle in sync with current pair ([g]/[t])
+        # Subtitle only when the pair string changes (Header updates are costly)
         try:
-            self.sub_title = (
-                f"{lang_block_short}  ·  ouvir {src_n} → falar {tgt_n}"
-            )
+            new_sub = f"{lang_block_short}  ·  ouvir {src_n} → falar {tgt_n}"
+            if getattr(self, "_last_sub_title", None) != new_sub:
+                self._last_sub_title = new_sub
+                self.sub_title = new_sub
         except Exception:
             pass
 
         header.set_class(self._sound_on and not self._mic_muted, "sound-on")
         header.set_class(self._mic_muted, "mic-muted")
 
+        if self._passthrough:
+            by_line = (
+                f"🎙️  BYPASS [b]   {lang_block_short}   |  "
+                f"voz direta → CABLE (sem tradução)  |  [b] sair"
+            )
+            if getattr(self, "_last_header_line", None) != by_line:
+                self._last_header_line = by_line
+                header.update(by_line)
+            return
+
         if self._mic_muted:
-            header.update(
+            muted_line = (
                 f"🔇  MIC MUTED   {lang_block_short}   |  escuta pausada  |  [n] reativar"
             )
+            if getattr(self, "_last_header_line", None) != muted_line:
+                self._last_header_line = muted_line
+                header.update(muted_line)
             return
 
         # Advance animation frame (classic robot idle / mic active)
@@ -1806,7 +2559,10 @@ class LiveLingoApp(App):
         line = f"{frame}  {lang_block}   {audio_tag}   {body}"
         if width >= 24 and len(line) > width:
             line = line[: max(0, width - 1)] + "…"
-        header.update(line)
+        # Always update when speaking (frame animation); idle can skip duplicates
+        if self._speaking or getattr(self, "_last_header_line", None) != line:
+            self._last_header_line = line
+            header.update(line)
 
     # ------------------------------------------------------------------ #
     # Prompt / command input
@@ -1814,10 +2570,12 @@ class LiveLingoApp(App):
     def _wait_for_prompt_line(self) -> str:
         """Called from worker thread when code does sys.stdin.readline()."""
         self._prompt_waiting.set()
+        prefill = getattr(self, "_prompt_prefill", "") or ""
         try:
             self.call_from_thread(
-                self._set_placeholder,
+                self._arm_prompt_ui,
                 self._prompt_label or _footer_i18n()["prompt_placeholder"],
+                prefill,
             )
         except Exception:
             pass
@@ -1825,11 +2583,9 @@ class LiveLingoApp(App):
             line = self._prompt_q.get()
         finally:
             self._prompt_waiting.clear()
+            self._prompt_prefill = ""
             try:
-                self.call_from_thread(
-                    self._set_placeholder,
-                    _footer_i18n()["placeholder"],
-                )
+                self.call_from_thread(self._disarm_prompt_ui)
             except Exception:
                 pass
         return line if line.endswith("\n") else line + "\n"
@@ -1840,8 +2596,52 @@ class LiveLingoApp(App):
         except Exception:
             pass
 
+    def _arm_prompt_ui(self, placeholder: str, prefill: str = "") -> None:
+        """UI-thread: placeholder + optional prefill in #cmd for stdin prompts."""
+        try:
+            inp = self.query_one("#cmd", Input)
+        except Exception:
+            return
+        try:
+            if placeholder:
+                inp.placeholder = placeholder
+        except Exception:
+            pass
+        text = prefill if prefill is not None else getattr(self, "_prompt_prefill", "") or ""
+        try:
+            inp.value = text
+            inp.cursor_position = len(text or "")
+            inp.focus()
+        except Exception:
+            pass
+
+    def _disarm_prompt_ui(self) -> None:
+        """UI-thread: restore command placeholder after a prompt ends."""
+        self._prompt_prefill = ""
+        try:
+            self._set_placeholder(_footer_i18n()["placeholder"])
+        except Exception:
+            pass
+
     def provide_prompt_line(self, line: str) -> None:
         self._prompt_q.put(line)
+
+    def set_prompt_prefill(self, text: str) -> None:
+        """
+        Prefill #cmd for the next / current stdin prompt (edit sentence, etc.).
+
+        Safe from worker via call_from_thread; also stores on the app so
+        _wait_for_prompt_line can apply even if this runs slightly early.
+        """
+        self._prompt_prefill = text or ""
+        try:
+            inp = self.query_one("#cmd", Input)
+            inp.value = self._prompt_prefill
+            inp.cursor_position = len(inp.value or "")
+            if self._prompt_waiting.is_set():
+                inp.focus()
+        except Exception:
+            pass
 
     def set_prompt_force_upper(self, on: bool) -> None:
         """UI-thread: force language-code entry to UPPERCASE ([t] only)."""
@@ -1893,6 +2693,10 @@ class LiveLingoApp(App):
 
         With #cmd focused: ↑/↓ walk command history (like bash / Grok).
         """
+        # Any ModalScreen (help panel etc.) owns the keyboard.
+        if self._modal_open():
+            return
+
         # Hard-catch full-log copy (key name is e.g. "ctrl+shift+c").
         key_name = (event.name or "").lower()
         key_raw = (getattr(event, "key", None) or "").lower()
@@ -2003,6 +2807,19 @@ class LiveLingoApp(App):
             return
         if not value:
             return
+
+        # Log navigation on the UI thread (no worker / call_from_thread race).
+        # gg/gt → top; GG/gf → bottom (GG is case-sensitive, like vim G).
+        low = value.lower()
+        if value == "GG" or low == "gf":
+            self._push_cmd_history(value)
+            self.scroll_log_footer()
+            return
+        if low in ("gg", "gt"):
+            self._push_cmd_history(value)
+            self.scroll_log_top()
+            return
+
         if self._cmd_busy:
             self.post_log("warn", "Aguarde o comando anterior terminar…")
             return
@@ -2087,8 +2904,10 @@ class LiveLingoApp(App):
                 return
         finally:
             self._cmd_busy = False
+            # Never query DOM from the worker thread (deadlocks with modal).
+            # Skip refocus while a modal is open — modal callback will refocus.
             try:
-                self.call_from_thread(self.query_one("#cmd", Input).focus)
+                self.call_from_thread(self._refocus_cmd_if_idle)
             except Exception:
                 pass
 
@@ -2185,25 +3004,54 @@ class LiveLingoApp(App):
             )
 
     def action_show_help(self) -> None:
-        """F1: banner + startup status (devices, engines, tips) + command summary."""
+        """
+        F1: banner + startup status + command summary → Sistema tab only.
+
+        Tradução stays clean for Heard/Translated chunks.
+        """
+        # Open Sistema first so the user sees the help as it streams in
+        self.focus_log_tab("app")
+        try:
+            app_log = self._resolve_log_widget("app")
+            if app_log is not None:
+                app_log.write(
+                    "[bold cyan]—— Ajuda (F1) ——[/]  "
+                    "[dim]aba Sistema · Tradução só frases[/]"
+                )
+                app_log.write("")
+        except Exception:
+            pass
+
         if self._help_fn is not None:
             try:
-                self._help_fn()
+                with ui_mod.log_panel("app"):
+                    self._help_fn()
+                try:
+                    self.query_one("#cmd", Input).focus()
+                except Exception:
+                    pass
                 return
             except Exception as exc:
-                self.post_log("error", f"Help error: {exc}")
+                self.post_log("error", f"Help error: {exc}", panel="app")
+                return
         # Fallback if no help_fn wired
         self.post_log(
             "info",
-            "Sentence: e/eN d/dN f/fN F l lo lt cls gt gf c | "
-            "Audio: r/rN s n x a/aN p/pN | "
-            "Idiom: g t o | Session: v m q",
+            "Sentence: e/eN enew d/dN f/fN F l lo lt cls gg/GG gt/gf c | "
+            "Audio: r/rN s n x a/aN p/pN ld lav lv ctts | "
+            "Idiom: g t o | Session: v m u(compact) q",
+            panel="app",
         )
         self.post_log(
             "info",
             "Copiar: clique+arraste → Ctrl+C | log inteiro Ctrl+Shift+C / F2 | "
             "sair Ctrl+Q | F1=ajuda",
+            panel="app",
         )
+        try:
+            self.query_one("#cmd", Input).focus()
+        except Exception:
+            pass
 
     def _clipboard_set(self, text: str) -> bool:
         """Copy text via Textual OSC-52 + OS clipboard fallback."""
@@ -2252,19 +3100,21 @@ class LiveLingoApp(App):
 
     def action_copy_log(self) -> None:
         """
-        Ctrl+Shift+C / F2: copy entire scrollback log — no mouse selection needed.
+        Ctrl+Shift+C / F2: copy entire scrollback of the active log tab.
         Pulls plain text from SelectableRichLog buffer and writes the clipboard.
         """
         text = ""
+        panel = self._active_log_panel()
+        label = "Sistema" if panel == "app" else "Tradução"
         try:
-            log = self.query_one("#log", SelectableRichLog)
+            log = self._active_log_widget() or self.query_one("#log", SelectableRichLog)
             text = log.get_plain_text() or ""
         except Exception:
             text = ""
         if not (text or "").strip():
             # Fallback: rendered strips (in case plain buffer is empty)
             try:
-                log = self.query_one("#log", SelectableRichLog)
+                log = self._active_log_widget() or self.query_one("#log", SelectableRichLog)
                 text = "\n".join(line.text for line in (log.lines or []))
             except Exception:
                 text = ""
@@ -2277,13 +3127,13 @@ class LiveLingoApp(App):
         if self._clipboard_set(text):
             n = len(text)
             lines = text.count("\n") + 1
-            msg = f"Log inteiro copiado ({lines} linhas, {n} chars)"
+            msg = f"Log {label} copiado ({lines} linhas, {n} chars)"
             try:
                 self.notify(msg, severity="information", timeout=3)
             except Exception:
                 self.post_log("success", msg)
-            # Also echo in log so user sees confirmation even if toast is missed
-            self.post_log("success", msg)
+            # Also echo in main log so user sees confirmation even if toast is missed
+            self.post_log("success", msg, panel="main")
         else:
             try:
                 self.notify("Falha ao copiar log", severity="error", timeout=3)

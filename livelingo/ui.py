@@ -17,10 +17,13 @@ init(autoreset=True)
 # Heard/Translated lines with filter messages and corrupt the display.
 _print_lock = threading.RLock()
 
-# Optional TUI sink: callable(kind: str, text: str) — when set, prints go there.
+# Optional TUI sink: callable(kind, text, panel="main") — when set, prints go there.
+# panel: "main" (tradução / comandos) | "app" (etapas técnicas, timestamps, debug).
 _log_sink = None
 # Optional width provider: callable() -> int (usable columns inside the log panel).
 _width_provider = None
+# Temporary panel override (e.g. F1 help → Sistema tab). Nested via stack.
+_panel_override_stack: list = []
 
 
 def set_log_sink(sink):
@@ -45,13 +48,53 @@ def get_width_provider():
     return _width_provider
 
 
-def _emit(kind, text):
-    """kind: info|success|warn|error|dim|raw"""
+class log_panel:
+    """
+    Context manager: force all ui.* emissions to a TUI panel.
+
+    Example (F1 help → Sistema)::
+        with ui.log_panel("app"):
+            ui.info("help…")
+    """
+
+    def __init__(self, panel: str = "app"):
+        self.panel = "app" if str(panel or "main").lower() == "app" else "main"
+
+    def __enter__(self):
+        with _print_lock:
+            _panel_override_stack.append(self.panel)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        with _print_lock:
+            if _panel_override_stack:
+                _panel_override_stack.pop()
+        return False
+
+
+def _effective_panel(panel: str = "main") -> str:
+    """Resolve panel, honoring log_panel() override when set."""
+    with _print_lock:
+        if _panel_override_stack:
+            return _panel_override_stack[-1]
+    return "app" if str(panel or "main").lower() == "app" else "main"
+
+
+def _emit(kind, text, panel="main"):
+    """kind: info|success|warn|error|dim|raw|rich|list; panel: main|app"""
     sink = _log_sink
     if sink is not None:
+        panel = _effective_panel(panel)
         try:
-            sink(kind, text)
+            sink(kind, text, panel)
             return True
+        except TypeError:
+            # Older 2-arg sinks (tests / classic adapters)
+            try:
+                sink(kind, text)
+                return True
+            except Exception:
+                return False
         except Exception:
             return False
     return False
@@ -69,6 +112,8 @@ __all__ = [
     "device_line",
     "chunk_status",
     "chunk_timings",
+    "chunk_progress",
+    "listen_progress",
     "format_timing_line",
     "clock_hhmmss",
     "format_recorded_stamp",
@@ -85,8 +130,23 @@ __all__ = [
     "get_log_sink",
     "set_width_provider",
     "get_width_provider",
+    "log_panel",
     "content_width",
+    "panel_width",
+    "rule_line",
 ]
+
+# Pipeline UX stages (always shown — not VERBOSE-only).
+_CHUNK_PROGRESS = {
+    "stt": ("📝", "Transcrevendo (voz → texto)…"),
+    "heard": ("📝", "Texto original pronto"),
+    "translate": ("🌐", "Traduzindo…"),
+    "translated": ("🌐", "Tradução pronta"),
+    "tts": ("🔊", "Gerando voz traduzida…"),
+    "tts_bg": ("🔊", "Gerando voz em segundo plano…"),
+    "ready": ("✅", "Pronto — tradução completa"),
+    "ready_text": ("✅", "Pronto — texto completo (sem áudio ao vivo)"),
+}
 
 
 def _term_width():
@@ -97,30 +157,58 @@ def _term_width():
         return 140 if _log_sink is not None else 80
 
 
-def content_width(margin=3, chrome=0):
+def panel_width():
     """
-    Usable columns for wrapped list/menu blocks.
+    Full columns available for one log line (matches TUI RichLog bake width).
 
-    When a TUI width provider is set, uses the live RichLog panel width.
-    Otherwise falls back to terminal size (wide default under TUI sink).
+    Prefer the width provider (cached live panel). Fall back to terminal with
+    chrome reserved for header/tabs/footer/scrollbar.
     """
     provider = _width_provider
     if provider is not None:
         try:
             w = int(provider())
-            if w >= 20:
-                return max(24, w - max(0, int(margin or 0)))
+            if w >= 24:
+                return w
         except Exception:
             pass
     try:
         term_w = max(40, os.get_terminal_size().columns)
     except OSError:
         term_w = 140 if _log_sink is not None else 80
-    extra = int(chrome or 0)
-    if _log_sink is not None and extra <= 0:
-        # border + padding + margin + scrollbar when provider unavailable
-        extra = 12
-    return max(24, term_w - 2 * max(0, int(margin or 0)) - extra)
+    # TUI chrome (header, tabs, borders, scrollbar) eats more than classic
+    reserve = 14 if _log_sink is not None else 2
+    return max(40, term_w - reserve)
+
+
+def content_width(margin=3, chrome=0):
+    """
+    Usable columns for list/menu *body* after a left margin.
+
+    pad(margin) + body(content_width) must fit in panel_width() so RichLog
+    does not re-wrap and break hang-indents / rules (=== headers).
+    """
+    gutter = max(0, int(chrome or 0))
+    # Always leave 1 col spare so a full-width "====" rule never wraps to "=="
+    gutter = max(gutter, 1 if _log_sink is not None else 0)
+    m = max(0, int(margin or 0))
+    return max(24, panel_width() - m - gutter)
+
+
+def rule_line(width=None, char="=", margin=3):
+    """
+    Horizontal rule that fits the log panel after `margin` spaces.
+
+    width: body width (defaults to content_width(margin)). Never exceeds panel.
+    """
+    m = max(0, int(margin or 0))
+    if width is None:
+        width = content_width(margin=m)
+    # Clamp hard to panel so pad + rule never exceeds bake width
+    max_body = max(8, panel_width() - m - 1)
+    n = max(8, min(int(width), max_body))
+    ch = (char or "=")[:1]
+    return ch * n
 
 
 def _one_line(text, budget):
@@ -186,11 +274,11 @@ def banner(indent=3):
         print(pad + Fore.CYAN + line + Style.RESET_ALL)
 
 
-def info(msg, indent=0):
+def info(msg, indent=0, panel="main"):
     text = str(msg)
     with _print_lock:
         # TUI sink must get the same left margin as classic prints.
-        if _emit("info", _pad(indent) + text):
+        if _emit("info", _pad(indent) + text, panel=panel):
             return
         print(
             "\r\033[K"
@@ -202,10 +290,10 @@ def info(msg, indent=0):
         )
 
 
-def success(msg, indent=0):
+def success(msg, indent=0, panel="main"):
     text = str(msg)
     with _print_lock:
-        if _emit("success", _pad(indent) + text):
+        if _emit("success", _pad(indent) + text, panel=panel):
             return
         print(
             "\r\033[K"
@@ -217,10 +305,10 @@ def success(msg, indent=0):
         )
 
 
-def warn(msg, indent=0):
+def warn(msg, indent=0, panel="main"):
     text = str(msg)
     with _print_lock:
-        if _emit("warn", _pad(indent) + text):
+        if _emit("warn", _pad(indent) + text, panel=panel):
             return
         print(
             "\r\033[K"
@@ -232,10 +320,10 @@ def warn(msg, indent=0):
         )
 
 
-def error(msg, indent=0):
+def error(msg, indent=0, panel="main"):
     text = str(msg)
     with _print_lock:
-        if _emit("error", _pad(indent) + text):
+        if _emit("error", _pad(indent) + text, panel=panel):
             return
         print(
             "\r\033[K"
@@ -249,10 +337,13 @@ def error(msg, indent=0):
         )
 
 
-def dim(msg, indent=0):
+def dim(msg, indent=0, panel="main"):
     text = str(msg)
+    # Verbose/debug pipeline chatter → technical panel (keep Tradução clean)
+    if panel == "main" and "[debug]" in text:
+        panel = "app"
     with _print_lock:
-        if _emit("dim", _pad(indent) + text):
+        if _emit("dim", _pad(indent) + text, panel=panel):
             return
         print(
             "\r\033[K"
@@ -263,13 +354,155 @@ def dim(msg, indent=0):
         )
 
 
-def raw(msg, indent=0):
+def raw(msg, indent=0, panel="main"):
     """Plain log line (no [ok]/[i] prefix). Prefer for multi-line list blocks in TUI."""
     text = _pad(indent) + str(msg) if indent else str(msg)
     with _print_lock:
-        if _emit("raw", text):
+        if _emit("raw", text, panel=panel):
             return
         print("\r\033[K" + text)
+
+
+# Debounce listen log lines (noise can flip VAD many times per second).
+_listen_log_state = {"active": None, "t": 0.0}
+_LISTEN_LOG_MIN_GAP = 0.9  # seconds between identical spam lines
+
+# High-res clocks for stage timing (compare latency across pipeline steps).
+_progress_timing = {
+    "listen_mono": None,   # perf_counter at last "Escutando" start
+    "listen_wall": None,   # HH:MM:SS.ffffff at that start
+    "last_mono": None,     # perf_counter of previous stage line
+}
+
+
+def _stamp_us():
+    """Wall clock with microseconds: HH:MM:SS.ffffff"""
+    import datetime as _dt
+
+    return _dt.datetime.now().strftime("%H:%M:%S.%f")
+
+
+def _progress_clock_suffix(*, listen_start=False, listen_end=False):
+    """
+    Build " · @HH:MM:SS.ffffff · início=… · +X.XXXs desde escuta · ΔYms"
+    for stage lines so users can compare times in the log.
+    """
+    import time as _time
+
+    wall = _stamp_us()
+    mono = _time.perf_counter()
+    parts = [f"@{wall}"]
+
+    if listen_start:
+        _progress_timing["listen_mono"] = mono
+        _progress_timing["listen_wall"] = wall
+        _progress_timing["last_mono"] = mono
+        parts.append(f"início={wall}")
+        return " · " + " · ".join(parts)
+
+    listen_wall = _progress_timing.get("listen_wall")
+    listen_mono = _progress_timing.get("listen_mono")
+    if listen_wall:
+        parts.append(f"início={listen_wall}")
+    if listen_mono is not None:
+        elapsed = mono - float(listen_mono)
+        parts.append(f"+{elapsed:.6f}s desde escuta")
+
+    last = _progress_timing.get("last_mono")
+    if last is not None:
+        delta_s = mono - float(last)
+        parts.append(f"Δ{delta_s * 1_000_000:.0f}µs")
+    _progress_timing["last_mono"] = mono
+
+    if listen_end:
+        # Keep listen_* so chunk stages still show "desde escuta";
+        # next listen_start will reset.
+        pass
+
+    return " · " + " · ".join(parts)
+
+
+def listen_progress(active: bool):
+    """
+    VAD / mic listening state (no chunk number yet).
+    active=True  → started hearing speech
+    active=False → silence after speech (utterance closed)
+
+    Rate-limited so laptop-mic noise does not flood the log.
+    Includes wall clock (µs) and start time for latency comparison.
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    active = bool(active)
+    prev = _listen_log_state["active"]
+    last_t = float(_listen_log_state["t"] or 0.0)
+    # Skip duplicate state; also skip rapid flapping (noise blips).
+    if prev is active and (now - last_t) < _LISTEN_LOG_MIN_GAP:
+        return
+    if prev is not None and prev is not active and (now - last_t) < 0.25:
+        # Ignore sub-250ms false starts (click / brief spike)
+        if active:
+            return
+    _listen_log_state["active"] = active
+    _listen_log_state["t"] = now
+    if active:
+        suffix = _progress_clock_suffix(listen_start=True)
+        # Etapas/timestamps → painel "app" da TUI (não polui tradução)
+        dim(f"🎙️  Escutando voz…{suffix}", panel="app")
+    else:
+        suffix = _progress_clock_suffix(listen_end=True)
+        dim(f"⏹️  Fim da fala — processando…{suffix}", panel="app")
+
+
+def _emit_chunk_progress_line(stage: str, text: str) -> None:
+    """Route a stage line to the Sistema/app panel (or classic colors)."""
+    if stage in ("ready", "ready_text", "translated", "heard"):
+        if stage in ("ready", "ready_text"):
+            success(text, panel="app")
+        else:
+            info(text, panel="app")
+    else:
+        dim(text, panel="app")
+
+
+def chunk_progress(n, stage: str, detail: str = ""):
+    """
+    Pipeline stage for chunk N.
+
+    Stages: stt | heard | translate | translated | tts | tts_bg | ready | ready_text
+    Includes @HH:MM:SS.ffffff, início=…, +s desde escuta, Δµs.
+    In TUI these go to the Sistema/app log panel (main keeps Heard/Translated only).
+
+    Detail text is kept full under TUI (RichLog wraps). Classic terminal may
+    soft-trim only when the line would wildly exceed the tty width.
+    """
+    icon, label = _CHUNK_PROGRESS.get(stage, ("•", str(stage)))
+    prefix = f"[chunk {n}] "
+    head = f"{prefix}{icon}  {label}"
+    det = " ".join((detail or "").split()).strip()  # collapse newlines/spaces
+    clocks = _progress_clock_suffix()
+
+    if det:
+        # TUI Sistema: never hard-truncate with "…" — panel wraps with scrollbar.
+        # Classic: only trim if absurdly long for the terminal width.
+        if _log_sink is None:
+            # Leave room for head + clocks + " — "
+            budget = max(24, _term_width() - len(head) - len(clocks) - 8)
+            if len(det) > budget:
+                det = det[: max(1, budget - 1)] + "…"
+        body = f"{head} — {det}"
+    else:
+        body = head
+
+    # Long milestone lines: put clocks on the next dim line so wrap does not
+    # split mid-timestamp (looked like "…3796" / next line "66").
+    if _log_sink is not None and det and (len(body) + len(clocks)) > 90:
+        _emit_chunk_progress_line(stage, body)
+        dim(f"    {clocks.lstrip(' ·')}", panel="app")
+        return
+
+    _emit_chunk_progress_line(stage, f"{body}{clocks}")
 
 
 def _rich_escape(text):
@@ -282,14 +515,14 @@ def _rich_escape(text):
         return str(text or "").replace("[", "\\[")
 
 
-def rich(msg, indent=0):
+def rich(msg, indent=0, panel="main"):
     """
     Log line with Rich markup (TUI only). Caller must escape user content via
     _rich_escape / rich.markup.escape. Classic terminal strips tags.
     """
     text = _pad(indent) + str(msg) if indent else str(msg)
     with _print_lock:
-        if _emit("rich", text):
+        if _emit("rich", text, panel=panel):
             return
         # Classic fallback: drop simple [style] tags
         import re
@@ -319,10 +552,10 @@ def device_line(role, index, name, indent=0):
         )
 
 
-def _emit_chunk_blank():
+def _emit_chunk_blank(panel="main"):
     """Blank separator line (TUI raw or classic empty print)."""
     if _log_sink is not None:
-        _emit("raw", "")
+        _emit("raw", "", panel=panel)
     else:
         print()
 
@@ -331,12 +564,11 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     """
     Print the live per-chunk status line plus a dim timing breakdown.
 
-    Layout:
-        (blank)
+    Layout (one blank line between consecutive chunks only):
         [chunk N] Heard: …
                   Translated: …
         (blank)
-                  timing: …
+                  timing: …   (classic; TUI → app panel)
     """
     heard = (heard or "").strip()
     translated = (translated or "").strip()
@@ -345,7 +577,6 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     timing = format_timing_line(timings or {}, at=at)
 
     with _print_lock:
-        _emit_chunk_blank()  # blank before chunk block
         if _log_sink is not None:
             # Match classic colors: yellow chunk, green heard, blue→white translated
             e = _rich_escape
@@ -357,9 +588,11 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
                 "rich",
                 f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
             )
-            _emit_chunk_blank()  # blank after Translated
+            # Single separator after block (not blank before + after → double gap)
+            _emit_chunk_blank()
+            # Timing is technical → Sistema/app panel (main stays clean)
             if timing:
-                _emit("dim", f"{indent}{timing}")
+                _emit("dim", f"{indent}{timing}", panel="app")
             return
         print(
             "\r\033[K"
@@ -382,7 +615,7 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
             + Fore.WHITE
             + translated
         )
-        print()  # blank after Translated
+        print()  # one blank after Translated
         if timing:
             print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
         if finalize:
@@ -396,7 +629,6 @@ def chunk_text_preview(n, heard, translated):
     prefix = f"[chunk {n}] "
     indent = " " * len(prefix)
     with _print_lock:
-        _emit_chunk_blank()  # blank before chunk block
         if _log_sink is not None:
             e = _rich_escape
             _emit(
@@ -407,7 +639,8 @@ def chunk_text_preview(n, heard, translated):
                 "rich",
                 f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
             )
-            _emit_chunk_blank()  # blank after Translated
+            # Exactly one blank line between consecutive chunks (not two)
+            _emit_chunk_blank()
             return
         print(
             "\r\033[K"
@@ -642,8 +875,9 @@ def print_audio_ref(n, path, indent=None, pending_write=False):
     lines = format_audio_lines(path, pending_write=pending_write)
     with _print_lock:
         if _log_sink is not None:
+            # Live audio paths are technical meta → Sistema/app panel
             for line in lines:
-                _emit("dim", f"{pad}{line}")
+                _emit("dim", f"{pad}{line}", panel="app")
             return
         for line in lines:
             print("\r\033[K" + pad + Style.DIM + line + Style.RESET_ALL)
@@ -703,13 +937,14 @@ def chunk_timings(n, timings, extra=None, at=None, audio_path=None, audio_pendin
     timing = format_timing_line(timings, extra=extra, at=at, include_clock=True)
     with _print_lock:
         if _log_sink is not None:
+            # Timing + live audio path → Sistema/app (main = Heard/Translated only)
             if timing:
-                _emit("dim", f"{indent}{timing}")
+                _emit("dim", f"{indent}{timing}", panel="app")
             if audio_path is not None:
                 for line in format_audio_lines(
                     audio_path, pending_write=bool(audio_pending)
                 ):
-                    _emit("dim", f"{indent}{line}")
+                    _emit("dim", f"{indent}{line}", panel="app")
             return
         if timing:
             print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
@@ -735,7 +970,6 @@ def chunk_stream_start(n, heard):
     heard_budget = max(8, width - len(prefix) - len("Heard: ") - 1)
     heard_disp = _one_line(heard, heard_budget)
     with _print_lock:
-        _emit_chunk_blank()  # blank before chunk block
         if _log_sink is not None:
             e = _rich_escape
             _emit(
@@ -814,9 +1048,8 @@ def chunk_stream_done(n, heard, translated):
     indent = " " * len(prefix)
     with _print_lock:
         if _log_sink is not None:
-            # TUI: append final block (stream ticks already above); spacing as preview
+            # TUI: final block; one blank after only (no blank before + after)
             e = _rich_escape
-            _emit_chunk_blank()
             _emit(
                 "rich",
                 f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
