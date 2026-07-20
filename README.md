@@ -253,24 +253,52 @@ Stop any time with **Ctrl+C**.
 
 ### TUI (default)
 
-With `UI_MODE=tui` (default) you get a Textual UI: scrollable log, command field, fixed listen header (robot + language pair + audio), and a multi-column command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
+With `UI_MODE=tui` (default) you get a Textual UI: **two log tabs**, command field, fixed listen header (robot + language pair + audio), and a full-width command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
+
+| Tab | Content |
+|-----|---------|
+| **Tradução** | Heard/Translated phrase blocks + command output |
+| **Sistema** | Pipeline stages, VAD/listen lines, timings, debug, **F1** help |
 
 | Shortcut / command | Action |
 |--------------------|--------|
-| `F1` | Startup help (banner, devices, engines) into the log |
+| `F1` | Startup help → **Sistema** tab (opens that tab) |
+| `F3` | Toggle Tradução ↔ Sistema |
+| `F4` / `u` | Compact UI: hide command menu; keep command line (optional window height shrink) |
 | `Ctrl+C` | Copy selected log text |
-| `Ctrl+Shift+C` / `F2` | Copy entire log |
+| `Ctrl+Shift+C` / `F2` | Copy entire log (active tab) |
 | Palette → Screenshot | Save SVG+PNG under `.cache/screenshots/` and put the **image** on the clipboard |
 | `↑` / `↓` | Command history |
 | `g` | Swap SOURCE ↔ TARGET |
 | `t` / `t EN` | Change TARGET only (codes forced UPPERCASE) |
-| `gt` / `gf` | Go top / go footer of the log (`gt` disables auto-scroll; `gf` re-enables) |
-| `cls` | Clear the log panel |
+| `enew <text>` | New translation from typed text (no mic); TTS if sound ON |
+| `e` / `eN` | Edit last / chunk N (TUI pre-fills the sentence in the command field) |
+| `b` / `bypass` | **Voice bypass** — raw mic → CABLE (Teams) without translation; press again to resume translate |
+| `gg` / `GG` (or `gt` / `gf`) | Go top / go bottom of the **active** log tab. `GG` is case-sensitive. |
+| `cls` | Clear both log panels |
 | `l` / `lo` / `lt` | List session / source-only / target-only |
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
 | `s` / `n` / `r` / `rN` | Sound, mic mute, replay |
 | `a` / `aN` / `p` / `pN` | Copy audio path / open audio folder |
+| `ld` | List audio devices (`python list_devices.py`) into the log |
+| `lav` | List all edge-tts voices (`edge-tts --list-voices`) into the log |
+| `lv` | List filtered voices (`en-US|en-GB|es-ES|es-MX|fr-FR`) into the log |
+| `ctts <ShortName>` | Change `TTS_VOICE` (one-liner or prompt; no modal) |
 | `q` | Quit |
+
+### Faster per-phrase text (sentence split)
+
+With **sound OFF** (default), a short pause after enough speech can emit a **sentence-sized chunk** immediately (STT + translate + UI) without waiting for the whole monologue. Configure in `.env`:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `SENTENCE_SPLIT` | `true` | Early emit on short pauses |
+| `SENTENCE_SPLIT_SOUND_OFF_ONLY` | `true` | Only when audio is OFF (safer with live TTS) |
+| `SENTENCE_SILENCE` | `0.55` | Pause (s) treated as end-of-sentence |
+| `SENTENCE_MIN_SPEECH` | `1.0` | Min speech (s) before a split |
+| `SENTENCE_SPLIT_OVERLAP` | `0.25` | Overlap kept after a split |
+
+For lower end-of-turn wait, also lower `SILENCE_DURATION` / `SOUND_OFF_SILENCE_DURATION` (e.g. `0.7`–`0.8`).
 
 Resume a session without the picker:
 
@@ -280,19 +308,25 @@ python main.py <session_id>
 livelingo <session_id>
 ```
 
-### Use it as your microphone in Microsoft Teams
+### Use it as your microphone in Microsoft Teams / Google Meet
 
-1. Keep `main.py` running.
-2. In Teams: **Settings (⋯ / your avatar) → Settings → Devices**.
-3. Under **Microphone**, choose **CABLE Output (VB-Audio Virtual Cable)**.
-4. Speak French → participants hear the English translation.
+**LiveLingo `.env` (example):** `INPUT_DEVICE=<your mic>` · `OUTPUT_DEVICE=CABLE Input` (or its index, e.g. `19`).
 
-> The same applies to Zoom, Discord, Google Meet (in the browser, pick "CABLE
-> Output" as the mic), OBS, etc.
+| Role | Device |
+|------|--------|
+| You speak | Real microphone (e.g. USB headset) |
+| LiveLingo plays translation | **CABLE Input** (`OUTPUT_DEVICE`) |
+| Teams / Meet mic | **CABLE Output** |
+| You hear others | Your speakers/headphones (app speaker setting) |
 
-**Tip:** to also hear yourself, set `MONITOR_PLAYBACK=true`, or in Windows
-*Sound Control Panel → Recording → CABLE Output → Properties → Listen* enable
-"Listen to this device" and pick your headphones.
+1. Keep `main.py` running; press **`s`** if you want live translation audio on the cable.
+2. **Teams:** Settings → Devices → Microphone = **CABLE Output**; Speakers = your headset.
+3. **Google Meet (browser):** ⋯ → Settings → Audio → same mic/speaker choices; allow the site to use the mic.
+4. Speak in `SOURCE_LANG` → participants hear `TARGET_LANG`.
+
+> **You do not hear your own CABLE feed in Teams/Meet by default** (no mic sidetone). The CABLE Output **level meter** moving means audio is entering the call. To hear the translation yourself: `MONITOR_PLAYBACK=true` + `MONITOR_DEVICE=<speakers>`, or Windows 11 *Sound settings → More sound settings → Recording → CABLE Output → Properties → Listen → Listen to this device*.
+
+**Speak English (or any language) without translation:** press **`b`** (bypass) — raw mic goes to CABLE; press **`b`** again to resume translate.
 
 ---
 

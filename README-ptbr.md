@@ -119,7 +119,8 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | Comando | Ação |
 |---------|------|
 | `r` / `rN` | Repetir áudio do último chunk ou do chunk N (gera TTS sob demanda se faltar WAV) |
-| `e` / `eN` | Editar e retraduzir frase |
+| `e` / `eN` | Editar e retraduzir frase (TUI: campo já vem com o texto da frase) |
+| `enew <texto>` | Nova tradução só com texto (sem mic); TTS se som ON |
 | `d` / `dN` | Deletar chunk (com confirmação) |
 | `f` / `fN` | Favoritar frase |
 | `F` | Listar favoritos (modal) |
@@ -128,23 +129,35 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `g` | **Swap idiomas** — inverte `SOURCE ↔ TARGET` (STT + tradução + voz TTS) |
 | `t` / `t EN` | **TARGET** — muda só o idioma alvo (códigos em **CAIXA ALTA**; aceita one-liner) |
 | `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura do app |
+| `b` / `bypass` | **Bypass de voz** — mic cru → CABLE (Teams) **sem** tradução; `[b]` de novo retoma a escuta/tradução |
 | `x` | Interromper leitura TTS em andamento |
 | `o` | Buscar sinônimos / significado de palavra |
 | `l` | Listar mensagens da sessão (timing, timestamp, comentários `#id`) |
 | `lo` / `lt` | Listar só source (ouvido) / só target (traduzido) |
 | `co` / `coN` / `coN texto` | Comentar o último chunk ou o chunk N (SQLite; aparece no `l`) |
 | `codN` | Apagar comentário pela PK `#N` (sem confirmação) |
-| `cls` | Limpar o painel de log (TUI) / limpar terminal (classic) |
-| `gt` / `gf` | **Go top** / **Go footer** — início ou fim do log (`gt` desliga auto-scroll; `gf` religa) |
+| `cls` | Limpar **as duas** abas de log (TUI) / limpar terminal (classic) |
+| `gg` / `GG` (ou `gt` / `gf`) | **Go top** / **Go bottom** — início ou fim da aba de log **ativa** |
+| `u` / `F4` | **UI compacta** — oculta menu de comandos; linha de comando permanece |
+| `ld` | Listar dispositivos de áudio (`python list_devices.py`) no log |
+| `lav` | Listar todas as vozes edge-tts (`edge-tts --list-voices`) no log |
+| `lv` | Listar vozes filtradas (`en-US|en-GB|es-ES|es-MX|fr-FR`) no log |
+| `ctts <ShortName>` | Alterar `TTS_VOICE` (one-liner ou prompt; **sem** popup modal) |
 | `v` | Trocar ou reiniciar sessão |
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-**TUI (atalhos):** `F1` ajuda de entrada; `Ctrl+C` copia seleção do log; `Ctrl+Shift+C` / `F2` copia log inteiro; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` Tradução ↔ Sistema; `F4` UI compacta; `Ctrl+C` copia seleção; `Ctrl+Shift+C` / `F2` copia log da aba ativa; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+
+**Abas de log:** **Tradução** = Heard/Translated + saída de comandos; **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1.
 
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
 
 Com **som OFF** (`s`): o texto traduzido aparece na hora; com `TTS_SKIP_WHEN_MUTED=true` o TTS é omitido (replay `r` sintetiza depois). Nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
+
+Com **`SENTENCE_SPLIT=true`** (padrão) e áudio OFF: uma **pausa curta** após fala mínima emite a frase como chunk próprio (STT+tradução+UI) **sem** esperar o monólogo inteiro. Ajuste `SENTENCE_SILENCE` / `SENTENCE_MIN_SPEECH` no `.env`. Com som ON, o split por frase fica desligado por padrão (`SENTENCE_SPLIT_SOUND_OFF_ONLY=true`).
+
+Com **bypass** (`b`): a voz vai **direto** ao `OUTPUT_DEVICE` (CABLE Input → Teams em CABLE Output), sem STT/tradução. Escuta de tradução pausada. `[b]` de novo retoma o fluxo normal — útil para falar inglês (ou outro idioma) na call.
 
 Com **mic mutado** (`n`): o Windows mostra o mic mudo (quando pycaw funciona) e o LiveLingo não emite chunks de STT. Pressione `n` de novo para reativar.
 
@@ -458,10 +471,10 @@ Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 
 Por padrão (`UI_MODE=tui`) o LiveLingo sobe em **TUI Textual**:
 
-- **Cabeçalho de escuta fixo** — robô + `g(swap) SRC→TGT t(alvo)` + status de áudio
-- **Log rolável** no centro (chunks, avisos, paths de áudio; seleção com mouse)
-- **Menu de comandos** em colunas dinâmicas (rótulos seguem `SOURCE_LANG`)
-- **Campo de comando** com histórico `↑`/`↓` e placeholder localizado
+- **Cabeçalho de escuta fixo** — robô + `g(swap) SRC→TGT t(alvo)` + status de áudio / bypass
+- **Duas abas de log** — **Tradução** (frases) e **Sistema** (etapas, timings, F1)
+- **Menu de comandos** em largura total (pack; `u`/`F4` oculta o menu)
+- **Campo de comando** com borda própria, histórico `↑`/`↓` e badge TTS
 - **Screenshot** (Ctrl+P → Screenshot): SVG + PNG em `.cache/screenshots/` e **imagem** na área de transferência (Windows/WSL)
 
 ```powershell
@@ -514,16 +527,25 @@ O cabeçalho do menu mostra `Languages: src -> tgt`, `Sound: ON/OFF`, `TTS: …`
 
 Pare a qualquer momento com **Ctrl+C** ou o comando `q`.
 
-### Usar como microfone no Microsoft Teams
+### Usar como microfone no Microsoft Teams / Google Meet
 
-1. Mantenha `main.py` rodando.
-2. No Teams: **Configurações (⋯ / seu avatar) → Configurações → Dispositivos**.
-3. Em **Microfone**, escolha **CABLE Output (VB-Audio Virtual Cable)**.
-4. Fale francês → os participantes ouvem a tradução em inglês.
+**LiveLingo (`.env`):** `INPUT_DEVICE` = seu mic real · `OUTPUT_DEVICE` = **CABLE Input** (índice ou nome).
 
-> O mesmo vale para Zoom, Discord, Google Meet (no navegador, escolha "CABLE Output" como mic), OBS, etc.
+| Papel | Dispositivo |
+|-------|-------------|
+| Você fala | Microfone real (USB etc.) |
+| LiveLingo envia a tradução | **CABLE Input** |
+| Mic do Teams / Meet | **CABLE Output** |
+| Você ouve os outros | Fones / alto-falantes do app |
 
-**Dica:** para também se ouvir, `MONITOR_PLAYBACK=true`, ou no Windows *Painel de Controle de Som → Gravação → CABLE Output → Propriedades → Escutar* ative "Escutar este dispositivo" e escolha seus fones.
+1. Mantenha `main.py` rodando; **`s`** se quiser áudio da tradução no cabo.
+2. **Teams:** Configurações → Dispositivos → Microfone = **CABLE Output**; alto-falantes = seus fones.
+3. **Google Meet (browser):** ⋯ → Configurações → Áudio → as mesmas escolhas; permita o mic no site.
+4. Fale em `SOURCE_LANG` → os outros ouvem `TARGET_LANG`.
+
+> O medidor do **CABLE Output** no Teams/Meet subindo = áudio entrando na call. O app **não** devolve seu mic nos seus alto-falantes. Para se ouvir: `MONITOR_PLAYBACK=true` + `MONITOR_DEVICE`, ou no Windows 11 *Sound → More sound settings → Recording → CABLE Output → Properties → Listen*.
+
+**Falar sem traduzir (ex. inglês na call):** comando **`b`** (bypass) — voz crua no CABLE; **`b`** de novo volta a traduzir.
 
 ---
 

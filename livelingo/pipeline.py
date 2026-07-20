@@ -158,6 +158,12 @@ class Pipeline:
         self._pending_language_swap = False
         self._on_language_swapped = None  # optional callback(src, tgt, voice)
 
+        # Direct voice bypass ([b]): mic → CABLE without STT/translate.
+        self._passthrough_lock = threading.Lock()
+        self._passthrough_active = False
+        self._passthrough_stop = threading.Event()
+        self._passthrough_thread = None
+
     def is_sound_enabled(self):
         with self.sound_lock:
             return self.sound_enabled
@@ -232,12 +238,188 @@ class Pipeline:
         If COM fails, app gate alone still blocks STT chunks.
         While TTS holds the capture gate, unmute keeps the hold until playback ends.
         """
+        if self.is_passthrough_active():
+            # Leaving bypass first so STT gate state stays consistent
+            self.set_voice_passthrough(False)
         muted, os_ok, name = self.mic.toggle()
         if muted:
             self.recorder.set_capture_enabled(False)
         elif not self._is_capture_held_for_playback():
             self.recorder.set_capture_enabled(True)
         return muted, os_ok, name
+
+    # ------------------------------------------------------------------ #
+    # Direct voice bypass ([b]) — mic → OUTPUT (CABLE) without translation
+    # ------------------------------------------------------------------ #
+    def is_passthrough_active(self) -> bool:
+        with self._passthrough_lock:
+            return self._passthrough_active
+
+    def set_voice_passthrough(self, enabled: bool) -> bool:
+        """
+        Enable/disable live mic passthrough to OUTPUT_DEVICE (VB-Cable).
+
+        When ON: STT/translate capture is paused; raw voice goes to Teams mic path.
+        When OFF: normal listen/translate resumes (if mic not muted).
+        Returns the new active state.
+        """
+        enabled = bool(enabled)
+        with self._passthrough_lock:
+            if enabled == self._passthrough_active:
+                return self._passthrough_active
+            if enabled:
+                self._start_passthrough_unlocked()
+            else:
+                self._stop_passthrough_unlocked()
+            return self._passthrough_active
+
+    def toggle_voice_passthrough(self) -> bool:
+        """Toggle bypass; returns True if passthrough is now active."""
+        with self._passthrough_lock:
+            if self._passthrough_active:
+                self._stop_passthrough_unlocked()
+                return False
+            self._start_passthrough_unlocked()
+            return True
+
+    def _start_passthrough_unlocked(self):
+        # Stop any TTS going to CABLE
+        try:
+            self._interrupt_playback()
+        except Exception:
+            pass
+        try:
+            self._force_release_capture_hold()
+        except Exception:
+            pass
+        # Pause VAD/STT path
+        try:
+            self.recorder.abort_utterance()
+        except Exception:
+            pass
+        try:
+            self.recorder.set_capture_enabled(False)
+        except Exception:
+            pass
+        # Free OUTPUT device from Player so we can open a live stream
+        with self._player_lock:
+            if self._player is not None:
+                try:
+                    self._player.close()
+                except Exception:
+                    pass
+                self._player = None
+
+        self._passthrough_stop.clear()
+        self._passthrough_active = True
+        self._passthrough_thread = threading.Thread(
+            target=self._passthrough_loop,
+            name="voice-passthrough",
+            daemon=True,
+        )
+        self._passthrough_thread.start()
+
+    def _stop_passthrough_unlocked(self):
+        self._passthrough_stop.set()
+        t = self._passthrough_thread
+        self._passthrough_thread = None
+        self._passthrough_active = False
+        if t is not None and t.is_alive():
+            t.join(timeout=1.5)
+        self._passthrough_stop.clear()
+        # Resume STT capture unless mic is muted or TTS hold is active
+        try:
+            if not self.is_mic_muted() and not self._is_capture_held_for_playback():
+                self.recorder.set_capture_enabled(True)
+        except Exception:
+            pass
+
+    def _passthrough_loop(self):
+        """
+        Low-latency loop: INPUT_DEVICE → OUTPUT_DEVICE (and optional monitor).
+
+        Uses the pipeline sample rate (16 kHz mono) to match capture config.
+        """
+        import sounddevice as sd
+
+        rate = int(getattr(self.cfg, "SAMPLE_RATE", 16000) or 16000)
+        block = max(64, int(rate * 0.02))  # ~20 ms
+        in_dev = self.input_device
+        out_dev = self.output_device
+        mon_dev = self.monitor_device
+        # Only open monitor if MONITOR_PLAYBACK is on and a device is set
+        use_mon = mon_dev is not None and bool(
+            getattr(self.cfg, "MONITOR_PLAYBACK", False)
+        )
+
+        try:
+            with sd.InputStream(
+                samplerate=rate,
+                channels=1,
+                dtype="float32",
+                blocksize=block,
+                device=in_dev,
+            ) as inn, sd.OutputStream(
+                samplerate=rate,
+                channels=1,
+                dtype="float32",
+                blocksize=block,
+                device=out_dev,
+            ) as out:
+                mon = None
+                try:
+                    if use_mon:
+                        mon = sd.OutputStream(
+                            samplerate=rate,
+                            channels=1,
+                            dtype="float32",
+                            blocksize=block,
+                            device=mon_dev,
+                        )
+                        mon.start()
+                    while (
+                        not self._passthrough_stop.is_set()
+                        and not self.stop_event.is_set()
+                    ):
+                        data, overflowed = inn.read(block)
+                        if overflowed:
+                            pass
+                        if data is None or len(data) == 0:
+                            continue
+                        if data.ndim > 1:
+                            data = data[:, 0:1]
+                        else:
+                            data = data.reshape(-1, 1)
+                        frame = np.ascontiguousarray(data, dtype=np.float32)
+                        out.write(frame)
+                        if mon is not None:
+                            try:
+                                mon.write(frame)
+                            except Exception:
+                                pass
+                finally:
+                    if mon is not None:
+                        try:
+                            mon.stop()
+                            mon.close()
+                        except Exception:
+                            pass
+        except Exception as exc:
+            ui.error(f"[b] Bypass de voz falhou: {exc}")
+        finally:
+            with self._passthrough_lock:
+                self._passthrough_active = False
+                self._passthrough_thread = None
+            # If we exited due to error/stop, try to restore capture
+            try:
+                if (
+                    not self.stop_event.is_set()
+                    and not self.is_mic_muted()
+                    and not self._is_capture_held_for_playback()
+                ):
+                    self.recorder.set_capture_enabled(True)
+            except Exception:
+                pass
 
     def check_mic_muted_warn(self, indent=3):
         """Startup / pre-listen warning if OS mic is muted or volume ~0."""
@@ -606,6 +788,81 @@ class Pipeline:
             "warnings": warnings,
         }
 
+    def set_tts_voice(self, voice_id: str):
+        """
+        Change TTS_VOICE for upcoming edge-tts synthesis.
+
+        Does not rewrite historical chunks; only future live/replay TTS uses
+        the new voice. Never rebinds Piper (that is only for [g]/[t] language
+        changes) — hybrid.set_voice would call set_language_pair and stall STT.
+
+        Validation is offline-first (no list_voices network on the hot path).
+
+        Returns dict: ok, error?, voice, old_voice, unchanged?, warnings
+        """
+        from .synthesize import resolve_edge_voice, warn_tts_voice_language
+
+        # online=False: never block STT/TTS on Microsoft catalog fetch
+        ok, canon_or_err, warnings = resolve_edge_voice(voice_id, online=False)
+        if not ok:
+            return {
+                "ok": False,
+                "error": canon_or_err,
+                "voice": getattr(self.cfg, "TTS_VOICE", ""),
+                "old_voice": getattr(self.cfg, "TTS_VOICE", ""),
+                "warnings": warnings or [],
+            }
+
+        new_voice = canon_or_err
+        old_voice = (getattr(self.cfg, "TTS_VOICE", "") or "").strip()
+        if new_voice == old_voice:
+            return {
+                "ok": True,
+                "unchanged": True,
+                "voice": new_voice,
+                "old_voice": old_voice,
+                "warnings": warnings or [],
+            }
+
+        self.cfg.TTS_VOICE = new_voice
+        # Keep previous as ALT so [g] can restore a useful pair.
+        if old_voice and old_voice != new_voice:
+            try:
+                self.cfg.TTS_VOICE_ALT = old_voice
+            except Exception:
+                pass
+
+        synth = self.synthesizer
+        try:
+            # Edge-only update. Prefer set_edge_voice / edge.set_voice so we
+            # never call hybrid.set_voice() (that rebinds Piper and can stall STT).
+            if hasattr(synth, "set_edge_voice"):
+                synth.set_edge_voice(new_voice)
+            elif hasattr(synth, "edge") and hasattr(synth.edge, "set_voice"):
+                synth.edge.set_voice(new_voice)
+            elif hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
+                # Pure edge Synthesizer
+                synth.set_voice(new_voice)
+            # piper-only: cfg.TTS_VOICE still updated for badge; no edge engine
+        except Exception as exc:
+            warnings = list(warnings or [])
+            warnings.append(f"TTS rebind: {exc}")
+
+        try:
+            warn_tts_voice_language(
+                self.cfg, log=lambda m: warnings.append(m) if m else None
+            )
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "unchanged": False,
+            "voice": new_voice,
+            "old_voice": old_voice,
+            "warnings": warnings or [],
+        }
+
     # ------------------------------------------------------------------ #
     # Mute capture during TTS (acoustic feedback guard)
     # ------------------------------------------------------------------ #
@@ -697,6 +954,9 @@ class Pipeline:
     def _enqueue_playback(self, audio, sample_rate, interruptible=False):
         if not self.is_sound_enabled():
             return
+        if self.is_passthrough_active():
+            # Cable is owned by live mic bypass — do not mix TTS into it
+            return
         with self._playback_suppress_lock:
             if self._playback_suppressed:
                 return
@@ -768,6 +1028,17 @@ class Pipeline:
         )
 
     def _should_paragraph_split(self):
+        """
+        Whether capture may early-emit mid-utterance (sentence or paragraph).
+
+        SENTENCE_SPLIT (default on): short pause after min speech → new chunk
+        immediately (faster per-phrase text). PARAGRAPH_* used when sentence
+        split is disabled.
+        """
+        if getattr(self.cfg, "SENTENCE_SPLIT", False):
+            if getattr(self.cfg, "SENTENCE_SPLIT_SOUND_OFF_ONLY", True):
+                return not self.is_sound_enabled()
+            return True
         if not getattr(self.cfg, "PARAGRAPH_SPLIT", True):
             return False
         if getattr(self.cfg, "PARAGRAPH_SPLIT_SOUND_OFF_ONLY", True):
@@ -1215,6 +1486,11 @@ class Pipeline:
 
     def stop(self):
         self.stop_event.set()
+        try:
+            if self.is_passthrough_active():
+                self.set_voice_passthrough(False)
+        except Exception:
+            pass
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
@@ -1315,71 +1591,90 @@ class Pipeline:
     def _process_chunk_body(self, item, n, sound_off, ordered, _abort):
         sound_on = not sound_off
 
-        # --- Speech-to-text ---
+        # --- Speech-to-text (or typed text via enew / edit re-queue) ---
         t0 = time.perf_counter()
-        try:
-            if isinstance(item, str):
-                heard = item
-            else:
+        text_only = isinstance(item, str)
+        strip_note = ""
+        audio_item = item if isinstance(item, np.ndarray) else None
+
+        if text_only:
+            # Typed/queued text: skip STT, Whisper, and STT hallucination filters.
+            heard = (item or "").strip()
+            t1 = t0
+            if self.cfg.VERBOSE:
+                ui.dim(
+                    f"[chunk {n}] [debug] Texto tipado (sem STT) — "
+                    f"{len(heard)} chars.",
+                    panel="app",
+                )
+        else:
+            ui.chunk_progress(n, "stt")
+            try:
                 with self._stt_lock:
                     heard = self.transcriber.transcribe(item)
-        except Exception as exc:
-            ui.error(f"[chunk {n}] STT failed: {exc}")
-            _abort()
-            return
-        t1 = time.perf_counter()
-        if self.cfg.VERBOSE:
-            ui.dim(f"[chunk {n}] [debug] STT concluído com sucesso.")
+            except Exception as exc:
+                ui.error(f"[chunk {n}] STT failed: {exc}")
+                _abort()
+                return
+            t1 = time.perf_counter()
+            if self.cfg.VERBOSE:
+                ui.dim(f"[chunk {n}] [debug] STT concluído com sucesso.")
+
+            if not heard:
+                if self.cfg.VERBOSE:
+                    _abort(
+                        f"[chunk {n}] (no speech detected — skipped)", kind="warn"
+                    )
+                else:
+                    _abort()
+                return
+
+            # Pure silence-credit lines (whole chunk is "Legenda por …") — drop once.
+            if getattr(self.cfg, "STT_HALLUCINATION_FILTER", True) and is_hallucination(
+                heard
+            ):
+                if self.cfg.VERBOSE:
+                    _abort(
+                        f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
+                    )
+                else:
+                    _abort()
+                return
+
+            # Long utterance + silence tail: strip trailing credit, keep real speech.
+            original_heard = heard
+            heard, stripped = clean_transcript(heard, self.cfg)
+            if stripped and heard and self.cfg.VERBOSE:
+                strip_note = (
+                    f"[chunk {n}] (removed STT tail hallucination from transcript)"
+                )
+            if not heard:
+                if self.cfg.VERBOSE:
+                    _abort(
+                        f'[chunk {n}] (only hallucination in STT — skipped): '
+                        f'"{original_heard}"'
+                    )
+                else:
+                    _abort()
+                return
+
+            if should_discard_transcript(audio_item, heard, self.cfg):
+                if self.cfg.VERBOSE:
+                    _abort(
+                        f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
+                    )
+                else:
+                    _abort()
+                return
 
         if not heard:
             if self.cfg.VERBOSE:
-                _abort(
-                    f"[chunk {n}] (no speech detected — skipped)", kind="warn"
-                )
+                _abort(f"[chunk {n}] (empty text — skipped)", kind="warn")
             else:
                 _abort()
             return
 
-        audio_item = item if isinstance(item, np.ndarray) else None
-        strip_note = ""
-
-        # Pure silence-credit lines (whole chunk is "Legenda por …") — drop once.
-        if getattr(self.cfg, "STT_HALLUCINATION_FILTER", True) and is_hallucination(
-            heard
-        ):
-            if self.cfg.VERBOSE:
-                _abort(
-                    f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
-                )
-            else:
-                _abort()
-            return
-
-        # Long utterance + silence tail: strip trailing credit, keep real speech.
-        original_heard = heard
-        heard, stripped = clean_transcript(heard, self.cfg)
-        if stripped and heard and self.cfg.VERBOSE:
-            strip_note = (
-                f"[chunk {n}] (removed STT tail hallucination from transcript)"
-            )
-        if not heard:
-            if self.cfg.VERBOSE:
-                _abort(
-                    f'[chunk {n}] (only hallucination in STT — skipped): '
-                    f'"{original_heard}"'
-                )
-            else:
-                _abort()
-            return
-
-        if should_discard_transcript(audio_item, heard, self.cfg):
-            if self.cfg.VERBOSE:
-                _abort(
-                    f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
-                )
-            else:
-                _abort()
-            return
+        ui.chunk_progress(n, "heard", detail=heard)
 
         if sound_on:
             self._resume_chunk_playback()
@@ -1461,6 +1756,7 @@ class Pipeline:
                     segment_queue.put(segment)
 
         try:
+            ui.chunk_progress(n, "translate")
             if self._use_streaming_llm_for_chunk():
                 ui.chunk_stream_start(n, heard)
 
@@ -1497,6 +1793,8 @@ class Pipeline:
                 _abort()
             return
 
+        ui.chunk_progress(n, "translated", detail=translated)
+
         # Shared stamp for DB + list history (updated when timings finalize).
         record_created_at = self._timestamp_now()
         if sound_on:
@@ -1512,8 +1810,10 @@ class Pipeline:
                 n, heard, translated, created_at=record_created_at, timing=None
             )
 
-        def _synthesize_chunk_audio():
+        def _synthesize_chunk_audio(announce=True):
             nonlocal tts_audio, sample_rate, t_tts_start
+            if announce:
+                ui.chunk_progress(n, "tts")
             if overlap_tts:
                 enqueue_segments(feeder.flush(translated))
                 if merge_tail and tail_buffer:
@@ -1640,6 +1940,7 @@ class Pipeline:
                         timing=timing,
                         created_at=record_created_at,
                     )
+                ui.chunk_progress(n, "ready_text")
                 if self.cfg.VERBOSE:
                     ui.dim(
                         f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS omitido."
@@ -1647,13 +1948,15 @@ class Pipeline:
                 return
 
             def _background_tts():
-                _synthesize_chunk_audio()
+                ui.chunk_progress(n, "tts_bg")
+                _synthesize_chunk_audio(announce=False)
                 t3 = time.perf_counter()
                 if self.cfg.VERBOSE:
                     ui.dim(
                         f"[chunk {n}] [debug] TTS em background concluído (sound OFF)."
                     )
                 _finalize_chunk_timings(t3, print_timings=False)
+                ui.chunk_progress(n, "ready", detail="voz em cache")
                 if self.cfg.VERBOSE:
                     ui.dim(
                         f"[chunk {n}] [debug] Cache de áudio gravado em background "
@@ -1674,6 +1977,7 @@ class Pipeline:
             self._persist_text_only(
                 n, heard, translated, timing=timing, created_at=record_created_at
             )
+            ui.chunk_progress(n, "ready_text", detail="voz em segundo plano")
             self._enqueue_background_tts(n, _background_tts)
             if self.cfg.VERBOSE:
                 ui.dim(f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background.")
@@ -1689,6 +1993,7 @@ class Pipeline:
         if self.cfg.VERBOSE:
             ui.dim(f"[chunk {n}] [debug] Síntese de voz (TTS) concluída com sucesso.")
         _finalize_chunk_timings(t3)
+        ui.chunk_progress(n, "ready")
 
     def _persist_chunk(
         self,

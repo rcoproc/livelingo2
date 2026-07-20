@@ -56,9 +56,21 @@ class Recorder:
 
         self.sample_rate = config.SAMPLE_RATE
         self.block_frames = max(1, int(config.SAMPLE_RATE * config.BLOCK_DURATION))
-        self.preroll_blocks = max(1, int(config.PREROLL_DURATION / config.BLOCK_DURATION))
+        # Longer preroll = less first-syllable clipping when VAD fires late.
+        self.preroll_blocks = max(
+            1, int(getattr(config, "PREROLL_DURATION", 0.5) / config.BLOCK_DURATION)
+        )
         self.silence_blocks_needed = max(
             1, int(config.SILENCE_DURATION / config.BLOCK_DURATION)
+        )
+        # Require sustained energy before "speech started" (laptop noise filter).
+        self.onset_blocks = max(
+            1, int(getattr(config, "VAD_ONSET_BLOCKS", 2) or 2)
+        )
+        # Allow brief dips during onset without resetting the counter (soft PT
+        # unstressed starts: "está", "vocês", "e", …).
+        self.onset_gap_blocks = max(
+            0, int(getattr(config, "VAD_ONSET_GAP_BLOCKS", 2) or 0)
         )
         self.min_speech_frames = int(config.MIN_SPEECH_DURATION * config.SAMPLE_RATE)
         self.max_chunk_frames = int(config.MAX_CHUNK_DURATION * config.SAMPLE_RATE)
@@ -72,15 +84,25 @@ class Recorder:
         self.split_overlap_blocks = max(
             1, int(getattr(config, "VAD_SPLIT_OVERLAP", 1.5) / config.BLOCK_DURATION)
         )
+        # Early split thresholds: sentence-scale (fast per-phrase) or legacy paragraph.
+        if getattr(config, "SENTENCE_SPLIT", False):
+            early_silence = float(getattr(config, "SENTENCE_SILENCE", 0.55) or 0.55)
+            early_min = float(getattr(config, "SENTENCE_MIN_SPEECH", 1.0) or 1.0)
+            early_overlap = float(
+                getattr(config, "SENTENCE_SPLIT_OVERLAP", 0.25) or 0.25
+            )
+        else:
+            early_silence = float(getattr(config, "PARAGRAPH_SILENCE", 1.0) or 1.0)
+            early_min = float(getattr(config, "PARAGRAPH_MIN_SPEECH", 5.0) or 5.0)
+            early_overlap = float(
+                getattr(config, "PARAGRAPH_SPLIT_OVERLAP", 0.3) or 0.3
+            )
         self.paragraph_silence_blocks = max(
-            1, int(getattr(config, "PARAGRAPH_SILENCE", 1.0) / config.BLOCK_DURATION)
+            1, int(early_silence / config.BLOCK_DURATION)
         )
-        self.paragraph_min_frames = int(
-            getattr(config, "PARAGRAPH_MIN_SPEECH", 5.0) * config.SAMPLE_RATE
-        )
+        self.paragraph_min_frames = int(early_min * config.SAMPLE_RATE)
         self.paragraph_overlap_blocks = max(
-            1,
-            int(getattr(config, "PARAGRAPH_SPLIT_OVERLAP", 0.3) / config.BLOCK_DURATION),
+            1, int(early_overlap / config.BLOCK_DURATION)
         )
         self._silero = None
         if getattr(config, "VAD_MODE", "energy") == "silero":
@@ -101,11 +123,19 @@ class Recorder:
     def _block_is_speech(self, block, in_speech=False):
         if self._silero is not None:
             return self._silero.is_speech(block)
-        threshold = self.cfg.SILENCE_THRESHOLD
+        threshold = float(self.cfg.SILENCE_THRESHOLD)
         if in_speech:
             # Hysteresis: stay in "speech" through brief dips between words/sentences.
             hangover = getattr(self.cfg, "VAD_SPEECH_HANGOVER", 0.65)
-            threshold *= hangover
+            threshold *= float(hangover)
+        else:
+            # More sensitive while waiting for onset so soft first syllables
+            # still count (avoids clipping "vocês"/"está" before energy peaks).
+            onset_scale = float(
+                getattr(self.cfg, "VAD_ONSET_THRESHOLD_SCALE", 0.75) or 0.75
+            )
+            onset_scale = min(1.0, max(0.4, onset_scale))
+            threshold *= onset_scale
         return _rms(block) > threshold
 
     def _silence_blocks_to_end(self, total_frames):
@@ -129,10 +159,22 @@ class Recorder:
         return blocks
 
     def _paragraph_split_active(self):
-        if not getattr(self.cfg, "PARAGRAPH_SPLIT", True):
-            return False
+        """
+        Early emit while still listening (sentence or paragraph scale).
+
+        When the pipeline provides paragraph_split_enabled, that callback is
+        authoritative (sound-off-only vs always). Otherwise fall back to config.
+        """
         if self.paragraph_split_enabled is not None:
             return bool(self.paragraph_split_enabled())
+        # No callback: resolve from config alone
+        if getattr(self.cfg, "SENTENCE_SPLIT", False):
+            if getattr(self.cfg, "SENTENCE_SPLIT_SOUND_OFF_ONLY", True):
+                # Without pipeline callback we cannot know sound state — allow split
+                return True
+            return True
+        if not getattr(self.cfg, "PARAGRAPH_SPLIT", True):
+            return False
         return not getattr(self.cfg, "PARAGRAPH_SPLIT_SOUND_OFF_ONLY", True)
 
     def set_capture_enabled(self, enabled: bool):
@@ -203,7 +245,35 @@ class Recorder:
         in_speech = False
         trailing_silence = 0
         total_frames = 0
+        onset_count = 0  # loud blocks counted toward speech start
+        onset_quiet = 0  # quiet blocks allowed during onset without full reset
         rolling_enabled = getattr(self.cfg, "ROLLING_CHUNKS", False)
+        zero_block = np.zeros(self.block_frames, dtype=np.float32)
+
+        def _reset_utterance_state(*, clear_preroll: bool, pad_silence: bool = False):
+            nonlocal speech, in_speech, trailing_silence, total_frames
+            nonlocal onset_count, onset_quiet
+            if in_speech and self.on_listening:
+                try:
+                    self.on_listening(False)
+                except Exception:
+                    pass
+            in_speech = False
+            speech = []
+            trailing_silence = 0
+            total_frames = 0
+            onset_count = 0
+            onset_quiet = 0
+            if clear_preroll:
+                preroll.clear()
+            elif pad_silence:
+                # Keep preroll length, but wipe live mic (avoid TTS echo in lead-in).
+                preroll.append(zero_block.copy())
+            if self._silero is not None:
+                try:
+                    self._silero.reset()
+                except Exception:
+                    pass
 
         while not self.stop_event.is_set():
             block = self._read_block(stream)
@@ -212,22 +282,14 @@ class Recorder:
                 aborted = self._abort_utterance.is_set()
                 if aborted:
                     self._abort_utterance.clear()
-                if in_speech and self.on_listening:
-                    self.on_listening(False)
-                in_speech = False
-                speech = []
-                preroll.clear()
-                trailing_silence = 0
-                total_frames = 0
-                if self._silero is not None:
-                    try:
-                        self._silero.reset()
-                    except Exception:
-                        pass
-                # After abort, keep capturing with next blocks (unlike sustained mute).
-                if aborted:
+                    # Hard drop: discard everything so swap/mute mid-phrase is clean.
+                    _reset_utterance_state(clear_preroll=True)
                     continue
                 if not self._capture_enabled.is_set():
+                    # App mute / TTS anti-feedback: drop speech but feed silence
+                    # into preroll so re-open still has a lead-in window (without
+                    # speaker→mic TTS audio stuck in the buffer).
+                    _reset_utterance_state(clear_preroll=False, pad_silence=True)
                     continue
 
             loud = self._block_is_speech(block, in_speech=in_speech)
@@ -235,13 +297,29 @@ class Recorder:
             if not in_speech:
                 preroll.append(block)
                 if loud:
-                    in_speech = True
-                    speech = list(preroll)
-                    preroll.clear()
-                    total_frames = sum(b.size for b in speech)
-                    trailing_silence = 0
-                    if self.on_listening:
-                        self.on_listening(True)
+                    # Sustained energy so fan/keyboard noise does not start speech.
+                    onset_count += 1
+                    onset_quiet = 0
+                    if onset_count >= self.onset_blocks:
+                        in_speech = True
+                        onset_count = 0
+                        onset_quiet = 0
+                        # Full preroll = audio *before* + during onset (first words).
+                        speech = list(preroll)
+                        preroll.clear()
+                        total_frames = sum(b.size for b in speech)
+                        trailing_silence = 0
+                        if self.on_listening:
+                            self.on_listening(True)
+                else:
+                    # Tolerate brief dips mid-onset (soft syllables / mic ramp).
+                    if onset_count > 0:
+                        onset_quiet += 1
+                        if onset_quiet > self.onset_gap_blocks:
+                            onset_count = 0
+                            onset_quiet = 0
+                    else:
+                        onset_quiet = 0
                 continue
 
             speech.append(block)
@@ -270,8 +348,13 @@ class Recorder:
                     in_speech = False
                     trailing_silence = 0
                     total_frames = 0
+                    onset_count = 0
+                    onset_quiet = 0
                     if self._silero is not None:
-                        self._silero.reset()
+                        try:
+                            self._silero.reset()
+                        except Exception:
+                            pass
                     if self.on_listening:
                         self.on_listening(False)
                 elif paragraph_split:

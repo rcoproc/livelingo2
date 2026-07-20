@@ -41,13 +41,22 @@ class HybridSynthesizer:
         self._first_played = False
 
     def set_voice(self, voice_id):
-        """Update edge voice; Piper rebinds via set_language_pair if available."""
+        """
+        Language-swap path ([g]/[t]): update edge voice AND rebind Piper.
+
+        For edge-only changes ([ctts]), callers must use edge.set_voice only —
+        rebinding Piper here is expensive and can stall live STT.
+        """
         self.edge.set_voice(voice_id)
         if hasattr(self.piper, "set_language_pair"):
             try:
                 self.piper.set_language_pair()
             except Exception as exc:
                 self.log(f"Piper rebind after language swap failed ({exc}).")
+
+    def set_edge_voice(self, voice_id):
+        """Edge-only voice change ([ctts]) — no Piper reload."""
+        self.edge.set_voice(voice_id)
 
     def _to_cache_rate(self, audio, sample_rate):
         if audio is None:

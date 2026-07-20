@@ -265,7 +265,21 @@ MAX_CHUNK_DURATION = _get_float("MAX_CHUNK_DURATION", 60.0)
 # RMS energy below which a 30 ms block counts as silence. If short utterances
 # get cut off, lower this; if background noise triggers chunks, raise it.
 # Typical mic values: silence ~0.002-0.01, speech ~0.02-0.15.
+# Laptop / built-in mics often need 0.02–0.04 (noise floor is higher).
 SILENCE_THRESHOLD = _get_float("SILENCE_THRESHOLD", 0.015)
+
+# Consecutive "loud" blocks (~30 ms each) required before VAD enters speech.
+# Filters clicks, keyboard noise, and short room spikes. 2 ≈ 60 ms of energy.
+# Raise (6–10) for noisy laptop mics; lower (1) if first syllable still cuts.
+VAD_ONSET_BLOCKS = _get_int("VAD_ONSET_BLOCKS", 2)
+
+# Quiet blocks allowed mid-onset without resetting the counter (soft PT starts).
+# 2 ≈ 60 ms dip tolerance between "está" and the louder rest of the word.
+VAD_ONSET_GAP_BLOCKS = _get_int("VAD_ONSET_GAP_BLOCKS", 2)
+
+# While waiting for speech onset, multiply SILENCE_THRESHOLD by this (<1 = more
+# sensitive) so unstressed first syllables still count toward onset.
+VAD_ONSET_THRESHOLD_SCALE = _get_float("VAD_ONSET_THRESHOLD_SCALE", 0.75)
 
 # Base silence (seconds) before a chunk ends. Adaptive VAD scales this up while
 # you keep talking (long monologues tolerate longer pauses between paragraphs).
@@ -284,6 +298,7 @@ VAD_SPLIT_OVERLAP = _get_float("VAD_SPLIT_OVERLAP", 1.5)
 VAD_SPEECH_HANGOVER = _get_float("VAD_SPEECH_HANGOVER", 0.65)
 
 # Paragraph splits during long monologues (emit chunk at short pauses, keep listening).
+# Used when SENTENCE_SPLIT=false (legacy monologue / long-pause behaviour).
 PARAGRAPH_SPLIT = _get_bool("PARAGRAPH_SPLIT", True)
 # Only split by paragraph when translation audio is muted ([s] sound OFF).
 PARAGRAPH_SPLIT_SOUND_OFF_ONLY = _get_bool("PARAGRAPH_SPLIT_SOUND_OFF_ONLY", True)
@@ -294,7 +309,22 @@ PARAGRAPH_MIN_SPEECH = _get_float("PARAGRAPH_MIN_SPEECH", 5.0)
 # Audio overlap (seconds) kept after a paragraph split.
 PARAGRAPH_SPLIT_OVERLAP = _get_float("PARAGRAPH_SPLIT_OVERLAP", 0.3)
 
-# Sound OFF: process STT+translation in parallel (one worker per paragraph chunk).
+# Sentence-early emit: on a short pause after enough speech, emit that audio as
+# its own chunk (STT+translate+UI) and keep listening — do not wait for the full
+# monologue / long end-silence. Prefer this for faster per-phrase text (esp.
+# sound OFF). When true, SENTENCE_* thresholds override PARAGRAPH_* for splits.
+SENTENCE_SPLIT = _get_bool("SENTENCE_SPLIT", True)
+# Only sentence-split when sound is OFF (safer with live TTS). Set false to
+# also early-emit phrases while sound is ON.
+SENTENCE_SPLIT_SOUND_OFF_ONLY = _get_bool("SENTENCE_SPLIT_SOUND_OFF_ONLY", True)
+# Pause (seconds) treated as end-of-sentence while still in an utterance.
+SENTENCE_SILENCE = _get_float("SENTENCE_SILENCE", 0.55)
+# Minimum speech (seconds) before a sentence pause can emit a chunk.
+SENTENCE_MIN_SPEECH = _get_float("SENTENCE_MIN_SPEECH", 1.0)
+# Overlap (seconds) kept after a sentence split (avoids clipping next onset).
+SENTENCE_SPLIT_OVERLAP = _get_float("SENTENCE_SPLIT_OVERLAP", 0.25)
+
+# Sound OFF: process STT+translation in parallel (one worker per early chunk).
 SOUND_OFF_PARALLEL = _get_bool("SOUND_OFF_PARALLEL", True)
 SOUND_OFF_WORKERS = _get_int("SOUND_OFF_WORKERS", 2)
 # Sound OFF: skip TTS entirely (text only; saves CPU — replay needs re-synthesis).
@@ -309,7 +339,8 @@ MIN_SPEECH_DURATION = _get_float("MIN_SPEECH_DURATION", 0.4)
 BLOCK_DURATION = 0.03
 
 # Keep this much audio *before* speech onset so the first syllable isn't clipped.
-PREROLL_DURATION = 0.25
+# 0.5s covers soft PT openers ("vocês", "está", "e então") when onset fires late.
+PREROLL_DURATION = _get_float("PREROLL_DURATION", 0.5)
 
 # --------------------------------------------------------------------------- #
 # Low-latency mode
