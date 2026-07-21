@@ -139,24 +139,61 @@ class Recorder:
         return _rms(block) > threshold
 
     def _silence_blocks_to_end(self, total_frames):
-        """Require longer pauses before ending a chunk during long monologues."""
-        blocks = self.silence_blocks_needed
-        if getattr(self.cfg, "VAD_ADAPTIVE_SILENCE", True):
-            speech_sec = total_frames / self.sample_rate
-            if speech_sec >= 4.0:
-                scale_max = getattr(self.cfg, "VAD_SILENCE_SCALE_MAX", 3.5)
-                factor = min(scale_max, 1.0 + speech_sec / 10.0)
-                blocks = max(blocks, int(self.silence_blocks_needed * factor))
+        """
+        Blocks of silence required to *end* an utterance (final flush).
+
+        When sound is OFF, SOUND_OFF_SILENCE_DURATION is used as the **base**
+        (not a hard ceiling). Adaptive scaling still grows the required pause
+        during long monologues so thinking breaths do not cut the speaker off.
+        (Previously `min(adaptive, sound_off)` capped long speech at ~0.7–2s
+        and felt like random mid-phrase interrupts.)
+        """
         if self.shorter_end_enabled is not None and self.shorter_end_enabled():
-            cap = max(
+            base = max(
                 1,
                 int(
-                    getattr(self.cfg, "SOUND_OFF_SILENCE_DURATION", 2.0)
+                    float(
+                        getattr(self.cfg, "SOUND_OFF_SILENCE_DURATION", 2.0) or 2.0
+                    )
                     / self.cfg.BLOCK_DURATION
                 ),
             )
-            blocks = min(blocks, cap)
+        else:
+            base = self.silence_blocks_needed
+
+        blocks = base
+        if getattr(self.cfg, "VAD_ADAPTIVE_SILENCE", True):
+            speech_sec = total_frames / float(self.sample_rate)
+            # Start scaling a bit earlier so 3–8s phrases already get more patience
+            if speech_sec >= 3.0:
+                scale_max = float(
+                    getattr(self.cfg, "VAD_SILENCE_SCALE_MAX", 3.5) or 3.5
+                )
+                factor = min(scale_max, 1.0 + speech_sec / 10.0)
+                blocks = max(blocks, int(base * factor))
         return blocks
+
+    def _early_split_silence_blocks(self, total_frames):
+        """
+        Pause needed for mid-utterance sentence/paragraph early-emit.
+
+        Base = SENTENCE_SILENCE (or PARAGRAPH_SILENCE). Grows with monologue
+        length so a breath / hesitation mid-phrase does not fire STT+translate
+        while the speaker is still developing the sentence.
+        """
+        blocks = self.paragraph_silence_blocks
+        if not getattr(self.cfg, "VAD_ADAPTIVE_SILENCE", True):
+            return blocks
+        speech_sec = total_frames / float(self.sample_rate)
+        if speech_sec < 2.5:
+            return blocks
+        scale_max = float(
+            getattr(self.cfg, "SENTENCE_SILENCE_SCALE_MAX", 2.5) or 2.5
+        )
+        scale_max = max(1.0, min(4.0, scale_max))
+        # e.g. 8s speech → factor ≈ 1.5; 20s → ≈ 2.5 (capped)
+        factor = min(scale_max, 1.0 + (speech_sec - 2.0) / 12.0)
+        return max(blocks, int(self.paragraph_silence_blocks * factor))
 
     def _paragraph_split_active(self):
         """
@@ -333,12 +370,13 @@ class Recorder:
                 rolling_enabled
                 and total_frames >= self.rolling_chunk_frames
             )
+            early_silence_need = self._early_split_silence_blocks(total_frames)
             paragraph_split = (
                 self._paragraph_split_active()
                 and not ended
                 and not too_long
                 and total_frames >= self.paragraph_min_frames
-                and trailing_silence >= self.paragraph_silence_blocks
+                and trailing_silence >= early_silence_need
             )
 
             if rolling or ended or too_long or paragraph_split:

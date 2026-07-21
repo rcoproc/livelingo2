@@ -3,9 +3,17 @@
 .env.*
 !.env.example
 
-# Session database and exported transcripts
+# Session database and exported transcripts / phrase dumps
 livelingo.db
+*.db
 20??-??-??_*.md
+exported*.csv
+*.csv
+
+# Local screenshots / UI captures (may show personal sessions)
+tela*.png
+*.png
+!docs/**/*.png
 
 # Virtual environments
 .venv/
@@ -20,12 +28,14 @@ __pycache__/
 # Whisper / HF model cache sometimes ends up local
 .cache/
 
-# Local Claude Code settings (permissions, etc.)
+# Local Claude Code / agent settings
 .claude/
+.grok/
 
 # Scratch / test audio
 test.mp3
 *.tmp.wav
+*.wav
 
 # OS / editor
 .DS_Store

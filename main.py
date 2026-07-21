@@ -4,9 +4,12 @@ main.py
 Entry point for the real-time FR -> EN voice translator.
 
     python main.py
+    python main.py --help
     python main.py <session_id>          # resume session, skip picker
     livelingo <session_id>               # same via wrapper
     livelingo --session <session_id>
+    livelingo --list-sessions            # list all sessions (same format as menu [2])
+    livelingo --verbose                  # detailed debug logs
 
 Flow: microphone -> Whisper STT (Groq cloud or local faster-whisper)
       -> translation (Groq LLM or Google) -> edge-tts (TTS)
@@ -604,6 +607,44 @@ def _print_f1_help(pipeline=None):
         ui.info(f"UI_MODE={ui_mode}.", indent=m)
     ui.raw("")
 
+    # Phrase-cache inventory (same summary as Tradução tab after "Audio OFF…")
+    try:
+        from livelingo.phrase_cache import (
+            format_cache_inventory_summary,
+            get_phrase_cache,
+        )
+
+        pc = None
+        if pipeline is not None:
+            pc = getattr(pipeline, "phrase_cache", None)
+        if pc is None:
+            try:
+                pc = get_phrase_cache(cfg)
+            except Exception:
+                pc = None
+        ui.info("Phrase cache (resumo):", indent=m)
+        for line in format_cache_inventory_summary(cfg, pc):
+            # Lines already carry Rich markup for TUI; classic strips via raw path
+            if ui.get_log_sink() is not None:
+                ui.rich(line)
+            else:
+                # Strip simple markup for classic terminal
+                plain = (
+                    line.replace("[/]", "")
+                    .replace("[bold cyan]", "")
+                    .replace("[bold]", "")
+                    .replace("[dim]", "")
+                    .replace("[/dim]", "")
+                )
+                # drop residual [tag] chunks
+                import re as _re
+
+                plain = _re.sub(r"\[[^\]]+\]", "", plain)
+                ui.dim(plain, indent=m)
+    except Exception as exc:
+        ui.dim(f"Cache de frases: (resumo indisponível — {exc})", indent=m)
+    ui.raw("")
+
 
 def _print_device_overview(in_idx, in_name, out_idx, out_name):
     """Print the full device list (compact) and confirm the selected ones."""
@@ -881,9 +922,9 @@ def _print_menu(pipeline=None):
             f"TTS: {_tts_menu_label()} | Sound: {sound} | Mic: {mic}"
         )
         ui.dim(
-            "Sentence: e/eN enew d/dN f/fN F l lo lt cls gg/GG gt/gf c | "
-            "Audio: r/rN s n x a/aN p/pN ld lav lv ctts | "
-            "Idiom: g t o | Session: v m u(compact) q"
+            "Sentence: e/eN enew d/dN f/fN F l lo lt lc cls gg/GG gt/gf c | "
+            "Audio: r/rN rs/rsN s n b x a/aN p/pN ld lav lv ctts | "
+            "Idiom: g t o | Cache: pc | Session: v m u(compact) q"
         )
         if pipeline is not None:
             ui.success(
@@ -994,6 +1035,8 @@ def _print_menu(pipeline=None):
             "[l]  List messages",
             "[lo] List source only",
             "[lt] List target only",
+            "[lc] LiveCaptions pause",
+            "[lc show/hide] LC window",
             "[co] Comment last",
             "[coN] Comment N",
             "[codN] Del comment #N",
@@ -1008,8 +1051,11 @@ def _print_menu(pipeline=None):
         [
             "[r]  Replay last",
             "[rN] Replay chunk N",
+            "[rs] Replay Heard last",
+            "[rsN] Replay Heard N",
             f"[s]  Sound ({sound_hint})",
             f"[n]  Mic ({mic_hint})",
+            f"[b]  Bypass voice",
             "[x]  Stop playback",
             "[a]  Copy audio path",
             "[aN] Copy path N",
@@ -1032,8 +1078,10 @@ def _print_menu(pipeline=None):
     _print_menu_group(
         "Session",
         [
+            "[pc] Phrase cache (pc …)",
             "[v]  Switch session",
             "[m]  Show this menu",
+            "[u]  Compact UI (F4)",
             "[q]  Quit",
         ],
     )
@@ -1070,6 +1118,71 @@ def _unpack_transcript_entry(entry):
 
 def _entry_heard(entry):
     return _unpack_transcript_entry(entry)[1]
+
+
+def _is_livecaptions_entry(timing) -> bool:
+    """True when chunk came from Windows LiveCaptions (inbound strip)."""
+    if not isinstance(timing, dict):
+        return False
+    src = (timing.get("source") or timing.get("origin") or "").strip().lower()
+    return src in ("livecaptions", "lc", "captions")
+
+
+def _display_lang_label(code: str) -> str:
+    """Short UI label: pt → BR, else upper code."""
+    c = (code or "?").lower().strip()
+    if "-" in c:
+        c = c.split("-", 1)[0]
+    if c in ("pt", "por", "pt-br", "pt_br"):
+        return "BR"
+    return (c or "?").upper()
+
+
+def _entry_lang_pair(timing, *, is_lc: bool):
+    """
+    (src_label, tgt_label) for list/export.
+
+    LC: caption_source_lang → caption_target_lang (strip pair).
+    Voice: cfg SOURCE → TARGET.
+    """
+    if is_lc and isinstance(timing, dict):
+        s = timing.get("caption_source_lang") or timing.get("source_lang") or ""
+        t = timing.get("caption_target_lang") or timing.get("target_lang") or ""
+        if s and t:
+            return _display_lang_label(s), _display_lang_label(t)
+    return (
+        _display_lang_label(getattr(cfg, "SOURCE_LANG", "?")),
+        _display_lang_label(getattr(cfg, "TARGET_LANG", "?")),
+    )
+
+
+def _wrap_labeled_body(label_plain: str, body: str, width: int) -> list[str]:
+    """
+    Wrap body so first line fits after label; later lines align under body.
+    `width` = full line budget for label+body.
+    """
+    body = " ".join((body or "").split())
+    if not body:
+        return [""]
+    width = max(8, int(width))
+    limit = max(8, width - len(label_plain))
+    words = body.split(" ")
+    lines = []
+    cur = ""
+    for w in words:
+        trial = w if not cur else f"{cur} {w}"
+        if len(trial) <= limit:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            while len(w) > limit:
+                lines.append(w[:limit])
+                w = w[limit:]
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
 
 
 # Stopwords ignored by export word counter (as requested).
@@ -1291,6 +1404,208 @@ def _tui_prompt_prefill(indicator, text: str) -> None:
             pass
 
 
+def _dispatch_phrase_cache_cmd(pipeline, raw_cmd, cmd):
+    """
+    Phrase-cache (TM) commands for latency A/B and quality review.
+
+      pc              status + stats + last event
+      pc on / pc off  enable / disable cache (runtime)
+      pc force        next chunk: ignore HIT, live translate, overwrite store
+      pc last         show last HIT/MISS/store for evaluation
+      pc good / bad   mark last pair quality
+      pc undo         restore previous target from history
+      pc backup       JSON snapshot under .cache/phrase_cache_backups/
+      pc restore      load latest backup (or pc restore path)
+      pc import PATH [reverse]   load CSV (SourceText/TranslatedText) into TM
+    """
+    cache = getattr(pipeline, "phrase_cache", None)
+    if cache is None:
+        try:
+            from livelingo.phrase_cache import get_phrase_cache
+
+            cache = get_phrase_cache(cfg)
+            pipeline.phrase_cache = cache
+        except Exception as exc:
+            ui.error(f"Phrase cache indisponível: {exc}", indent=3)
+            return
+
+    parts = (raw_cmd or "").strip().split(None, 2)
+    sub = (parts[1].strip().lower() if len(parts) > 1 else "") or ""
+    rest = (parts[2].strip() if len(parts) > 2 else "") or ""
+
+    if not sub or sub in ("status", "stat", "stats", "?"):
+        ui.info(cache.stats_line(), indent=3)
+        ui.dim(
+            "Comandos: pc on|off · pc force · pc last · pc good|bad · "
+            "pc undo · pc backup · pc restore [path] · pc import file.csv [reverse]",
+            indent=3,
+        )
+        ui.raw(cache.format_last())
+        ui.raw("")
+        return
+
+    if sub in ("on", "enable", "1", "true"):
+        cache.set_enabled(True)
+        try:
+            cfg.PHRASE_CACHE = True
+        except Exception:
+            pass
+        n = 0
+        try:
+            n = cache.warmup(cfg.SOURCE_LANG, cfg.TARGET_LANG)
+        except Exception:
+            pass
+        ui.success(
+            f"Phrase cache ON · warm-up {n} pair(s) · {cache.stats_line()}",
+            indent=3,
+        )
+        ui.dim(
+            "Próximas frases: HIT reutiliza tradução; MISS grava no SQLite. "
+            "Compare latência com [pc off].",
+            indent=3,
+        )
+        ui.raw("")
+        return
+
+    if sub in ("off", "disable", "0", "false"):
+        cache.set_enabled(False)
+        try:
+            cfg.PHRASE_CACHE = False
+        except Exception:
+            pass
+        cache.clear_force_next()
+        ui.warn(
+            f"Phrase cache OFF · traduções sempre live (Google/LLM). "
+            f"{cache.stats_line()}",
+            indent=3,
+        )
+        ui.raw("")
+        return
+
+    if sub in ("force", "f", "refresh", "live"):
+        cache.request_force_next()
+        ui.warn(
+            "Próximo chunk: cache IGNORADO · tradução live · sobrescreve par no banco "
+            "(histórico anterior salvo para [pc undo]).",
+            indent=3,
+        )
+        ui.raw("")
+        return
+
+    if sub in ("last", "show", "review"):
+        ui.info("Último evento do phrase cache:", indent=3)
+        ui.raw(cache.format_last())
+        ui.raw("")
+        return
+
+    if sub in ("good", "ok"):
+        ok, msg = cache.mark_last_quality("good")
+        (ui.success if ok else ui.warn)(msg, indent=3)
+        ui.raw("")
+        return
+
+    if sub in ("bad", "ruim"):
+        ok, msg = cache.mark_last_quality("bad")
+        (ui.success if ok else ui.warn)(msg, indent=3)
+        ui.dim(
+            "Sugestão: [pc force] na próxima fala igual re-traduz e grava novo target; "
+            "ou [pc undo] se sobrescreveu por engano.",
+            indent=3,
+        )
+        ui.raw("")
+        return
+
+    if sub in ("undo", "rollback"):
+        ok, msg = cache.undo_last()
+        (ui.success if ok else ui.warn)(msg, indent=3)
+        ui.raw("")
+        return
+
+    if sub == "backup" or sub.startswith("backup "):
+        try:
+            path = cache.backup()
+            ui.success(f"Backup phrase cache: {path}", indent=3)
+            ui.dim(
+                "Também: .cache/phrase_cache_backups/phrase_cache_latest.json · "
+                "Restaurar: pc restore",
+                indent=3,
+            )
+        except Exception as exc:
+            ui.error(f"Backup falhou: {exc}", indent=3)
+        ui.raw("")
+        return
+
+    if sub == "restore" or sub.startswith("restore"):
+        # pc restore  |  pc restore path.json  (path in rest when split max 2)
+        path = rest or None
+        if sub.startswith("restore ") and len(sub) > 8:
+            path = sub[8:].strip() or path
+        try:
+            try:
+                pre = cache.backup()
+                ui.dim(f"Snapshot pré-restore: {pre}", indent=3)
+            except Exception:
+                pass
+            n, used = cache.restore(path)
+            ui.success(f"Restore OK · {n} par(es) de {used}", indent=3)
+        except Exception as exc:
+            ui.error(f"Restore falhou: {exc}", indent=3)
+        ui.raw("")
+        return
+
+    if sub == "import" or sub.startswith("import"):
+        # pc import exported1.csv [reverse]
+        # parts: ["pc", "import", "exported1.csv reverse"] when split max 2
+        # or raw_cmd has more tokens
+        tokens = (raw_cmd or "").strip().split()
+        # tokens[0]=pc tokens[1]=import tokens[2]=path tokens[3:]=flags
+        if len(tokens) < 3:
+            ui.warn(
+                "Uso: pc import <arquivo.csv> [reverse]  "
+                "ex: pc import exported1.csv reverse",
+                indent=3,
+            )
+            ui.raw("")
+            return
+        csv_path = tokens[2]
+        also_reverse = any(t.lower() in ("reverse", "rev", "--also-reverse") for t in tokens[3:])
+        if not os.path.isfile(csv_path):
+            # try relative to project root
+            alt = os.path.join(os.path.dirname(os.path.abspath(__file__)), csv_path)
+            if os.path.isfile(alt):
+                csv_path = alt
+        try:
+            from livelingo.import_phrase_csv import format_import_stats, import_phrase_csv
+
+            ui.info(f"Importando CSV → phrase cache: {csv_path}", indent=3)
+            stats = import_phrase_csv(
+                csv_path,
+                default_source_lang="en",
+                also_reverse=also_reverse,
+                dry_run=False,
+                phrase_cache=cache,
+            )
+            for line in format_import_stats(stats).splitlines():
+                ui.dim(line, indent=3)
+            ui.success(
+                "Import concluído. Use [pc on] se o cache estiver off · "
+                "HIT só se SOURCE/TARGET baterem a direção do par (CSV ≈ EN→PT).",
+                indent=3,
+            )
+        except Exception as exc:
+            ui.error(f"Import falhou: {exc}", indent=3)
+        ui.raw("")
+        return
+
+    ui.warn(
+        f"Subcomando desconhecido: pc {sub}. "
+        f"Use: pc | pc on|off | pc force | pc last | pc good|bad | pc undo | "
+        f"pc backup | pc restore | pc import file.csv",
+        indent=3,
+    )
+    ui.raw("")
+
+
 def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
     """Handle one terminal command (indicator already paused by caller)."""
     raw_cmd, cmd = _normalize_cmd(raw_cmd, cmd)
@@ -1308,6 +1623,17 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         tgt_lang = lang_map.get(cfg.TARGET_LANG.lower(), cfg.TARGET_LANG.upper())
         ui.favorites_popup(favs, src_lang, tgt_lang)
         _print_menu(pipeline)
+    elif cmd == "rs":
+        # Replay last chunk using Heard (source) text for TTS
+        pipeline.replay_last(use_heard=True)
+        if indicator is not None:
+            indicator.set_sound_on(pipeline.is_sound_enabled())
+    elif cmd.startswith("rs") and len(cmd) > 2 and cmd[2:].isdigit():
+        # rs999 — replay chunk N synthesized from Heard text
+        chunk_num = int(cmd[2:])
+        pipeline.replay_chunk(chunk_num, use_heard=True)
+        if indicator is not None:
+            indicator.set_sound_on(pipeline.is_sound_enabled())
     elif cmd == "r":
         pipeline.replay_last()
         if indicator is not None:
@@ -1404,6 +1730,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         if new_text and new_text != last_heard:
             pipeline.chunk_queue.put(new_text)
             ui.info("New sentence queued for translation!")
+            ui.raw("")
         elif not new_text:
             ui.info("Editing canceled.")
         else:
@@ -1518,6 +1845,11 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 indent=3,
             )
         _print_menu(pipeline)
+        # Blank line after "Pair … · áudio ON/OFF [s]"
+        ui.raw("")
+    elif cmd == "pc" or cmd.startswith("pc "):
+        # Phrase translation cache control / review / backup
+        _dispatch_phrase_cache_cmd(pipeline, raw_cmd, cmd)
     elif cmd == "g":
         info = pipeline.request_language_swap()
         status = info.get("status")
@@ -1687,6 +2019,8 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 "[b] BYPASS OFF — escuta/tradução retomadas. Fale no idioma SOURCE.",
                 indent=3,
             )
+            # Blank separator before the next log activity
+            ui.raw("")
         if indicator is not None:
             # Optional header cue if the TUI supports it
             try:
@@ -1702,7 +2036,13 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
     elif cmd == "n":
         muted, os_ok, mic_name = pipeline.toggle_mic()
         if indicator is not None:
-            indicator.set_mic_muted(muted)
+            # TUI: set_mic_muted(True) opens centered red mute modal (only [n] exits).
+            set_muted = getattr(indicator, "set_mic_muted", None)
+            if callable(set_muted):
+                try:
+                    set_muted(muted, mic_name=mic_name)
+                except TypeError:
+                    set_muted(muted)
             if not muted:
                 # Classic ListenIndicator has an animation thread; TUI (LiveLingoApp)
                 # only needs set_mic_muted — it has no .start() (header ticks alone).
@@ -1713,13 +2053,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             if os_ok:
                 ui.warn(
                     f"Mic MUTED (Windows): '{mic_name}'. "
-                    f"Escuta/ícones pausados — tela livre para leitura. "
-                    f"Pressione [n] de novo para desmutar."
+                    f"Popup vermelho na TUI — pressione [n] para desmutar."
                 )
             else:
                 ui.warn(
                     f"Mic MUTED (app only — OS mute falhou): '{mic_name}'. "
-                    f"Escuta/ícones pausados. Pressione [n] de novo para reativar."
+                    f"Popup na TUI — pressione [n] para reativar."
                 )
             ui.dim("  (modo leitura: sem animação de escuta até o mic LIVE)")
         else:
@@ -1734,6 +2073,8 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     f"Escuta ativa retomada. Confira o mute no tray se não ouvir."
                 )
         _print_menu(pipeline)
+        # Blank line after "Pair … · áudio ON/OFF [s]"
+        ui.raw("")
     elif cmd == "x":
         if pipeline.stop_playback():
             ui.info("Playback stopped — remaining audio for this chunk skipped.")
@@ -1821,14 +2162,67 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     f.write("---\n\n")  # horizontal rule before content
 
                 f.write("## 💬 Transcrição Detalhada\n\n")
+                f.write(
+                    "> **LC** = LiveCaptions (entrada · faixa superior) · "
+                    "**VOZ** = LiveLingo mic + áudio TTS\n\n"
+                )
+
+                # Chronological with channel tags (easy to split on export)
                 for entry in full_trans:
-                    chunk_num, heard, translated, _created_at, _timing = (
+                    chunk_num, heard, translated, _created_at, timing = (
                         _unpack_transcript_entry(entry)
                     )
-                    f.write(f"### Chunk {chunk_num}\n")
-                    f.write(f"{tgt_lang}: {translated}\n")
+                    is_lc = _is_livecaptions_entry(timing)
+                    s_lab, t_lab = _entry_lang_pair(timing, is_lc=is_lc)
+                    if is_lc:
+                        f.write(
+                            f"### [LC {chunk_num}] LiveCaptions "
+                            f"({s_lab}→{t_lab}) · entrada\n\n"
+                        )
+                        f.write(f"**Caption ({s_lab}):** {heard}\n\n")
+                        f.write(f"**Translated ({t_lab}):** {translated}\n\n")
+                    else:
+                        f.write(
+                            f"### [Chunk {chunk_num}] LiveLingo VOZ "
+                            f"({s_lab}→{t_lab}) · mic+áudio\n\n"
+                        )
+                        f.write(f"**{t_lab}:** {translated}\n\n")
+                        f.write(f"**{s_lab}:** {heard}\n\n")
+                        # Audio path if present
+                        try:
+                            amap = pipeline.get_audio_path_map()
+                            ap = amap.get(chunk_num, "")
+                            if ap:
+                                f.write(f"**Áudio:** `{ap}`\n\n")
+                        except Exception:
+                            pass
+
+                # Optional grouped appendices for clean split exports
+                lc_entries = [
+                    e
+                    for e in full_trans
+                    if _is_livecaptions_entry(_unpack_transcript_entry(e)[4])
+                ]
+                voz_entries = [
+                    e
+                    for e in full_trans
+                    if not _is_livecaptions_entry(_unpack_transcript_entry(e)[4])
+                ]
+                if lc_entries:
+                    f.write("---\n\n## 📥 Anexo — só LiveCaptions (entrada)\n\n")
+                    for entry in lc_entries:
+                        n, heard, tr, _, timing = _unpack_transcript_entry(entry)
+                        s_lab, t_lab = _entry_lang_pair(timing, is_lc=True)
+                        f.write(f"- **[LC {n}]** ({s_lab}) {heard}\n")
+                        f.write(f"  - ({t_lab}) {tr}\n")
                     f.write("\n")
-                    f.write(f"{src_lang}: {heard}\n")
+                if voz_entries:
+                    f.write("---\n\n## 🎙️ Anexo — só LiveLingo VOZ (mic+áudio)\n\n")
+                    for entry in voz_entries:
+                        n, heard, tr, _, timing = _unpack_transcript_entry(entry)
+                        s_lab, t_lab = _entry_lang_pair(timing, is_lc=False)
+                        f.write(f"- **[Chunk {n}]** ({s_lab}) {heard}\n")
+                        f.write(f"  - ({t_lab}) {tr}\n")
                     f.write("\n")
 
                 # Export synonym vocab searches chronologically
@@ -1841,8 +2235,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 word_count = _count_content_words(
                     _entry_heard(e) for e in full_trans
                 )
+                n_lc = len(lc_entries)
+                n_voz = len(voz_entries)
                 f.write("---\n")
-                f.write(f"**Total de frases traduzidas:** {len(full_trans)}\n")
+                f.write(f"**Total de frases:** {len(full_trans)}\n")
+                f.write(f"**LiveCaptions (entrada):** {n_lc}\n")
+                f.write(f"**LiveLingo VOZ (mic+áudio):** {n_voz}\n")
                 f.write(f"**Total de sinônimos consultados:** {len(synonyms)}\n")
                 f.write(
                     f"**Total de palavras** (fonte; >1 sílaba; "
@@ -1863,151 +2261,334 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             comments_map = pipeline.get_comments_map()
         except Exception:
             comments_map = {}
-        ui.info(f"Historico da sessao — {len(full_trans)} frase(s):")
+
+        n_lc = sum(
+            1
+            for e in full_trans
+            if _is_livecaptions_entry(_unpack_transcript_entry(e)[4])
+        )
+        n_voz = len(full_trans) - n_lc
+        ui.info(
+            f"Historico — {len(full_trans)} frase(s) "
+            f"(LC entrada: {n_lc} · VOZ mic: {n_voz}):"
+        )
 
         margin = 3
         pad = " " * margin
         in_tui = ui.get_log_sink() is not None
-        # Body budget after pad: pad + body ≤ panel bake width (never overflow ===).
         content_w = ui.content_width(margin=margin)
         rule = ui.rule_line(width=content_w, margin=margin)
-
-        lang_map = {
-            "fr": "Frances",
-            "en": "Ingles",
-            "pt": "Portugues",
-            "es": "Espanhol",
-            "de": "Alemao",
-            "it": "Italiano",
-            "zh": "Chines",
-            "ja": "Japones",
-        }
-        src_lang = lang_map.get(cfg.SOURCE_LANG.lower(), cfg.SOURCE_LANG.upper())
-        tgt_lang = lang_map.get(cfg.TARGET_LANG.lower(), cfg.TARGET_LANG.upper())
-
-        def _wrap_body(label_plain, body, width):
-            """
-            Wrap body so first line fits after label; later lines align under body.
-
-            `width` is the full line budget *after* pad (label+body ≤ width).
-            """
-            body = " ".join((body or "").split())
-            if not body:
-                return [""]
-            # Clamp to content budget so pad+line never exceeds RichLog bake width
-            width = max(8, min(int(width), content_w))
-            limit = max(8, width - len(label_plain))
-            words = body.split(" ")
-            lines = []
-            cur = ""
-            for w in words:
-                trial = w if not cur else f"{cur} {w}"
-                if len(trial) <= limit:
-                    cur = trial
-                else:
-                    if cur:
-                        lines.append(cur)
-                    while len(w) > limit:
-                        lines.append(w[:limit])
-                        w = w[limit:]
-                    cur = w
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        # Dual rail: LC left · VOZ right (gutter 1 col)
+        # VOZ nudged ~15 cols left (same as ui._rail_geometry / live chunks)
+        gutter = 1
+        voz_nudge = int(getattr(ui, "_VOZ_RAIL_LEFT_NUDGE", 15) or 15)
+        left_w = max(28, (content_w - gutter) // 2)
+        shift_cols = max(0, left_w + gutter - voz_nudge)
+        right_w = max(28, content_w - shift_cols)
+        left_shift = ""  # LC flush left within content
+        right_shift = " " * shift_cols  # VOZ mid-screen, nudged left
 
         def _title_line(text: str) -> str:
-            """Title clipped to content_w so it never wraps mid-rule block."""
             t = " ".join((text or "").split())
             if len(t) <= content_w:
                 return t
             return t[: max(1, content_w - 1)] + "…"
 
-        # --- TUI: hang-indent + classic colors (yellow chunk / blue target / green source) ---
+        def _resolve_audio(chunk_num):
+            audio_raw = audio_map.get(chunk_num, "")
+            if not audio_raw:
+                cand = os.path.join(
+                    pipeline.cache_dir, f"chunk_{chunk_num}.wav"
+                )
+                if os.path.isfile(cand):
+                    audio_raw = cand
+            return audio_raw
+
+        def _comment_items(chunk_num):
+            out = []
+            for item in comments_map.get(int(chunk_num), []) or []:
+                if len(item) >= 3:
+                    out.append((item[0], item[1], item[2]))
+                else:
+                    out.append(
+                        (
+                            "?",
+                            item[0],
+                            item[1] if len(item) > 1 else "",
+                        )
+                    )
+            return out
+
+        def _meta_pieces(
+            shift: str, meta_indent: str, text: str, *, nowrap: bool = False
+        ) -> list[str]:
+            """
+            Wrap meta text so each physical line stays in the rail.
+
+            Re-applies shift+indent on every piece — RichLog soft-wrap would
+            otherwise dump the continuation at column 0 (left edge).
+            nowrap=True → single physical line (full text, no middle …).
+            """
+            text = (text or "").strip()
+            if not text:
+                return []
+            head = shift + meta_indent
+            budget = max(12, content_w - len(head))
+            if nowrap:
+                # Full string — never middle-ellipsis folder/file names
+                return [text]
+            if text.lower().startswith("audio:"):
+                return ui._audio_display_pieces(text, budget)
+            return _wrap_labeled_body("", text, budget)
+
+        def _emit_meta_tui(
+            shift, meta_indent, text, *, style="dim", e=None, nowrap=False
+        ):
+            """TUI: emit wrapped meta with rail alignment preserved."""
+            e = e or (lambda x: x)
+            head = shift + meta_indent
+            for piece in _meta_pieces(
+                shift, meta_indent, text, nowrap=nowrap
+            ):
+                if style == "dim":
+                    ui.dim(f"{pad}{head}{piece}")
+                elif style == "magenta":
+                    ui.rich(
+                        f"{pad}{head}[dim magenta]{e(piece)}[/]"
+                    )
+                elif style == "yellow":
+                    ui.rich(
+                        f"{pad}{head}[bold yellow]{e(piece)}[/]"
+                    )
+                elif style == "yellow_dim":
+                    ui.rich(
+                        f"{pad}{head}[yellow]{e(piece)}[/]"
+                    )
+                else:
+                    ui.dim(f"{pad}{head}{piece}")
+
+        def _emit_meta_classic(
+            shift, meta_indent, text, style="", *, nowrap=False
+        ):
+            head = shift + meta_indent
+            for piece in _meta_pieces(
+                shift, meta_indent, text, nowrap=nowrap
+            ):
+                print(
+                    pad
+                    + head
+                    + style
+                    + piece
+                    + (Style.RESET_ALL if style else "")
+                )
+
+        def _timing_meta_lines(timing, created_at) -> list[str]:
+            """
+            Short meta lines for the narrow rail: stats and clock separate
+            so the right rail never soft-wraps the clock to the left edge.
+            """
+            lines = []
+            # No clock in the long stats line — clock goes alone below.
+            body = ui.format_timing_line(
+                timing,
+                at=None,
+                include_clock=False,
+            )
+            if body:
+                lines.append(body)
+            if created_at:
+                lines.append(f"@ {ui.clock_hhmmss(created_at)}")
+            return lines
+
+        # ------------------------------------------------------------------ #
+        # TUI — dual rail + distinct colors
+        # ------------------------------------------------------------------ #
         if in_tui:
             e = ui._rich_escape
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             ui.rich(
-                f"{pad}[bold cyan]{e(_title_line('CURRENT SESSION HISTORY (Chronological)'))}[/]"
+                f"{pad}[bold cyan]"
+                f"{e(_title_line('HISTORICO (cronologico) · LC ◄ esquerda · VOZ ► direita'))}"
+                f"[/]"
+            )
+            # Legend row
+            leg_l = "◄ LC entrada (LiveCaptions)"
+            leg_r = "VOZ mic+áudio ►"
+            # pad legend right into right rail
+            mid = max(0, left_w - len(leg_l))
+            ui.rich(
+                f"{pad}[bold magenta]{e(leg_l)}[/]"
+                f"{' ' * mid}{' ' * gutter}"
+                f"[bold yellow]{e(leg_r)}[/]"
             )
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
+
             for entry in full_trans:
                 chunk_num, heard, translated, created_at, timing = (
                     _unpack_transcript_entry(entry)
                 )
-                prefix = f"[Chunk {chunk_num}] "
-                label_tgt = f"{prefix}{tgt_lang}: "
-                label_src = f"{' ' * len(prefix)}{src_lang}: "
-                indent_tgt = " " * len(label_tgt)
-                indent_src = " " * len(label_src)
-
-                for i, line in enumerate(
-                    _wrap_body(label_tgt, translated, content_w)
-                ):
-                    if i == 0:
-                        # Classic: yellow [Chunk N] + blue LANG: + white/bright body
-                        ui.rich(
-                            f"{pad}[bold yellow]{e(prefix)}[/]"
-                            f"[bold blue]{e(tgt_lang)}: [/]"
-                            f"[bold white]{e(line)}[/]"
-                        )
-                    else:
-                        ui.rich(f"{pad}{indent_tgt}[bold white]{e(line)}[/]")
-
-                for i, line in enumerate(_wrap_body(label_src, heard, content_w)):
-                    if i == 0:
-                        # Classic: white label + green source text
-                        ui.rich(
-                            f"{pad}[white]{e(label_src)}[/]"
-                            f"[green]{e(line)}[/]"
-                        )
-                    else:
-                        ui.rich(f"{pad}{indent_src}[green]{e(line)}[/]")
-
-                # Blank after language texts (after translated/source block) before meta
-                ui.raw("")
-
-                timing_line = ui.format_timing_line(
-                    timing,
-                    at=created_at or None,
-                    include_clock=bool(created_at),
+                is_lc = _is_livecaptions_entry(timing)
+                src_l, tgt_l = _entry_lang_pair(timing, is_lc=is_lc)
+                recorded = (
+                    ui.format_recorded_stamp(created_at) if created_at else ""
                 )
-                recorded = ui.format_recorded_stamp(created_at) if created_at else ""
-                audio_raw = audio_map.get(chunk_num, "")
-                if not audio_raw:
-                    cand = os.path.join(
-                        pipeline.cache_dir, f"chunk_{chunk_num}.wav"
-                    )
-                    if os.path.isfile(cand):
-                        audio_raw = cand
-                meta_indent = " " * len(prefix)
-                if timing_line:
-                    ui.dim(f"{pad}{meta_indent}{timing_line}")
-                if recorded:
-                    ui.dim(f"{pad}{meta_indent}gravado: {recorded}")
-                for al in ui.format_audio_lines(audio_raw):
-                    ui.dim(f"{pad}{meta_indent}{al}")
-                # Free-text comments (co / coN) with PK + date+time
-                for item in comments_map.get(int(chunk_num), []) or []:
-                    if len(item) >= 3:
-                        c_id, c_text, c_at = item[0], item[1], item[2]
-                    else:
-                        # legacy RAM shape without id
-                        c_id, c_text, c_at = "?", item[0], item[1] if len(item) > 1 else ""
-                    stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
-                    body = " ".join((c_text or "").split())
-                    ui.rich(
-                        f"{pad}{meta_indent}[magenta]comment #{e(str(c_id))}:[/] "
-                        f"[dim]{e(stamp)}[/]  {e(body)}"
-                    )
+
+                if is_lc:
+                    # LEFT rail — magenta/cyan (inbound captions)
+                    col_w = left_w
+                    shift = left_shift
+                    prefix = f"[LC {chunk_num}] "
+                    # Caption = original (heard), Translated = tgt
+                    lab_cap = f"{prefix}{src_l}: "
+                    lab_tr = f"{' ' * len(prefix)}{tgt_l}: "
+                    ind_cap = " " * len(lab_cap)
+                    ind_tr = " " * len(lab_tr)
+
+                    for i, line in enumerate(
+                        _wrap_labeled_body(lab_cap, heard, col_w)
+                    ):
+                        if i == 0:
+                            ui.rich(
+                                f"{pad}{shift}"
+                                f"[bold magenta]{e(prefix)}[/]"
+                                f"[bold cyan]{e(src_l)}: [/]"
+                                f"[green]{e(line)}[/]"
+                            )
+                        else:
+                            ui.rich(
+                                f"{pad}{shift}{ind_cap}[green]{e(line)}[/]"
+                            )
+                    for i, line in enumerate(
+                        _wrap_labeled_body(lab_tr, translated, col_w)
+                    ):
+                        if i == 0:
+                            ui.rich(
+                                f"{pad}{shift}"
+                                f"[dim]{e(' ' * len(prefix))}[/]"
+                                f"[bold cyan]{e(tgt_l)}: [/]"
+                                f"[bold white]{e(line)}[/]"
+                            )
+                        else:
+                            ui.rich(
+                                f"{pad}{shift}{ind_tr}[bold white]{e(line)}[/]"
+                            )
+                    meta_indent = " " * len(prefix)
+                    if recorded:
+                        _emit_meta_tui(
+                            shift,
+                            meta_indent,
+                            f"gravado: {recorded}",
+                            style="dim",
+                            e=e,
+                        )
+                    for tline in _timing_meta_lines(timing, created_at):
+                        _emit_meta_tui(
+                            shift, meta_indent, tline, style="dim", e=e
+                        )
+                    for c_id, c_text, c_at in _comment_items(chunk_num):
+                        stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
+                        body = " ".join((c_text or "").split())
+                        _emit_meta_tui(
+                            shift,
+                            meta_indent,
+                            f"comment #{c_id}: {stamp}  {body}",
+                            style="magenta",
+                            e=e,
+                        )
+                else:
+                    # RIGHT rail — yellow/blue (mic + TTS audio)
+                    # Order: SOURCE (heard) → TARGET (translated)
+                    col_w = right_w
+                    shift = right_shift
+                    prefix = f"[Chunk {chunk_num}] "
+                    lab_src = f"{prefix}{src_l}: "
+                    lab_tgt = f"{' ' * len(prefix)}{tgt_l}: "
+                    ind_src = " " * len(lab_src)
+                    ind_tgt = " " * len(lab_tgt)
+
+                    for i, line in enumerate(
+                        _wrap_labeled_body(lab_src, heard, col_w)
+                    ):
+                        if i == 0:
+                            ui.rich(
+                                f"{pad}{shift}"
+                                f"[bold yellow]{e(prefix)}[/]"
+                                f"[white]{e(src_l)}: [/]"
+                                f"[green]{e(line)}[/]"
+                            )
+                        else:
+                            ui.rich(
+                                f"{pad}{shift}{ind_src}[green]{e(line)}[/]"
+                            )
+                    for i, line in enumerate(
+                        _wrap_labeled_body(lab_tgt, translated, col_w)
+                    ):
+                        if i == 0:
+                            ui.rich(
+                                f"{pad}{shift}"
+                                f"[white]{e(' ' * len(prefix))}[/]"
+                                f"[bold blue]{e(tgt_l)}: [/]"
+                                f"[bold white]{e(line)}[/]"
+                            )
+                        else:
+                            ui.rich(
+                                f"{pad}{shift}{ind_tgt}[bold white]{e(line)}[/]"
+                            )
+
+                    meta_indent = " " * len(prefix)
+                    audio_raw = _resolve_audio(chunk_num)
+                    for tline in _timing_meta_lines(timing, created_at):
+                        _emit_meta_tui(
+                            shift, meta_indent, tline, style="dim", e=e
+                        )
+                    if recorded:
+                        _emit_meta_tui(
+                            shift,
+                            meta_indent,
+                            f"gravado: {recorded}",
+                            style="dim",
+                            e=e,
+                        )
+                    # Full path, one line, right-aligned (no wrap / no …)
+                    try:
+                        ui._emit_audio_path_one_line(
+                            chunk_num, audio_raw, panel="main"
+                        )
+                    except Exception:
+                        for al in ui.format_audio_lines(audio_raw):
+                            _emit_meta_tui(
+                                shift,
+                                meta_indent,
+                                al,
+                                style="yellow",
+                                e=e,
+                                nowrap=True,
+                            )
+                    for c_id, c_text, c_at in _comment_items(chunk_num):
+                        stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
+                        body = " ".join((c_text or "").split())
+                        _emit_meta_tui(
+                            shift,
+                            meta_indent,
+                            f"comment #{c_id}: {stamp}  {body}",
+                            style="yellow_dim",
+                            e=e,
+                        )
+
                 ui.raw("")  # blank between chunks
+
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
-            ui.rich(
-                f"{pad}[bold cyan]{e(_title_line(f'Total: {len(full_trans)} frase(s)'))}[/]"
+            tot = (
+                f"Total: {len(full_trans)}  ·  "
+                f"LC◄ {n_lc}  ·  VOZ► {n_voz}"
             )
+            ui.rich(f"{pad}[bold cyan]{e(_title_line(tot))}[/]")
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             return
 
-        # --- Classic terminal: same wrap logic, ANSI colors via print ---
+        # ------------------------------------------------------------------ #
+        # Classic terminal — same dual rail
+        # ------------------------------------------------------------------ #
         def _print_plain(text, style=""):
             for line in textwrap.wrap(
                 text or "",
@@ -2020,8 +2601,26 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         print()
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
         _print_plain(
-            _title_line("CURRENT SESSION HISTORY (Chronological)"),
+            _title_line(
+                "HISTORICO (cronologico) · LC ◄ esquerda · VOZ ► direita"
+            ),
             Fore.CYAN + Style.BRIGHT,
+        )
+        leg_l = "◄ LC entrada (LiveCaptions)"
+        leg_r = "VOZ mic+áudio ►"
+        mid = max(0, left_w - len(leg_l))
+        print(
+            pad
+            + Fore.MAGENTA
+            + Style.BRIGHT
+            + leg_l
+            + Style.RESET_ALL
+            + (" " * mid)
+            + (" " * gutter)
+            + Fore.YELLOW
+            + Style.BRIGHT
+            + leg_r
+            + Style.RESET_ALL
         )
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
         print(pad)
@@ -2030,94 +2629,185 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             chunk_num, heard, translated, created_at, timing = (
                 _unpack_transcript_entry(entry)
             )
-            prefix = f"[Chunk {chunk_num}] "
-            label_tgt = f"{prefix}{tgt_lang}: "
-            label_src = f"{' ' * len(prefix)}{src_lang}: "
-            indent_tgt = " " * len(label_tgt)
-            indent_src = " " * len(label_src)
-
-            for i, line in enumerate(
-                _wrap_body(label_tgt, translated, content_w)
-            ):
-                if i == 0:
-                    print(
-                        pad
-                        + Fore.YELLOW
-                        + Style.BRIGHT
-                        + prefix
-                        + Fore.BLUE
-                        + Style.BRIGHT
-                        + f"{tgt_lang}: "
-                        + Style.RESET_ALL
-                        + Fore.WHITE
-                        + line
-                        + Style.RESET_ALL
-                    )
-                else:
-                    print(pad + indent_tgt + Fore.WHITE + line + Style.RESET_ALL)
-
-            for i, line in enumerate(_wrap_body(label_src, heard, content_w)):
-                if i == 0:
-                    print(
-                        pad
-                        + Fore.WHITE
-                        + label_src
-                        + Fore.GREEN
-                        + line
-                        + Style.RESET_ALL
-                    )
-                else:
-                    print(pad + indent_src + Fore.GREEN + line + Style.RESET_ALL)
-
-            timing_line = ui.format_timing_line(
-                timing,
-                at=created_at or None,
-                include_clock=bool(created_at),
+            is_lc = _is_livecaptions_entry(timing)
+            src_l, tgt_l = _entry_lang_pair(timing, is_lc=is_lc)
+            recorded = (
+                ui.format_recorded_stamp(created_at) if created_at else ""
             )
-            recorded = ui.format_recorded_stamp(created_at) if created_at else ""
-            audio_raw = audio_map.get(chunk_num, "")
-            if not audio_raw:
-                cand = os.path.join(
-                    pipeline.cache_dir, f"chunk_{chunk_num}.wav"
-                )
-                if os.path.isfile(cand):
-                    audio_raw = cand
-            audio_lines = ui.format_audio_lines(audio_raw)
-            comments = comments_map.get(int(chunk_num), []) or []
-            if timing_line or recorded or audio_lines or comments:
-                print(pad)
+
+            if is_lc:
+                col_w = left_w
+                shift = left_shift
+                prefix = f"[LC {chunk_num}] "
+                lab_cap = f"{prefix}{src_l}: "
+                lab_tr = f"{' ' * len(prefix)}{tgt_l}: "
+                ind_cap = " " * len(lab_cap)
+                ind_tr = " " * len(lab_tr)
+                for i, line in enumerate(
+                    _wrap_labeled_body(lab_cap, heard, col_w)
+                ):
+                    if i == 0:
+                        print(
+                            pad
+                            + shift
+                            + Fore.MAGENTA
+                            + Style.BRIGHT
+                            + prefix
+                            + Fore.CYAN
+                            + Style.BRIGHT
+                            + f"{src_l}: "
+                            + Style.RESET_ALL
+                            + Fore.GREEN
+                            + line
+                            + Style.RESET_ALL
+                        )
+                    else:
+                        print(
+                            pad
+                            + shift
+                            + ind_cap
+                            + Fore.GREEN
+                            + line
+                            + Style.RESET_ALL
+                        )
+                for i, line in enumerate(
+                    _wrap_labeled_body(lab_tr, translated, col_w)
+                ):
+                    if i == 0:
+                        print(
+                            pad
+                            + shift
+                            + (" " * len(prefix))
+                            + Fore.CYAN
+                            + Style.BRIGHT
+                            + f"{tgt_l}: "
+                            + Style.RESET_ALL
+                            + Fore.WHITE
+                            + line
+                            + Style.RESET_ALL
+                        )
+                    else:
+                        print(
+                            pad
+                            + shift
+                            + ind_tr
+                            + Fore.WHITE
+                            + line
+                            + Style.RESET_ALL
+                        )
                 meta_indent = " " * len(prefix)
-                if timing_line:
-                    _print_plain(meta_indent + timing_line, Style.DIM)
                 if recorded:
-                    _print_plain(
-                        meta_indent + f"gravado: {recorded}",
+                    _emit_meta_classic(
+                        shift,
+                        meta_indent,
+                        f"gravado: {recorded}",
                         Style.DIM,
                     )
-                for al in audio_lines:
-                    _print_plain(meta_indent + al, Style.DIM)
-                for item in comments:
-                    if len(item) >= 3:
-                        c_id, c_text, c_at = item[0], item[1], item[2]
+                for tline in _timing_meta_lines(timing, created_at):
+                    _emit_meta_classic(
+                        shift, meta_indent, tline, Style.DIM
+                    )
+            else:
+                # SOURCE (heard) → TARGET (translated)
+                col_w = right_w
+                shift = right_shift
+                prefix = f"[Chunk {chunk_num}] "
+                lab_src = f"{prefix}{src_l}: "
+                lab_tgt = f"{' ' * len(prefix)}{tgt_l}: "
+                ind_src = " " * len(lab_src)
+                ind_tgt = " " * len(lab_tgt)
+                for i, line in enumerate(
+                    _wrap_labeled_body(lab_src, heard, col_w)
+                ):
+                    if i == 0:
+                        print(
+                            pad
+                            + shift
+                            + Fore.YELLOW
+                            + Style.BRIGHT
+                            + prefix
+                            + Style.RESET_ALL
+                            + Fore.WHITE
+                            + f"{src_l}: "
+                            + Fore.GREEN
+                            + line
+                            + Style.RESET_ALL
+                        )
                     else:
-                        c_id, c_text, c_at = "?", item[0], item[1] if len(item) > 1 else ""
+                        print(
+                            pad
+                            + shift
+                            + ind_src
+                            + Fore.GREEN
+                            + line
+                            + Style.RESET_ALL
+                        )
+                for i, line in enumerate(
+                    _wrap_labeled_body(lab_tgt, translated, col_w)
+                ):
+                    if i == 0:
+                        print(
+                            pad
+                            + shift
+                            + (" " * len(prefix))
+                            + Fore.BLUE
+                            + Style.BRIGHT
+                            + f"{tgt_l}: "
+                            + Style.RESET_ALL
+                            + Fore.WHITE
+                            + line
+                            + Style.RESET_ALL
+                        )
+                    else:
+                        print(
+                            pad
+                            + shift
+                            + ind_tgt
+                            + Fore.WHITE
+                            + line
+                            + Style.RESET_ALL
+                        )
+                meta_indent = " " * len(prefix)
+                audio_raw = _resolve_audio(chunk_num)
+                for tline in _timing_meta_lines(timing, created_at):
+                    _emit_meta_classic(
+                        shift, meta_indent, tline, Style.DIM
+                    )
+                if recorded:
+                    _emit_meta_classic(
+                        shift,
+                        meta_indent,
+                        f"gravado: {recorded}",
+                        Style.DIM,
+                    )
+                # Full path, one line, right-aligned (no wrap / no …)
+                try:
+                    ui._emit_audio_path_one_line(
+                        chunk_num, audio_raw, panel="main"
+                    )
+                except Exception:
+                    for al in ui.format_audio_lines(audio_raw):
+                        _emit_meta_classic(
+                            shift,
+                            meta_indent,
+                            al,
+                            Fore.YELLOW + Style.BRIGHT,
+                            nowrap=True,
+                        )
+                for c_id, c_text, c_at in _comment_items(chunk_num):
                     stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
                     body = " ".join((c_text or "").split())
-                    print(
-                        pad
-                        + meta_indent
-                        + Fore.MAGENTA
-                        + f"comment #{c_id}: "
-                        + Style.DIM
-                        + f"{stamp}  "
-                        + Style.RESET_ALL
-                        + body
+                    _emit_meta_classic(
+                        shift,
+                        meta_indent,
+                        f"comment #{c_id}: {stamp}  {body}",
+                        Fore.YELLOW,
                     )
             print(pad)
 
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
         _print_plain(
-            f"Total translated sentences: {len(full_trans)}",
+            f"Total: {len(full_trans)}  ·  LC◄ {n_lc}  ·  VOZ► {n_voz}",
             Fore.CYAN + Style.BRIGHT,
         )
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
@@ -2450,15 +3140,62 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 "Comando [u]/compact só funciona no modo TUI (UI_MODE=tui).",
                 indent=3,
             )
+    elif cmd == "lc" or cmd.startswith("lc "):
+        # Live Captions (Windows): pause / show / hide / status
+        svc = getattr(pipeline, "caption_service", None)
+        sub = ""
+        if cmd.startswith("lc "):
+            sub = cmd[3:].strip().lower()
+        elif (raw_cmd or "").strip().lower().startswith("lc "):
+            sub = (raw_cmd or "").strip()[3:].strip().lower()
+        if svc is None:
+            ui.warn(
+                "Live Captions indisponível. "
+                "Defina LIVE_CAPTIONS_ENABLED=true e rode no Windows 11 "
+                "(pip install uiautomation).",
+                indent=3,
+            )
+        elif sub in ("show", "restore", "unhide"):
+            svc.show_window()
+            ui.success("LiveCaptions: janela restaurada.", indent=3)
+        elif sub in ("hide",):
+            svc.hide_window()
+            ui.success("LiveCaptions: janela oculta.", indent=3)
+        elif sub in ("on", "resume", "start"):
+            svc.resume()
+            ui.success("Live Captions: tradução retomada.", indent=3)
+        elif sub in ("off", "pause", "stop"):
+            svc.pause()
+            ui.info("Live Captions: tradução pausada ([lc on] retoma).", indent=3)
+        elif sub in ("status", "st", "?"):
+            snap = svc.snapshot()
+            ui.info(
+                f"LC status={snap.get('status')} paused={snap.get('paused')} "
+                f"hidden={snap.get('hidden')} err={snap.get('error') or '—'}",
+                indent=3,
+            )
+        else:
+            # bare [lc] toggles pause
+            paused = svc.toggle_pause()
+            if paused:
+                ui.info("Live Captions PAUSADO ([lc] de novo retoma).", indent=3)
+            else:
+                ui.success("Live Captions RETOMADO.", indent=3)
     elif cmd in ("q", "quit"):
         ui.info("Stopping application...")
+        try:
+            svc = getattr(pipeline, "caption_service", None)
+            if svc is not None:
+                svc.stop()
+        except Exception:
+            pass
         pipeline.stop()
         return
     else:
         ui.warn(
             f"Unknown command: '{cmd}'. Use: "
-            f"r/rN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
-            f"a/aN (copy audio path), p/pN (open audio folder), "
+            f"r/rN, rs/rsN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
+            f"lc (Live Captions), a/aN (copy audio path), p/pN (open audio folder), "
             f"n (mic), b (bypass voice), x, o, c, l, lo, lt, ld, lav, lv, ctts, "
             f"co/coN, codN, cls, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
             indent=3,
@@ -2475,7 +3212,8 @@ def _parse_cli_session_arg(argv=None):
       livelingo --session=<session_id>
       python main.py <session_id>
 
-    Ignores known flags (--verbose, -h, --help). Returns str or None.
+    Ignores known flags (--verbose, -h, --help, --list-sessions, …).
+    Returns str or None.
     """
     if argv is None:
         args = list(sys.argv[1:])
@@ -2497,7 +3235,15 @@ def _parse_cli_session_arg(argv=None):
                 if base1.endswith(".py") or base1 in ("main.py", "livelingo"):
                     args = args[1:]
 
-    skip = {"--verbose", "-v", "-h", "--help", "--classic", "--tui"}
+    skip = {
+        "--verbose",
+        "-v",
+        "-h",
+        "--help",
+        "--classic",
+        "--tui",
+        "--list-sessions",
+    }
     i = 0
     while i < len(args):
         a = args[i]
@@ -2519,6 +3265,143 @@ def _parse_cli_session_arg(argv=None):
             continue
         return cand
     return None
+
+
+def _cli_args(argv=None):
+    """Return argv tokens after the script name (best-effort)."""
+    if argv is None:
+        return list(sys.argv[1:])
+    args = list(argv)
+    if args:
+        base = os.path.basename(args[0]).lower()
+        if (
+            base.endswith(".py")
+            or base.endswith(".bat")
+            or base.endswith(".sh")
+            or base in ("main.py", "livelingo", "python", "python3", "py")
+        ):
+            args = args[1:]
+        if args:
+            base1 = os.path.basename(args[0]).lower()
+            if base1.endswith(".py") or base1 in ("main.py", "livelingo"):
+                args = args[1:]
+    return args
+
+
+def _cli_wants_help(argv=None):
+    """True if -h or --help is present on the command line."""
+    return bool({"-h", "--help"} & set(_cli_args(argv)))
+
+
+def _cli_wants_list_sessions(argv=None):
+    """True if --list-sessions is present on the command line."""
+    return "--list-sessions" in _cli_args(argv)
+
+
+def _cli_wants_verbose(argv=None):
+    """True if --verbose or -v is present on the command line."""
+    return bool({"--verbose", "-v"} & set(_cli_args(argv)))
+
+
+def _print_cli_help():
+    """Print CLI usage in English (simple explanations + example outputs)."""
+    text = """
+LiveLingo — real-time voice translator
+
+USAGE
+  python main.py [options] [session_id]
+  livelingo [options] [session_id]
+
+With no options, the app starts and shows the interactive session menu.
+
+OPTIONS
+  -h, --help
+      Show this help message and exit.
+
+  --list-sessions
+      List every saved session and exit.
+      Same line format as menu option [2] (RESUME a previous session).
+
+      Example:
+        $ livelingo --list-sessions
+
+           Last sessions found:
+           [1] Weekly standup (ID: 20260716_205709_session-2026-07-16-2057, Created at: 2026-07-16 20:57:09)
+           [2] Interview EN-PT (ID: 20260716_195215_entrevista-ingles-portugues, Created at: 2026-07-16 19:52:15)
+
+      If the database has no sessions:
+           No previous sessions found.
+
+  --session <session_id>
+  -s <session_id>
+  --session=<session_id>
+  <session_id>
+      Resume a session by full id (or a unique id prefix).
+      Skips the session picker on first start.
+
+      Example:
+        $ livelingo --session 20260716_205709_session-2026-07-16-2057
+        $ livelingo -s 20260716_205709
+        $ livelingo 20260716_205709_session-2026-07-16-2057
+
+           Resuming session (CLI): 'Weekly standup' (ID: 20260716_205709_session-2026-07-16-2057)
+
+      If the id is not found:
+           Session not found: 'bad-id'
+
+      If a short prefix matches more than one session, the matches are printed
+      and you must pass the full id.
+
+  -v, --verbose
+      Turn on detailed debug logs (STT filters, timing, processing chatter).
+      Can be combined with a session id.
+
+      Example:
+        $ livelingo --verbose
+        $ livelingo -v --session 20260716_205709_session-2026-07-16-2057
+
+INTERACTIVE MENU (no CLI session flags)
+  [1]  Start a NEW session
+  [2]  RESUME a previous session
+  [99] DELETE a previous session (Atomic)
+
+EXIT / RESUME TIP
+  Press Ctrl+C or Ctrl+Q to stop a live session.
+  The session id is printed on exit so you can resume later with:
+    livelingo <session_id>
+""".strip(
+        "\n"
+    )
+    print(text)
+    return 0
+
+
+def _print_sessions_listing(sessions, indent=None):
+    """
+    Print sessions in the same format as menu option [2] RESUME.
+
+    Format:
+      Last sessions found:
+      [1] {title} (ID: {sid}, Created at: {created_at})
+    """
+    m = UI_MARGIN if indent is None else indent
+    pad = " " * m
+    if not sessions:
+        ui.warn("No previous sessions found.", indent=m)
+        return
+    ui.info("Last sessions found:", indent=m)
+    for idx, (sid, title, created_at) in enumerate(sessions, 1):
+        print(pad + f"[{idx}] {title} (ID: {sid}, Created at: {created_at})")
+
+
+def _run_list_sessions_cli():
+    """List all registered sessions (CLI --list-sessions) and return exit code."""
+    db.init_db()
+    sessions = db.list_sessions(limit=None)
+    print()
+    _print_sessions_listing(sessions)
+    print()
+    return 0
 
 
 def _resume_session_by_id(session_ref):
@@ -2591,9 +3474,7 @@ def _select_session():
             ui.warn("No previous sessions found. Creating a new session...", indent=m)
             choice = "1"
         else:
-            ui.info("Last sessions found:", indent=m)
-            for idx, (sid, title, created_at) in enumerate(sessions, 1):
-                _p(f"[{idx}] {title} (ID: {sid}, Created at: {created_at})")
+            _print_sessions_listing(sessions, indent=m)
             _p("[0] Voltar ao menu inicial / Back to start")
             print()
 
@@ -2721,7 +3602,7 @@ def _select_session():
 
 
 def _ensure_wrapper_scripts():
-    """Ensure that livelingo.sh and livelingo.bat wrapper scripts exist in the project directory."""
+    """Ensure portable livelingo.sh / livelingo.bat exist (no absolute user paths)."""
     import os
 
     sh_path = "livelingo.sh"
@@ -2731,18 +3612,10 @@ def _ensure_wrapper_scripts():
     if not os.path.exists(sh_path):
         try:
             with open(sh_path, "w", newline="\n", encoding="utf-8") as f:
-                f.write("#!/bin/bash\n\n")
-                f.write("# ======================================================================= #\n")
-                f.write("# LiveLingo Global Execution Script (Linux/WSL/macOS)\n")
-                f.write("# ======================================================================= #\n\n")
-                f.write('PROJECT_DIR="/mnt/c/Users/rcopr/LiveLingo/LiveLingo"\n\n')
-                f.write('cd "$PROJECT_DIR" || {\n')
-                f.write('    echo -e "\\033[1;31m[x] Error: Project directory not found ($PROJECT_DIR).\\033[0m"\n')
-                f.write('    exit 1\n')
-                f.write('}\n\n')
+                f.write("#!/bin/bash\n")
+                f.write("# LiveLingo — run from this folder (portable)\n")
+                f.write('cd "$(dirname "$0")" || exit 1\n')
                 f.write('python3 main.py "$@"\n')
-
-            # Make it executable
             os.chmod(sh_path, 0o755)
         except Exception:
             pass
@@ -2752,21 +3625,27 @@ def _ensure_wrapper_scripts():
         try:
             with open(bat_path, "w", newline="\r\n", encoding="utf-8") as f:
                 f.write("@echo off\n")
-                f.write(":: =======================================================================\n")
-                f.write(":: LiveLingo Global Execution Script (Windows)\n")
-                f.write(":: =======================================================================\n\n")
-                f.write('cd /d "C:\\Users\\rcopr\\LiveLingo\\LiveLingo"\n\n')
+                f.write(":: LiveLingo — run from this folder (portable)\n")
+                f.write('cd /d "%~dp0"\n')
                 f.write("python main.py %*\n")
         except Exception:
             pass
 
 
 def main():
+    # --- One-shot CLI flags (before any UI / device setup) ---
+    if _cli_wants_help():
+        raise SystemExit(_print_cli_help())
+
     # --- Ensure wrapper scripts are generated locally ---
     _ensure_wrapper_scripts()
 
-    # --- Enable verbose debug logs if --verbose flag is passed ---
-    cfg.VERBOSE = "--verbose" in sys.argv
+    # --- Enable verbose debug logs if --verbose / -v is passed ---
+    cfg.VERBOSE = _cli_wants_verbose()
+
+    # --- One-shot: list all sessions (same format as menu [2]) and exit ---
+    if _cli_wants_list_sessions():
+        raise SystemExit(_run_list_sessions_cli())
 
     # Direct resume: livelingo <session_id>  (only first loop; [v] returns to menu)
     pending_resume_id = _parse_cli_session_arg()
@@ -2920,6 +3799,46 @@ def main():
         pipeline.set_language_swap_callback(_on_deferred_language_swap)
         pipeline.start()
 
+        # --- Live Captions (Windows LiveCaptions → TUI strip; parallel to mic) ---
+        caption_service = None
+        if getattr(cfg, "LIVE_CAPTIONS_ENABLED", False):
+            try:
+                from livelingo.livecaptions import build_caption_service, is_windows
+
+                if is_windows():
+                    caption_service = build_caption_service(
+                        cfg,
+                        translator,
+                        session_id=session_id,
+                        phrase_cache=getattr(pipeline, "phrase_cache", None),
+                        pipeline=pipeline,
+                    )
+                    pipeline.caption_service = caption_service
+                    caption_service.start()
+                    try:
+                        from livelingo.livecaptions import caption_lang_pair
+
+                        lc_s, lc_t = caption_lang_pair(cfg)
+                        _log_info(
+                            f"Live Captions ON — {lc_s}→{lc_t} (strip) · "
+                            f"SQLite+cache · [lc] pause · [lc show]/[lc hide]."
+                        )
+                    except Exception:
+                        _log_info(
+                            "Live Captions ON — faixa superior da TUI "
+                            "([lc] pause · [lc show]/[lc hide])."
+                        )
+                else:
+                    _log_warn(
+                        "LIVE_CAPTIONS_ENABLED=true mas OS ≠ Windows — ignorado."
+                    )
+            except Exception as exc:
+                _log_warn(f"Live Captions não iniciou: {exc}")
+                caption_service = None
+                pipeline.caption_service = None
+        else:
+            pipeline.caption_service = None
+
         cmd_thread = None
         if use_tui:
             try:
@@ -2931,6 +3850,7 @@ def main():
                     dispatch_command=_dispatch_command,
                     listen_msgs_fn=_listen_status_messages,
                     help_fn=lambda p=pipeline: _print_f1_help(p),
+                    caption_service=caption_service,
                 )
                 tui_holder["app"] = app
                 if pipeline.is_mic_muted():
@@ -2975,13 +3895,23 @@ def main():
                     cmd_thread.join(timeout=2.0)
             finally:
                 indicator.stop()
+                try:
+                    if caption_service is not None:
+                        caption_service.stop()
+                except Exception:
+                    pass
                 pipeline.stop()
                 pipeline.join(timeout=5.0)
                 if cmd_thread is not None:
                     cmd_thread.join(timeout=5.0)
             session_switch = bool(getattr(pipeline, "switch_session", False))
         else:
-            # TUI exited — clean pipeline
+            # TUI exited — clean pipeline + Live Captions
+            try:
+                if caption_service is not None:
+                    caption_service.stop()
+            except Exception:
+                pass
             try:
                 pipeline.stop()
                 pipeline.join(timeout=5.0)

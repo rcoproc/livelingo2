@@ -45,6 +45,9 @@ textual>=0.47.0
 pycaw>=20240210; platform_system=="Windows"
 comtypes>=1.4.0; platform_system=="Windows"
 
+# --- Windows LiveCaptions scrape (LIVE_CAPTIONS_ENABLED) via UI Automation ---
+uiautomation>=2.0.18; platform_system=="Windows"
+
 # --- Offline synonyms ([o] command; WordNet downloaded on first use) ---
 nltk>=3.8
 
