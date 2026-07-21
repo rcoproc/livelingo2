@@ -113,9 +113,7 @@ def test_find_vbcable_output(devices_mod):
 
 def test_find_vbcable_missing(devices_mod, monkeypatch):
     devices, _ = devices_mod
-    monkeypatch.setattr(
-        devices, "query_devices", lambda: [_dev("Speakers", out_ch=2)]
-    )
+    monkeypatch.setattr(devices, "query_devices", lambda: [_dev("Speakers", out_ch=2)])
     assert devices.find_vbcable_output() == (None, None)
 
 
