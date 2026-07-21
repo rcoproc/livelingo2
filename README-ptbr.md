@@ -375,23 +375,49 @@ para as deps Python em [`requirements.txt`](requirements.txt).
 corrigida**; os pacotes maliciosos foram removidos. O script de auditoria
 coloca isso em allowlist (`KNOWN_FALSE_POSITIVES` no checker).
 
-**Auditoria + testes antes de subir em produção:**
+**Auditoria + testes antes de subir em produção**
+
+Instale as ferramentas de dev uma vez (`pytest`, `pip-audit`, `ruff`):
 
 ```powershell
-# deps de runtime
 pip install -r requirements.txt
-
-# opcional: pytest + pip-audit
 pip install -r requirements-dev.txt
+```
 
-# testes unitários (pisos de segurança, mocks de translate/LLM/STT, smoke de import)
+#### Checks em um comando (WSL / Linux) — recomendado
+
+[`scripts/run_checks.sh`](scripts/run_checks.sh) executa, nesta ordem:
+
+1. **Format** — `ruff format` + correção segura de imports (fallback: `black`/`isort` se existirem)
+2. **Segurança** — `python3 scripts/check_deps_security.py --project-only`
+3. **Testes** — `python3 -m pytest tests/`
+
+```bash
+# na raiz do projeto (WSL)
+cd /mnt/c/Users/rcopr/LiveLingo/LiveLingo   # ajuste o caminho se precisar
+bash scripts/run_checks.sh
+# ou:  ./scripts/run_checks.sh
+```
+
+Flags úteis do `run_checks.sh`:
+
+| Flag | Significado |
+|------|-------------|
+| `--skip-format` | Pula ruff/black |
+| `--fail-on vuln` | Default: falha só com **CVE** (pacote desatualizado = aviso) |
+| `--fail-on any` | Falha se houver CVE **ou** pacote desatualizado |
+| `--fail-on outdated` | Falha com desatualizados (e vulns) |
+| `--pytest -v` | Args extras repassados ao pytest |
+| `--no-project-only` | Audita o ambiente inteiro, não só deps do projeto |
+
+#### Passos manuais (Windows PowerShell / qualquer shell)
+
+```powershell
 python -m pytest tests/ -v
-
-# scan de CVE / desatualizados (deps do projeto; EXIT 0 = sem vulns acionáveis)
 python scripts/check_deps_security.py --project-only
 ```
 
-Flags úteis do script de segurança:
+Flags úteis do `check_deps_security.py`:
 
 | Flag | Significado |
 |------|-------------|
@@ -400,6 +426,28 @@ Flags úteis do script de segurança:
 | `--json report.json` | Relatório completo em JSON |
 | `--ignore-vuln ID` | Ignora advisory extra (CVE / PYSEC / GHSA) |
 | `--no-default-ignores` | Desliga a allowlist histórica embutida |
+
+**Como ler o checklist de segurança**
+
+| Marca | Significado |
+|-------|-------------|
+| `✓` | OK |
+| `!` | **Só aviso** (ex.: existe versão mais nova no PyPI — **não** é CVE) |
+| `✗` | Ação necessária (scan falhou ou vulnerabilidade acionável) |
+
+- **“Componentes desatualizados monitorados (scan PyPI)”** = o scan de outdated **rodou** (✓), não “tudo está na última versão”.
+- **“Deps do projeto na última versão do PyPI”** pode mostrar `!` para pacotes como `sounddevice` / `soundfile` quando há release mais nova. Isso é **frescor**, não buraco de segurança.
+- Default `--fail-on vuln` → **EXIT 0** se não houver CVE acionável, mesmo com alguns pacotes desatualizados.
+- Linha de status: `WARN (só frescor)` = seguro para deploy do ponto de vista de segurança; atualize quando puder e reteste áudio.
+- Para o CI falhar com outdated: `--fail-on any` (ou `--fail-on outdated`).
+
+Códigos de saída (`check_deps_security.py` / script de checks):
+
+| Código | Significado |
+|--------|-------------|
+| `0` | OK para o critério `--fail-on` escolhido |
+| `1` | Achado acionável (vuln e/ou outdated, conforme flags) |
+| `2` | Erro de ferramenta/scan (ex.: pip-audit não rodou) |
 
 Módulos de áudio que dependem de PortAudio podem ser **pulados** em CI headless/WSL;
 isso não impede os testes de piso de segurança nem os mocks do pipeline.
@@ -655,8 +703,9 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 ├── config.py              # configurações (sobrescrevíveis via .env)
 ├── list_devices.py        # lista dispositivos de áudio + índices
 ├── requirements.txt       # deps de runtime (pisos de segurança acima)
-├── requirements-dev.txt   # pytest + pip-audit (CI / pré-deploy)
+├── requirements-dev.txt   # pytest + pip-audit + ruff (CI / pré-deploy)
 ├── scripts/
+│   ├── run_checks.sh           # WSL: format → segurança → testes
 │   └── check_deps_security.py  # auditoria OWASP A06 (CVE + outdated)
 ├── tests/                 # testes unitários (pisos, mocks, smoke)
 ├── .env.example           # copie para .env

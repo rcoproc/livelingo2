@@ -34,8 +34,9 @@ def _try_import_pycaw():
         _import_error = "not Windows"
         return False
     try:
-        from comtypes import CLSCTX_ALL  # noqa: F401
         from ctypes import POINTER, cast  # noqa: F401
+
+        from comtypes import CLSCTX_ALL  # noqa: F401
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume  # noqa: F401
 
         _pycaw_ok = True
@@ -62,7 +63,9 @@ def availability_note() -> str:
 def _normalize_name(name: str) -> str:
     text = (name or "").lower()
     # Drop common PortAudio host-API suffixes / parenthetical noise for matching.
-    text = re.sub(r"\s*\((mme|wasapi|directsound|wdm-ks|windows\s*wasapi)\)\s*$", "", text)
+    text = re.sub(
+        r"\s*\((mme|wasapi|directsound|wdm-ks|windows\s*wasapi)\)\s*$", "", text
+    )
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return " ".join(text.split())
 
@@ -90,8 +93,9 @@ def _match_score(target: str, candidate: str) -> float:
 
 def _endpoint_volume(imm_device):
     """Activate IAudioEndpointVolume on a raw IMMDevice."""
-    from comtypes import CLSCTX_ALL
     from ctypes import POINTER, cast
+
+    from comtypes import CLSCTX_ALL
     from pycaw.pycaw import IAudioEndpointVolume
 
     iface = imm_device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
@@ -331,8 +335,7 @@ def warn_if_muted(controller: MicController, log_warn, log_info=None) -> bool:
     name = info["endpoint"]
     if info["os_mute"]:
         log_warn(
-            f"Microfone mutado no Windows: '{name}'. "
-            f"Desmute no tray ou pressione [n]."
+            f"Microfone mutado no Windows: '{name}'. Desmute no tray ou pressione [n]."
         )
         return True
     vol = info["volume"]

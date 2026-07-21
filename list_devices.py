@@ -62,9 +62,12 @@ def main():
 
     print("-" * 78)
     print(
-        Fore.GREEN + "green = input (microphone)   "
-        + Fore.MAGENTA + "magenta = output (playback)   "
-        + Fore.WHITE + "white = both"
+        Fore.GREEN
+        + "green = input (microphone)   "
+        + Fore.MAGENTA
+        + "magenta = output (playback)   "
+        + Fore.WHITE
+        + "white = both"
     )
 
     vb_idx, vb_name = devices.find_vbcable_output()

@@ -33,7 +33,9 @@ class SynonymLookup:
         self.cfg = config
         self._llm = llm_translator
         self._log = log
-        self._engine = (getattr(config, "SYNONYMS_ENGINE", "wordnet") or "wordnet").lower()
+        self._engine = (
+            getattr(config, "SYNONYMS_ENGINE", "wordnet") or "wordnet"
+        ).lower()
         self._pt_translate = getattr(config, "SYNONYMS_PT_TRANSLATE", True)
         self._wordnet = None
         self._moby_index = None
@@ -74,13 +76,13 @@ class SynonymLookup:
 
         definition, synonyms, examples = entry
         pt_definition = self._to_portuguese(definition) if self._pt_translate else None
-        pt_synonyms = self._translate_synonym_glosses(synonyms[:8]) if self._pt_translate else {}
+        pt_synonyms = (
+            self._translate_synonym_glosses(synonyms[:8]) if self._pt_translate else {}
+        )
 
         lines = ["1. **Significado e Uso**:"]
         if pt_definition:
-            lines.append(
-                f"A palavra '{word}' pode ser entendida como: {pt_definition}"
-            )
+            lines.append(f"A palavra '{word}' pode ser entendida como: {pt_definition}")
             lines.append(f"_(Definição em inglês: {definition})_")
         else:
             lines.append(definition)
@@ -137,16 +139,20 @@ class SynonymLookup:
         primary = self._best_synset(key, synsets)
         definition = primary.definition().strip()
         primary_pos = primary.pos()
-        ranked = [primary] + [
-            s for s in synsets if s is not primary and s.pos() == primary_pos
-        ] + [s for s in synsets if s.pos() != primary_pos]
+        ranked = (
+            [primary]
+            + [s for s in synsets if s is not primary and s.pos() == primary_pos]
+            + [s for s in synsets if s.pos() != primary_pos]
+        )
 
         synonyms = []
         seen = {key}
 
         def collect_from(group):
             for syn in group:
-                names = [lemma.name().replace("_", " ").lower() for lemma in syn.lemmas()]
+                names = [
+                    lemma.name().replace("_", " ").lower() for lemma in syn.lemmas()
+                ]
                 if key not in names:
                     continue
                 idx = names.index(key)

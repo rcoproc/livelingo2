@@ -5,11 +5,11 @@ Database manager for LiveLingo session and chunk persistence.
 Uses sqlite3 (standard library) to store session logs and audio file paths.
 """
 
-import json
-import sqlite3
-import os
 import datetime
+import json
+import os
 import shutil
+import sqlite3
 
 DB_PATH = "livelingo.db"
 
