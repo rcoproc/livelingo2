@@ -1,5 +1,11 @@
 # 🎙️ LiveLingo2 — Real-Time Voice Translation for Windows
 
+[![CI](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml/badge.svg)](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-pytest-brightgreen.svg)](tests/)
+[![Security](https://img.shields.io/badge/security-pip--audit%20%7C%20OWASP%20A06-blue.svg)](scripts/check_deps_security.py)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > **Português:** documentação completa em [`README-ptbr.md`](README-ptbr.md).  
 > **More screenshots:** [`screenshots.md`](screenshots.md) (Live Captions strip, compact UI, Changelog tab).
 
@@ -101,6 +107,19 @@ Install dev tooling once (`pytest`, `pip-audit`, `ruff`):
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
+
+#### Continuous Integration (GitHub Actions)
+
+Every push to `main` / `master` and every pull request runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) on **Python 3.10 and 3.12**:
+
+1. **Security** — `python scripts/check_deps_security.py --project-only --fail-on vuln`
+2. **Tests** — `python -m pytest tests/ -q`
+
+The green **CI** badge at the top of this README reflects the latest run on the default branch:
+[Actions → CI](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml).
+
+Locally you can mirror the same gates with `bash scripts/run_checks.sh` (includes optional format).
 
 #### One-shot checks (WSL / Linux) — recommended
 
@@ -511,6 +530,8 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
 ├── list_devices.py     # prints audio devices + their indices
 ├── requirements.txt    # runtime deps (security floors documented above)
 ├── requirements-dev.txt # pytest + pip-audit + ruff (CI / pre-deploy)
+├── .github/workflows/
+│   └── ci.yml                  # GitHub Actions: security + pytest (badge)
 ├── scripts/
 │   ├── run_checks.sh           # WSL: format → security → tests
 │   └── check_deps_security.py  # OWASP A06 audit (CVE + outdated)

@@ -1,5 +1,11 @@
 # 🎙️ LiveLingo2 — Tradução de Voz em Tempo Real para Windows
 
+[![CI](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml/badge.svg)](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-pytest-brightgreen.svg)](tests/)
+[![Security](https://img.shields.io/badge/security-pip--audit%20%7C%20OWASP%20A06-blue.svg)](scripts/check_deps_security.py)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > **English:** full docs in [`README.md`](README.md).  
 > **Mais capturas de tela:** [`screenshots.md`](screenshots.md).
 
@@ -393,6 +399,19 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+#### Integração contínua (GitHub Actions)
+
+Em todo push em `main` / `master` e em todo pull request, o workflow
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda em **Python 3.10 e 3.12**:
+
+1. **Segurança** — `python scripts/check_deps_security.py --project-only --fail-on vuln`
+2. **Testes** — `python -m pytest tests/ -q`
+
+O badge **CI** no topo deste README reflete o último run na branch padrão:
+[Actions → CI](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml).
+
+Localmente o mesmo critério: `bash scripts/run_checks.sh` (inclui format opcional).
+
 #### Checks em um comando (WSL / Linux) — recomendado
 
 [`scripts/run_checks.sh`](scripts/run_checks.sh) executa, nesta ordem:
@@ -714,6 +733,8 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 ├── list_devices.py        # lista dispositivos de áudio + índices
 ├── requirements.txt       # deps de runtime (pisos de segurança acima)
 ├── requirements-dev.txt   # pytest + pip-audit + ruff (CI / pré-deploy)
+├── .github/workflows/
+│   └── ci.yml                  # GitHub Actions: segurança + pytest (badge)
 ├── scripts/
 │   ├── run_checks.sh           # WSL: format → segurança → testes
 │   └── check_deps_security.py  # auditoria OWASP A06 (CVE + outdated)

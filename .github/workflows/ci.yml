@@ -1,0 +1,59 @@
+# LiveLingo2 — CI: dependency security (OWASP A06) + unit tests
+# Badge: https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml/badge.svg
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Security + tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: System libs (PortAudio / sndfile)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libportaudio2 \
+            portaudio19-dev \
+            libsndfile1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Dependency security (OWASP A06 / pip-audit)
+        # Fail only on actionable CVEs; outdated packages = warning (local: --fail-on any)
+        run: python scripts/check_deps_security.py --project-only --fail-on vuln
+
+      - name: Unit tests (pytest)
+        # Audio-heavy imports skip cleanly when PortAudio is missing; with libs above they load.
+        run: python -m pytest tests/ -q --tb=short
