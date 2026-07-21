@@ -1,5 +1,13 @@
 # 🎙️ LiveLingo2 — Real-Time Voice Translation for Windows
 
+> **Português:** documentação completa em [`README-ptbr.md`](README-ptbr.md).
+
+**LiveLingo2** is a **fork** (downstream copy) of the original project
+[**roirude/LiveLingo**](https://github.com/roirude/LiveLingo) by [@roirude](https://github.com/roirude).
+This repository builds on that foundation with extra features (TUI, LiveCaptions,
+phrase cache, sessions, security tooling, etc.). Credit for the initial idea and
+architecture goes to the upstream project.
+
 **LiveLingo2** turns your speech into another language **live**, on a virtual
 microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears the
 translation as if it were your mic. Speak **French**, others hear **English**
