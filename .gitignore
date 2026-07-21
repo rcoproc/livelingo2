@@ -1,5 +1,11 @@
 # Local config with secrets/overrides
 .env
+.env.*
+!.env.example
+
+# Session database and exported transcripts
+livelingo.db
+20??-??-??_*.md
 
 # Virtual environments
 .venv/
