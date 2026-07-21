@@ -39,6 +39,8 @@ class _ChunkSkip:
     def __init__(self, message="", kind="dim"):
         self.message = message or ""
         self.kind = kind  # dim | warn | error
+
+
 from .tts_segments import StreamingSegmentFeeder
 
 
@@ -388,19 +390,22 @@ class Pipeline:
         )
 
         try:
-            with sd.InputStream(
-                samplerate=rate,
-                channels=1,
-                dtype="float32",
-                blocksize=block,
-                device=in_dev,
-            ) as inn, sd.OutputStream(
-                samplerate=rate,
-                channels=1,
-                dtype="float32",
-                blocksize=block,
-                device=out_dev,
-            ) as out:
+            with (
+                sd.InputStream(
+                    samplerate=rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=block,
+                    device=in_dev,
+                ) as inn,
+                sd.OutputStream(
+                    samplerate=rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=block,
+                    device=out_dev,
+                ) as out,
+            ):
                 mon = None
                 try:
                     if use_mon:
@@ -636,7 +641,9 @@ class Pipeline:
                     synth.edge.set_voice(new_voice)
                 if hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
                     synth.set_voice(new_voice)
-                if hasattr(synth, "piper") and hasattr(synth.piper, "set_language_pair"):
+                if hasattr(synth, "piper") and hasattr(
+                    synth.piper, "set_language_pair"
+                ):
                     synth.piper.set_language_pair(src_lang, tgt_lang)
                 elif hasattr(synth, "set_language_pair") and not hasattr(synth, "edge"):
                     synth.set_language_pair(src_lang, tgt_lang)
@@ -654,9 +661,7 @@ class Pipeline:
                     synth.edge.set_voice(new_voice)
             except Exception as exc:
                 warnings.append(f"Edge voice rebind: {exc}")
-            threading.Thread(
-                target=_rebind_tts, name="tts-rebind", daemon=True
-            ).start()
+            threading.Thread(target=_rebind_tts, name="tts-rebind", daemon=True).start()
 
         return self.cfg.SOURCE_LANG, self.cfg.TARGET_LANG, new_voice, warnings
 
@@ -791,7 +796,9 @@ class Pipeline:
                     synth.edge.set_voice(new_voice)
                 if hasattr(synth, "set_voice") and not hasattr(synth, "piper"):
                     synth.set_voice(new_voice)
-                if hasattr(synth, "piper") and hasattr(synth.piper, "set_language_pair"):
+                if hasattr(synth, "piper") and hasattr(
+                    synth.piper, "set_language_pair"
+                ):
                     synth.piper.set_language_pair(src_lang, tgt_lang)
                 elif hasattr(synth, "set_language_pair") and not hasattr(synth, "edge"):
                     synth.set_language_pair(src_lang, tgt_lang)
@@ -1047,17 +1054,15 @@ class Pipeline:
                 break
 
     def _use_streaming_llm(self):
-        return (
-            getattr(self.cfg, "STREAMING_LLM", False)
-            and hasattr(self.translator, "translate_stream")
+        return getattr(self.cfg, "STREAMING_LLM", False) and hasattr(
+            self.translator, "translate_stream"
         )
 
     def _use_streaming_tts(self):
         if getattr(self.synthesizer, "supports_live_streaming", False):
             return True
-        return (
-            getattr(self.cfg, "STREAMING_TTS", False)
-            and hasattr(self.synthesizer, "synthesize_streaming")
+        return getattr(self.cfg, "STREAMING_TTS", False) and hasattr(
+            self.synthesizer, "synthesize_streaming"
         )
 
     def _use_tts_overlap(self):
@@ -1087,18 +1092,16 @@ class Pipeline:
         return True
 
     def _use_parallel_processing(self):
-        return (
-            not self.is_sound_enabled()
-            and getattr(self.cfg, "SOUND_OFF_PARALLEL", True)
+        return not self.is_sound_enabled() and getattr(
+            self.cfg, "SOUND_OFF_PARALLEL", True
         )
 
     def _use_streaming_llm_for_chunk(self):
         return self._use_streaming_llm() and not self._use_parallel_processing()
 
     def _skip_tts_when_muted(self):
-        return (
-            not self.is_sound_enabled()
-            and getattr(self.cfg, "TTS_SKIP_WHEN_MUTED", True)
+        return not self.is_sound_enabled() and getattr(
+            self.cfg, "TTS_SKIP_WHEN_MUTED", True
         )
 
     def _alloc_chunk_num(self):
@@ -1161,7 +1164,9 @@ class Pipeline:
             ui.print_audio_ref(n, audio_path or "", pending_write=pending)
         with self.history_lock:
             self.history.append((n, heard, translated, audio_path))
-        self._record_transcript(n, heard, translated, created_at=created_at, timing=timing)
+        self._record_transcript(
+            n, heard, translated, created_at=created_at, timing=timing
+        )
 
     def _should_order_chunks(self, sound_off):
         return sound_off and getattr(self.cfg, "SOUND_OFF_PARALLEL", True)
@@ -1188,10 +1193,7 @@ class Pipeline:
         with self._release_lock:
             self._pending_chunks[n] = result
             # Self-heal gaps left by sound-ON chunks (never entered this queue).
-            if (
-                self._pending_chunks
-                and self._next_release not in self._pending_chunks
-            ):
+            if self._pending_chunks and self._next_release not in self._pending_chunks:
                 min_pending = min(self._pending_chunks.keys())
                 if self._next_release < min_pending:
                     self._next_release = min_pending
@@ -1330,7 +1332,9 @@ class Pipeline:
 
         # Update SQLite DB
         try:
-            db.update_chunk(self.session_id, chunk_num, new_text, translated, audio_path)
+            db.update_chunk(
+                self.session_id, chunk_num, new_text, translated, audio_path
+            )
         except Exception as exc:
             ui.error(f"Erro ao atualizar banco de dados: {exc}")
 
@@ -1407,9 +1411,7 @@ class Pipeline:
             self.full_transcript = [
                 item for item in self.full_transcript if item[0] != chunk_num
             ]
-            self.favorites = [
-                item for item in self.favorites if item[0] != chunk_num
-            ]
+            self.favorites = [item for item in self.favorites if item[0] != chunk_num]
             if self.comments is not None:
                 self.comments.pop(int(chunk_num), None)
 
@@ -1661,11 +1663,15 @@ class Pipeline:
             try:
                 e = getattr(ui, "_rich_escape", None)
                 if e is None:
+
                     def e(s):  # type: ignore
                         return (s or "").replace("[", "\\[")
+
                 if heard_s:
                     if emphasize == "heard":
-                        ui.rich(f'[bold yellow]"{e(heard_s)}"[/]  [dim](Heard → TTS)[/]')
+                        ui.rich(
+                            f'[bold yellow]"{e(heard_s)}"[/]  [dim](Heard → TTS)[/]'
+                        )
                     else:
                         ui.rich(f'"{e(heard_s)}"')
                 if translated_s:
@@ -1829,8 +1835,7 @@ class Pipeline:
             t1 = t0
             if self.cfg.VERBOSE:
                 ui.dim(
-                    f"[chunk {n}] [debug] Texto tipado (sem STT) — "
-                    f"{len(heard)} chars.",
+                    f"[chunk {n}] [debug] Texto tipado (sem STT) — {len(heard)} chars.",
                     panel="app",
                 )
         else:
@@ -1848,9 +1853,7 @@ class Pipeline:
 
             if not heard:
                 if self.cfg.VERBOSE:
-                    _abort(
-                        f"[chunk {n}] (no speech detected — skipped)", kind="warn"
-                    )
+                    _abort(f"[chunk {n}] (no speech detected — skipped)", kind="warn")
                 else:
                     _abort()
                 return
@@ -1877,7 +1880,7 @@ class Pipeline:
             if not heard:
                 if self.cfg.VERBOSE:
                     _abort(
-                        f'[chunk {n}] (only hallucination in STT — skipped): '
+                        f"[chunk {n}] (only hallucination in STT — skipped): "
                         f'"{original_heard}"'
                     )
                 else:
@@ -1938,9 +1941,7 @@ class Pipeline:
             sample_rate = sample_rate_
             self._enqueue_playback(audio, sample_rate_, False)
 
-        will_synthesize = sound_on or (
-            sound_off and not self._skip_tts_when_muted()
-        )
+        will_synthesize = sound_on or (sound_off and not self._skip_tts_when_muted())
         if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
             self.synthesizer.begin_utterance()
 
@@ -2001,7 +2002,7 @@ class Pipeline:
                 cache_hit = True
                 if getattr(self.cfg, "PHRASE_CACHE_LOG", True) or self.cfg.VERBOSE:
                     ui.dim(
-                        f'[chunk {n}] cache HIT · {src_lang}→{tgt_lang} · '
+                        f"[chunk {n}] cache HIT · {src_lang}→{tgt_lang} · "
                         f'"{(heard or "")[:48]}" → "{(translated or "")[:48]}"',
                         panel="app",
                     )
@@ -2082,9 +2083,7 @@ class Pipeline:
             if tts_thread is not None:
                 tts_thread.join(timeout=2.0)
             if self.cfg.VERBOSE:
-                _abort(
-                    f"[chunk {n}] (empty translation — skipped)", kind="warn"
-                )
+                _abort(f"[chunk {n}] (empty translation — skipped)", kind="warn")
             else:
                 _abort()
             return
@@ -2130,6 +2129,7 @@ class Pipeline:
             played_any = False
 
             if self._use_streaming_tts():
+
                 def on_segment_collect(audio, sample_rate_):
                     nonlocal played_any
                     on_segment(audio, sample_rate_)
@@ -2174,9 +2174,7 @@ class Pipeline:
             if tts_audio is None or len(tts_audio) == 0:
                 timing = _build_timing(t3, include_tts=True)
                 if print_timings:
-                    ui.chunk_timings(
-                        n, timing, at=record_created_at, audio_path=""
-                    )
+                    ui.chunk_timings(n, timing, at=record_created_at, audio_path="")
                 self._record_transcript(
                     n, heard, translated, created_at=record_created_at, timing=timing
                 )
@@ -2283,7 +2281,9 @@ class Pipeline:
             ui.chunk_progress(n, "ready_text", detail="voz em segundo plano")
             self._enqueue_background_tts(n, _background_tts)
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background.")
+                ui.dim(
+                    f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background."
+                )
             return
 
         try:
@@ -2533,9 +2533,7 @@ class Pipeline:
     def get_comments_map(self):
         """chunk_num → list of (id, comment_text, created_at)."""
         with self.history_lock:
-            return {
-                int(k): list(v) for k, v in (self.comments or {}).items()
-            }
+            return {int(k): list(v) for k, v in (self.comments or {}).items()}
 
     def get_comments_for_chunk(self, chunk_num):
         """List of (id, comment_text, created_at) for one chunk."""
@@ -2595,9 +2593,7 @@ class Pipeline:
             ui.error(f"Erro ao excluir comentário #{comment_id}: {exc}")
             return False
         if not deleted:
-            ui.warn(
-                f"Comentário #{comment_id} não encontrado nesta sessão."
-            )
+            ui.warn(f"Comentário #{comment_id} não encontrado nesta sessão.")
             return False
         chunk_num, text = deleted
         with self.history_lock:
@@ -2610,8 +2606,5 @@ class Pipeline:
         preview = (text or "").strip()
         if len(preview) > 60:
             preview = preview[:57] + "…"
-        ui.success(
-            f"Comentário #{comment_id} removido "
-            f"(chunk {chunk_num}): {preview}"
-        )
+        ui.success(f"Comentário #{comment_id} removido (chunk {chunk_num}): {preview}")
         return True

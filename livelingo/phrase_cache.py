@@ -285,7 +285,10 @@ class PhraseCache:
         with self._lock:
             ev = self.last_event
         if not ev or ev.get("kind") not in ("hit", "store"):
-            return False, "Nenhum HIT/store recente para marcar. Rode uma frase com cache."
+            return (
+                False,
+                "Nenhum HIT/store recente para marcar. Rode uma frase com cache.",
+            )
         src, tgt, norm = ev["source_lang"], ev["target_lang"], ev["source_norm"]
         try:
             ok = db.set_translation_pair_quality(src, tgt, norm, q)
@@ -296,7 +299,10 @@ class PhraseCache:
         with self._lock:
             if self.last_event:
                 self.last_event["quality"] = q
-        return True, f"Qualidade marcada: {q} para «{(ev.get('source_text') or '')[:60]}»"
+        return (
+            True,
+            f"Qualidade marcada: {q} para «{(ev.get('source_text') or '')[:60]}»",
+        )
 
     def undo_last(self) -> tuple[bool, str]:
         """Restore previous target for last HIT/store pair from history."""
@@ -396,9 +402,8 @@ class PhraseCache:
             pairs = []
         with self._lock:
             for p in pairs:
-                norm = (
-                    p.get("source_norm")
-                    or normalize_phrase(p.get("source_text") or "")
+                norm = p.get("source_norm") or normalize_phrase(
+                    p.get("source_text") or ""
                 )
                 target = (p.get("target_text") or "").strip()
                 if not norm or not target:
@@ -409,9 +414,7 @@ class PhraseCache:
         # 2) Seed RAM from recent chunks only (no INSERT/UPDATE per row)
         try:
             chunk_limit = min(max_n, 1500)
-            chunks = db.load_chunks_for_warmup(
-                limit=chunk_limit, origin=chunk_origin
-            )
+            chunks = db.load_chunks_for_warmup(limit=chunk_limit, origin=chunk_origin)
         except Exception:
             chunks = []
         with self._lock:
@@ -459,7 +462,9 @@ class PhraseCache:
             pass
         return path
 
-    def restore(self, path: str | None = None, *, replace: bool = False) -> tuple[int, str]:
+    def restore(
+        self, path: str | None = None, *, replace: bool = False
+    ) -> tuple[int, str]:
         """
         Load pairs from a backup JSON into SQLite + memory.
 
@@ -484,7 +489,12 @@ class PhraseCache:
                 continue
             try:
                 db.upsert_translation_pair(
-                    src, tgt, norm, heard, translated, bump_hit=False,
+                    src,
+                    tgt,
+                    norm,
+                    heard,
+                    translated,
+                    bump_hit=False,
                     quality=p.get("quality"),
                 )
             except Exception:
@@ -533,9 +543,7 @@ def init_phrase_cache(config) -> PhraseCache:
                     (getattr(config, "SOURCE_LANG", "") or "").lower(),
                     (getattr(config, "TARGET_LANG", "") or "").lower(),
                 ):
-                    n_lc = cache.warmup(
-                        lc_src, lc_tgt, chunk_origin="livecaptions"
-                    )
+                    n_lc = cache.warmup(lc_src, lc_tgt, chunk_origin="livecaptions")
             except Exception:
                 n_lc = 0
             n = int(n_voice or 0) + int(n_lc or 0)
@@ -560,7 +568,9 @@ def _count_words(text: str) -> int:
     return len(s.split()) if s else 0
 
 
-def format_cache_inventory_summary(config=None, cache: PhraseCache | None = None) -> list[str]:
+def format_cache_inventory_summary(
+    config=None, cache: PhraseCache | None = None
+) -> list[str]:
     """
     Human-readable lines for TUI startup (Tradução tab).
 

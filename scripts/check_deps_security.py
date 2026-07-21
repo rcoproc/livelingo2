@@ -53,7 +53,14 @@ YELLOW = "\033[33m"
 CYAN = "\033[36m"
 DIM = "\033[2m"
 
-SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "moderate": 2, "low": 3, "unknown": 4}
+SEVERITY_ORDER = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "moderate": 2,
+    "low": 3,
+    "unknown": 4,
+}
 
 # Advisories that are historical / mis-scoped for current pins (documented).
 # PYSEC-2022-252: temporary PyPI account takeover of deep-translator; malicious
@@ -219,9 +226,15 @@ def _guess_severity(desc: str, vuln_id: str) -> str:
     text = f"{vuln_id} {desc}".lower()
     if any(w in text for w in ("critical", "rce", "remote code", "arbitrary code")):
         return "critical"
-    if any(w in text for w in ("high", "sql injection", "ssrf", "path traversal", "auth bypass")):
+    if any(
+        w in text
+        for w in ("high", "sql injection", "ssrf", "path traversal", "auth bypass")
+    ):
         return "high"
-    if any(w in text for w in ("medium", "moderate", "xss", "csrf", "denial of service", "dos")):
+    if any(
+        w in text
+        for w in ("medium", "moderate", "xss", "csrf", "denial of service", "dos")
+    ):
         return "medium"
     if any(w in text for w in ("low", "info")):
         return "low"
@@ -309,7 +322,11 @@ def _run_pip_audit(extra: list[str]) -> tuple[list[Vuln], Optional[str], str]:
     except subprocess.TimeoutExpired:
         return [], "pip-audit timeout (>300s)", " ".join(extra) or "env"
 
-    mode = "requirements" if any(a in ("-r", "--requirement") for a in extra) else "environment"
+    mode = (
+        "requirements"
+        if any(a in ("-r", "--requirement") for a in extra)
+        else "environment"
+    )
     raw_out = result.stdout or ""
     raw_err = (result.stderr or "").strip()
 
@@ -482,7 +499,12 @@ def print_outdated(items: list[Outdated]) -> None:
     other = [o for o in items if not o.in_requirements]
 
     print(c(YELLOW, f"  ! {len(items)} pacote(s) com versão mais nova no PyPI"))
-    print(c(DIM, f"    (diretos no requirements: {len(proj)} | transitivos/outros: {len(other)})\n"))
+    print(
+        c(
+            DIM,
+            f"    (diretos no requirements: {len(proj)} | transitivos/outros: {len(other)})\n",
+        )
+    )
 
     def row(o: Outdated) -> None:
         tag = c(CYAN, "req") if o.in_requirements else c(DIM, "env")
@@ -512,7 +534,11 @@ def print_owasp_summary(
     a06_fail = bool(vulns) or not vuln_scan_ok
     a06_warn = bool(outdated)
 
-    status = c(RED, "FAIL") if a06_fail else (c(YELLOW, "WARN") if a06_warn else c(GREEN, "PASS"))
+    status = (
+        c(RED, "FAIL")
+        if a06_fail
+        else (c(YELLOW, "WARN") if a06_warn else c(GREEN, "PASS"))
+    )
     print(f"  A06:2021 Vulnerable and Outdated Components  →  {status}")
     print()
     print("  Checklist alinhado OWASP Dependency Checking:")
@@ -532,7 +558,9 @@ def print_owasp_summary(
     print()
     if not vuln_scan_ok:
         print(c(RED, "  Scan de vulnerabilidades NÃO completou — trate como falha."))
-        print("    Dica WSL/Ubuntu: use o venv do projeto ou `sudo apt install python3-venv`")
+        print(
+            "    Dica WSL/Ubuntu: use o venv do projeto ou `sudo apt install python3-venv`"
+        )
         print("    Ex.:  .venv/bin/python scripts/check_deps_security.py")
     elif vulns:
         print(c(BOLD, "  Ação prioritária:"))
@@ -542,7 +570,9 @@ def print_owasp_summary(
     elif outdated:
         print(c(BOLD, "  Ação sugerida:"))
         print("    • Avalie upgrades de deps diretas (coluna [req])")
-        print("    • Teste o app após cada bump (especialmente faster-whisper, edge-tts, textual)")
+        print(
+            "    • Teste o app após cada bump (especialmente faster-whisper, edge-tts, textual)"
+        )
     else:
         print(c(GREEN, "  Nenhuma ação de segurança pendente nas dependências."))
 
@@ -659,7 +689,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(c(BOLD, "LiveLingo · Dependency Security Audit"))
     print(c(DIM, f"  root: {ROOT}"))
     print(c(DIM, f"  python: {sys.executable} ({sys.version.split()[0]})"))
-    print(c(DIM, f"  requirements: {req_path if req_path.is_file() else '(ausente — auditando env)'}"))
+    print(
+        c(
+            DIM,
+            f"  requirements: {req_path if req_path.is_file() else '(ausente — auditando env)'}",
+        )
+    )
     print(c(DIM, f"  OWASP foco: A06:2021 Vulnerable and Outdated Components"))
 
     tool_versions: dict[str, str] = {
@@ -741,7 +776,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Footer summary line
     banner("Resultado")
     print(f"  Vulnerabilidades : {c(RED if vulns else GREEN, str(len(vulns)))}")
-    print(f"  Desatualizados   : {c(YELLOW if outdated else GREEN, str(len(outdated)))}")
+    print(
+        f"  Desatualizados   : {c(YELLOW if outdated else GREEN, str(len(outdated)))}"
+    )
     if errors:
         print(f"  Erros de tool    : {c(RED, str(len(errors)))}")
 

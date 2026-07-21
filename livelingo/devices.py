@@ -105,9 +105,7 @@ def resolve_device(spec, kind):
         except Exception as exc:
             raise ValueError(f"No audio device with index {idx}") from exc
         if not _matches_kind(dev, kind):
-            raise ValueError(
-                f"Device #{idx} '{dev['name']}' has no {kind} channels."
-            )
+            raise ValueError(f"Device #{idx} '{dev['name']}' has no {kind} channels.")
         return idx, dev["name"]
 
     # Otherwise: case-insensitive substring match among devices of this kind.

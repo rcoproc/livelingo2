@@ -55,9 +55,7 @@ def _iter_py_files(root: Path):
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune ignored / hidden dirs in-place
         dirnames[:] = sorted(
-            d
-            for d in dirnames
-            if d not in IGNORE_DIR_NAMES and not d.startswith(".")
+            d for d in dirnames if d not in IGNORE_DIR_NAMES and not d.startswith(".")
         )
         for name in sorted(filenames):
             if name.endswith(".py"):

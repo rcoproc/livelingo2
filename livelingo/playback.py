@@ -129,7 +129,9 @@ class Player:
                     sd.play(audio, samplerate=samplerate, device=self.monitor_device)
                     sd.wait()
             else:
-                sd.play(audio, samplerate=samplerate, device=self.device, blocking=False)
+                sd.play(
+                    audio, samplerate=samplerate, device=self.device, blocking=False
+                )
                 if self.monitor_device is not None:
                     sd.play(
                         audio,

@@ -35,6 +35,7 @@ AUDIO_MODULES = [
 def _portaudio_available() -> bool:
     try:
         import sounddevice  # noqa: F401
+
         return True
     except OSError:
         return False
@@ -53,6 +54,7 @@ def test_import_audio_module(modname: str):
     mod = importlib.import_module(modname)
     assert mod is not None
 
+
 def test_config_has_essential_attrs():
     import config as cfg
 
@@ -70,8 +72,9 @@ def test_translator_and_llm_share_interface(mock_cfg):
     """Pipeline treats both as .translate(text) drop-ins."""
     from unittest.mock import MagicMock, patch
 
-    with patch("livelingo.translate.GoogleTranslator"), patch(
-        "livelingo.llm.requests.Session"
+    with (
+        patch("livelingo.translate.GoogleTranslator"),
+        patch("livelingo.llm.requests.Session"),
     ):
         from livelingo.llm import LLMTranslator
         from livelingo.translate import Translator
