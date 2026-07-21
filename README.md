@@ -1,12 +1,19 @@
 # 🎙️ LiveLingo2 — Real-Time Voice Translation for Windows
 
-> **Português:** documentação completa em [`README-ptbr.md`](README-ptbr.md).
+> **Português:** documentação completa em [`README-ptbr.md`](README-ptbr.md).  
+> **More screenshots:** [`screenshots.md`](screenshots.md) (Live Captions strip, compact UI, Changelog tab).
 
 **LiveLingo2** is a **fork** (downstream copy) of the original project
 [**roirude/LiveLingo**](https://github.com/roirude/LiveLingo) by [@roirude](https://github.com/roirude).
 This repository builds on that foundation with extra features (TUI, LiveCaptions,
 phrase cache, sessions, security tooling, etc.). Credit for the initial idea and
 architecture goes to the upstream project.
+
+<p align="center">
+  <img src="docs/screenshots/live_lingo4.png" alt="LiveLingo2 TUI — Live Captions strip + Tradução log with LC caption/translated chunks" width="900" />
+</p>
+
+<p align="center"><em>TUI in action: Live Captions (EN→BR) above the scrollable <strong>Tradução</strong> log, with caption/translated pairs and pipeline status in the footer. See also <a href="screenshots.md">screenshots.md</a>.</em></p>
 
 **LiveLingo2** turns your speech into another language **live**, on a virtual
 microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears the

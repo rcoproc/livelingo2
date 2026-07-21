@@ -14,6 +14,10 @@ exported*.csv
 tela*.png
 *.png
 !docs/**/*.png
+!docs/**/*.jpg
+# Public product screenshots (repo root aliases)
+!live_lingo*.png
+!live_lingo*.jpg
 
 # Virtual environments
 .venv/

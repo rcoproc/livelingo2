@@ -1,6 +1,15 @@
 # 🎙️ LiveLingo2 — Tradução de Voz em Tempo Real para Windows
 
+> **English:** full docs in [`README.md`](README.md).  
+> **Mais capturas de tela:** [`screenshots.md`](screenshots.md).
+
 **LiveLingo2** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
+
+<p align="center">
+  <img src="docs/screenshots/live_lingo1.png" alt="LiveLingo2 TUI — layout clássico com menu de comandos e status de áudio" width="900" />
+</p>
+
+<p align="center"><em>Interface TUI: header com par de idiomas e áudio OFF, área de log rolável, faixa de atalhos (Frase / Áudio / Idioma) e campo de comando. Outras telas em <a href="screenshots.md">screenshots.md</a>.</em></p>
 
 Além da tradução em tempo real, o projeto evoluiu para uma **ferramenta de reuniões multilíngues** com histórico persistente por sessão, comandos interativos no terminal, exportação de transcrições com resumo executivo por IA e auxiliar de vocabulário.
 
