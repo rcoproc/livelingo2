@@ -105,15 +105,75 @@ Common settings:
 | `WHISPER_MODEL` | `small` | Local model: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` |
 | `INPUT_DEVICE` | *(default mic)* | Mic index or name substring |
 | `OUTPUT_DEVICE` | `CABLE Input` | VB-Cable playback device (index or name) |
-| `TTS_VOICE` | `en-US-AriaNeural` | Any Edge voice (`edge-tts --list-voices`) |
+| `TTS_VOICE` | `en-US-AriaNeural` | Edge voice for **target** — locale must match `TARGET_LANG` (see below) |
+| `TTS_VOICE_ALT` | *(auto on swap)* | Voice for the other language in the pair; used by terminal `[g]` swap |
 | `CHUNK_DURATION` | `4.0` | Target/fixed chunk length (seconds) |
 | `VAD_ENABLED` | `true` | Split on pauses (true) vs fixed chunks (false) |
 | `SILENCE_THRESHOLD` | `0.015` | Mic loudness threshold for speech detection |
 | `MONITOR_PLAYBACK` | `false` | Also play the translation on your speakers (testing) |
 | `MONITOR_DEVICE` | *(default out)* | Device for the monitor copy (index/name) |
+| `MUTE_CAPTURE_DURING_PLAYBACK` | `true` | Pause STT capture while TTS plays (breaks speaker→mic loop) |
+| `MUTE_CAPTURE_HANGOVER_MS` | `350` | Wait (ms) after TTS before reopening the mic |
 | `TRANSLATION_ENGINE` | `auto` | `auto`/`llm`/`google` (see below) |
 | `GROQ_API_KEY` | *(empty)* | Free Groq key → much better translation quality |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model (`llama-3.1-8b-instant` = faster) |
+
+### Elegant Edge voices (quick reference)
+
+Set in `.env`: `TTS_VOICE=exact-name`. The voice **locale prefix must match `TARGET_LANG`**
+(`en` → `en-*`, `es` → `es-*`, `fr` → `fr-*`). Wrong locale → correct text, wrong accent.
+
+**List every available voice** (Microsoft Edge neural TTS):
+
+```powershell
+edge-tts --list-voices
+```
+
+Filter EN / ES / FR (PowerShell):
+
+```powershell
+edge-tts --list-voices | Select-String "en-US|en-GB|es-ES|es-MX|fr-FR"
+```
+
+Linux / WSL / macOS:
+
+```bash
+edge-tts --list-voices | grep -E "en-US|en-GB|es-ES|es-MX|fr-FR"
+```
+
+Curated **polite / professional** picks for meetings — 2 male + 2 female per language:
+
+| Language | Gender | `TTS_VOICE` | Profile |
+|----------|--------|-------------|---------|
+| **English** (`en`) | Female | `en-US-AriaNeural` | Clear, professional (US) — classic default |
+| **English** (`en`) | Female | `en-GB-SoniaNeural` | Polished British, formal tone |
+| **English** (`en`) | Male | `en-GB-RyanNeural` | Sober British, executive meeting |
+| **English** (`en`) | Male | `en-US-ChristopherNeural` | Calm, articulate American |
+| **Spanish** (`es`) | Female | `es-ES-ElviraNeural` | Spain, clean formal diction |
+| **Spanish** (`es`) | Female | `es-MX-DaliaNeural` | Mexico, natural and polite |
+| **Spanish** (`es`) | Male | `es-ES-AlvaroNeural` | Spain, deep professional |
+| **Spanish** (`es`) | Male | `es-MX-JorgeNeural` | Mexico, confident and sober |
+| **French** (`fr`) | Female | `fr-FR-DeniseNeural` | France, elegant and neutral |
+| **French** (`fr`) | Female | `fr-FR-EloiseNeural` | France, clear and cordial |
+| **French** (`fr`) | Male | `fr-FR-HenriNeural` | France, formal and measured |
+| **French** (`fr`) | Male | `fr-FR-AlainNeural` | France, mature and polite |
+
+Example `.env` (EN → FR, elegant male voice):
+
+```env
+SOURCE_LANG=en
+TARGET_LANG=fr
+TTS_VOICE=fr-FR-HenriNeural
+```
+
+> `*MultilingualNeural` voices can read several languages but **keep the accent of their
+> locale**. Prefer `fr-FR-*` for native French, `es-ES-*` / `es-MX-*` for Spanish, etc.
+
+**Runtime language swap:** press **`g`** in the terminal menu to invert `SOURCE_LANG` ↔
+`TARGET_LANG` (STT + translation + TTS voice). The menu shows a bright yellow line such as
+`[g]  Swap idiomas   EN → PT`. Set `TTS_VOICE` for the current target and `TTS_VOICE_ALT`
+for the other side (or leave alt empty for an automatic elegant default). Old history
+chunks are **not** re-translated.
 
 ### Better transcription accuracy (recommended, free)
 
@@ -167,6 +227,20 @@ translates it in one step), plug in a **free Groq API key**:
 python main.py
 ```
 
+### Dev auto-reload
+
+LiveLingo is a long-running CLI: **Python does not hot-reload** source on save
+(unlike Flask/FastAPI `--reload`).
+
+```powershell
+python dev_reload.py
+python dev_reload.py -v
+```
+
+**Must** start via `dev_reload.py` (not bare `python main.py`). Uses content
+hashes (WSL `/mnt/c` safe). Restarts `main.py` on `.py` save; session state is
+lost each time. Stop with **Ctrl+C** on the watcher terminal.
+
 You'll see a banner, the detected/selected devices, and then a live status line
 per chunk:
 
@@ -177,19 +251,82 @@ per chunk:
 
 Stop any time with **Ctrl+C**.
 
-### Use it as your microphone in Microsoft Teams
+### TUI (default)
 
-1. Keep `main.py` running.
-2. In Teams: **Settings (⋯ / your avatar) → Settings → Devices**.
-3. Under **Microphone**, choose **CABLE Output (VB-Audio Virtual Cable)**.
-4. Speak French → participants hear the English translation.
+With `UI_MODE=tui` (default) you get a Textual UI: **two log tabs**, command field, fixed listen header (robot + language pair + audio), and a full-width command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
 
-> The same applies to Zoom, Discord, Google Meet (in the browser, pick "CABLE
-> Output" as the mic), OBS, etc.
+| Tab | Content |
+|-----|---------|
+| **Tradução** | Heard/Translated phrase blocks + command output |
+| **Sistema** | Pipeline stages, VAD/listen lines, timings, debug, **F1** help |
 
-**Tip:** to also hear yourself, set `MONITOR_PLAYBACK=true`, or in Windows
-*Sound Control Panel → Recording → CABLE Output → Properties → Listen* enable
-"Listen to this device" and pick your headphones.
+| Shortcut / command | Action |
+|--------------------|--------|
+| `F1` | Startup help → **Sistema** tab (opens that tab) |
+| `F3` | Toggle Tradução ↔ Sistema |
+| `F4` / `u` | Compact UI: hide command menu; keep command line (optional window height shrink) |
+| `Ctrl+C` | Copy selected log text |
+| `Ctrl+Shift+C` / `F2` | Copy entire log (active tab) |
+| Palette → Screenshot | Save SVG+PNG under `.cache/screenshots/` and put the **image** on the clipboard |
+| `↑` / `↓` | Command history |
+| `g` | Swap SOURCE ↔ TARGET |
+| `t` / `t EN` | Change TARGET only (codes forced UPPERCASE) |
+| `enew <text>` | New translation from typed text (no mic); TTS if sound ON |
+| `e` / `eN` | Edit last / chunk N (TUI pre-fills the sentence in the command field) |
+| `b` / `bypass` | **Voice bypass** — raw mic → CABLE (Teams) without translation; press again to resume translate |
+| `gg` / `GG` (or `gt` / `gf`) | Go top / go bottom of the **active** log tab. `GG` is case-sensitive. |
+| `cls` | Clear both log panels |
+| `l` / `lo` / `lt` | List session / source-only / target-only |
+| `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
+| `s` / `n` / `r` / `rN` | Sound, mic mute, replay |
+| `a` / `aN` / `p` / `pN` | Copy audio path / open audio folder |
+| `ld` | List audio devices (`python list_devices.py`) into the log |
+| `lav` | List all edge-tts voices (`edge-tts --list-voices`) into the log |
+| `lv` | List filtered voices (`en-US|en-GB|es-ES|es-MX|fr-FR`) into the log |
+| `ctts <ShortName>` | Change `TTS_VOICE` (one-liner or prompt; no modal) |
+| `q` | Quit |
+
+### Faster per-phrase text (sentence split)
+
+With **sound OFF** (default), a short pause after enough speech can emit a **sentence-sized chunk** immediately (STT + translate + UI) without waiting for the whole monologue. Configure in `.env`:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `SENTENCE_SPLIT` | `true` | Early emit on short pauses |
+| `SENTENCE_SPLIT_SOUND_OFF_ONLY` | `true` | Only when audio is OFF (safer with live TTS) |
+| `SENTENCE_SILENCE` | `0.55` | Pause (s) treated as end-of-sentence |
+| `SENTENCE_MIN_SPEECH` | `1.0` | Min speech (s) before a split |
+| `SENTENCE_SPLIT_OVERLAP` | `0.25` | Overlap kept after a split |
+
+For lower end-of-turn wait, also lower `SILENCE_DURATION` / `SOUND_OFF_SILENCE_DURATION` (e.g. `0.7`–`0.8`).
+
+Resume a session without the picker:
+
+```powershell
+python main.py <session_id>
+# or
+livelingo <session_id>
+```
+
+### Use it as your microphone in Microsoft Teams / Google Meet
+
+**LiveLingo `.env` (example):** `INPUT_DEVICE=<your mic>` · `OUTPUT_DEVICE=CABLE Input` (or its index, e.g. `19`).
+
+| Role | Device |
+|------|--------|
+| You speak | Real microphone (e.g. USB headset) |
+| LiveLingo plays translation | **CABLE Input** (`OUTPUT_DEVICE`) |
+| Teams / Meet mic | **CABLE Output** |
+| You hear others | Your speakers/headphones (app speaker setting) |
+
+1. Keep `main.py` running; press **`s`** if you want live translation audio on the cable.
+2. **Teams:** Settings → Devices → Microphone = **CABLE Output**; Speakers = your headset.
+3. **Google Meet (browser):** ⋯ → Settings → Audio → same mic/speaker choices; allow the site to use the mic.
+4. Speak in `SOURCE_LANG` → participants hear `TARGET_LANG`.
+
+> **You do not hear your own CABLE feed in Teams/Meet by default** (no mic sidetone). The CABLE Output **level meter** moving means audio is entering the call. To hear the translation yourself: `MONITOR_PLAYBACK=true` + `MONITOR_DEVICE=<speakers>`, or Windows 11 *Sound settings → More sound settings → Recording → CABLE Output → Properties → Listen → Listen to this device*.
+
+**Speak English (or any language) without translation:** press **`b`** (bypass) — raw mic goes to CABLE; press **`b`** again to resume translate.
 
 ---
 
@@ -267,6 +404,8 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
     ├── playback.py     # audio -> VB-Cable output device
     ├── pipeline.py     # threads + queues orchestration
     ├── devices.py      # device discovery / resolution
+    ├── tui_app.py      # Textual TUI (log, menu, screenshot, clipboard)
+    ├── db.py           # SQLite sessions, chunks, comments, favorites
     └── ui.py           # terminal banner, colors, status lines
 ```
 

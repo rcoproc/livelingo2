@@ -15,9 +15,13 @@ Drop-in compatible with translate.Translator: exposes `.translate(text)`.
 Uses `requests` (already installed as a dependency of deep-translator).
 """
 
+import json
+
 import requests
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+#GROQ_URL = "http://192.168.137.1:4000/v1/chat/completions"
 
 # Friendly names for the most common language codes (used in the prompt).
 _LANG_NAMES = {
@@ -44,60 +48,88 @@ class LLMError(Exception):
     """Raised when the LLM translation request fails."""
 
 
+def _translation_prompt(config):
+    src = _lang_name(config.SOURCE_LANG)
+    tgt = _lang_name(config.TARGET_LANG)
+    if getattr(config, "LOW_LATENCY", False):
+        return (
+            f"Translate {src} speech-to-text to natural {tgt}. "
+            f"Fix minor STT errors. Output ONLY the {tgt} translation."
+        )
+    return (
+        f"You are a professional real-time interpreter. You receive a raw "
+        f"speech-to-text transcription in {src}. It may contain recognition "
+        f"errors, missing punctuation, filler words, or be only a fragment.\n"
+        f"Produce a clean, natural, fluent {tgt} translation of what the "
+        f"speaker most likely meant.\n"
+        f"Rules:\n"
+        f"- Output ONLY the {tgt} translation. No quotes, no notes, no "
+        f"explanations, no preamble.\n"
+        f"- Silently fix obvious transcription errors and punctuation so it "
+        f"reads naturally in {tgt}.\n"
+        f"- Preserve meaning and tone; never add information.\n"
+        f"- If the input is empty, gibberish, or not real speech, output "
+        f"nothing at all."
+    )
+
+
 class LLMTranslator:
     def __init__(self, config):
         self.cfg = config
         self.api_key = config.GROQ_API_KEY
         self.model = config.GROQ_MODEL
         self.timeout = config.LLM_TIMEOUT
+        self.system_prompt = _translation_prompt(config)
+        self.session = requests.Session()
+        self.session.headers.update(self._headers())
 
-        src = _lang_name(config.SOURCE_LANG)
-        tgt = _lang_name(config.TARGET_LANG)
-        self.system_prompt = (
-            f"You are a professional real-time interpreter. You receive a raw "
-            f"speech-to-text transcription in {src}. It may contain recognition "
-            f"errors, missing punctuation, filler words, or be only a fragment.\n"
-            f"Produce a clean, natural, fluent {tgt} translation of what the "
-            f"speaker most likely meant.\n"
-            f"Rules:\n"
-            f"- Output ONLY the {tgt} translation. No quotes, no notes, no "
-            f"explanations, no preamble.\n"
-            f"- Silently fix obvious transcription errors and punctuation so it "
-            f"reads naturally in {tgt}.\n"
-            f"- Preserve meaning and tone; never add information.\n"
-            f"- If the input is empty, gibberish, or not real speech, output "
-            f"nothing at all."
-        )
+    def refresh_prompt(self):
+        """Rebuild system prompt after SOURCE/TARGET swap ([g])."""
+        self.system_prompt = _translation_prompt(self.cfg)
 
-    # ------------------------------------------------------------------ #
-    def translate(self, text):
-        """Clean + translate `text`. Returns the target-language string."""
-        text = (text or "").strip()
-        if not text:
-            return ""
+    def set_language_pair(self, source=None, target=None):
+        """Alias for swap rebind — languages live on self.cfg."""
+        if source is not None:
+            self.cfg.SOURCE_LANG = source
+        if target is not None:
+            self.cfg.TARGET_LANG = target
+        self.refresh_prompt()
 
-        payload = {
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _max_tokens_for(self, text):
+        if getattr(self.cfg, "LOW_LATENCY", False):
+            return min(150, max(32, len(text) * 3))
+        return 400
+
+    def _translation_payload(self, text):
+        return {
             "model": self.model,
-            "temperature": 0.2,
-            "max_tokens": 400,
+            "temperature": 0.0,
+            "max_tokens": self._max_tokens_for(text),
             "messages": [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": text},
             ],
         }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
 
+    def _parse_stream_line(self, line):
+        if not line.startswith("data: "):
+            return None
+        data = line[6:].strip()
+        if not data or data == "[DONE]":
+            return None
         try:
-            resp = requests.post(
-                GROQ_URL, headers=headers, json=payload, timeout=self.timeout
-            )
-        except requests.RequestException as exc:
-            raise LLMError(f"network error contacting Groq: {exc}") from exc
+            chunk = json.loads(data)
+            return chunk["choices"][0]["delta"].get("content") or ""
+        except (ValueError, KeyError, IndexError):
+            return None
 
-        # Turn common HTTP errors into clear, actionable messages.
+    def _raise_for_status(self, resp):
         if resp.status_code == 401:
             raise LLMError("Groq rejected the API key (401). Check GROQ_API_KEY.")
         if resp.status_code == 404:
@@ -113,6 +145,54 @@ class LLMTranslator:
         if resp.status_code >= 400:
             raise LLMError(f"Groq error {resp.status_code}: {resp.text[:200]}")
 
+    # ------------------------------------------------------------------ #
+    def translate_stream(self, text, on_token=None):
+        """Translate with Groq streaming; calls on_token(partial_text) per delta."""
+        text = (text or "").strip()
+        if not text:
+            return ""
+
+        payload = self._translation_payload(text)
+        payload["stream"] = True
+
+        try:
+            resp = self.session.post(
+                GROQ_URL, json=payload, timeout=self.timeout, stream=True
+            )
+        except requests.RequestException as exc:
+            raise LLMError(f"network error contacting Groq: {exc}") from exc
+
+        self._raise_for_status(resp)
+
+        parts = []
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw:
+                continue
+            delta = self._parse_stream_line(raw)
+            if not delta:
+                continue
+            parts.append(delta)
+            if on_token:
+                on_token("".join(parts))
+
+        return "".join(parts).strip().strip('"').strip()
+
+    # ------------------------------------------------------------------ #
+    def translate(self, text):
+        """Clean + translate `text`. Returns the target-language string."""
+        text = (text or "").strip()
+        if not text:
+            return ""
+
+        try:
+            resp = self.session.post(
+                GROQ_URL, json=self._translation_payload(text), timeout=self.timeout
+            )
+        except requests.RequestException as exc:
+            raise LLMError(f"network error contacting Groq: {exc}") from exc
+
+        self._raise_for_status(resp)
+
         try:
             data = resp.json()
             out = data["choices"][0]["message"]["content"]
@@ -121,3 +201,107 @@ class LLMTranslator:
 
         # Strip stray surrounding quotes the model might add.
         return out.strip().strip('"').strip()
+
+    # ------------------------------------------------------------------ #
+    def explain_synonyms(self, word):
+        """Explain the meaning of `word` in Portuguese and provide English examples with synonyms."""
+        word = (word or "").strip()
+        if not word:
+            return ""
+
+        system_prompt = (
+            "Você é um professor de inglês nativo e experiente. O usuário fornecerá uma palavra em inglês.\n"
+            "Sua tarefa é explicar essa palavra em português e fornecer de 2 a 3 exemplos práticos de frases utilizando seus sinônimos.\n"
+            "Regra fundamental: As frases de exemplo originais DEVEM ser escritas em INGLÊS, e suas respectivas traduções DEVEM ser escritas em PORTUGUÊS.\n\n"
+            "Siga RIGOROSAMENTE o formato estrutural do exemplo abaixo (para a palavra 'Fast'):\n\n"
+            "1. **Significado e Uso**:\n"
+            "A palavra 'fast' é usada para descrever algo que se move ou acontece em alta velocidade.\n\n"
+            "2. **Sinônimos Comuns em Inglês**:\n"
+            "- Quick (Rápido)\n"
+            "- Rapid (Rápido/Acelerado)\n"
+            "- Swift (Veloz/Ágil)\n\n"
+            "3. **Exemplos Práticos com Sinônimos**:\n"
+            "- **Frase em Inglês**: She gave a *quick* response to my question.\n"
+            "  **Tradução**: Ela deu uma resposta rápida à minha pergunta.\n\n"
+            "- **Frase em Inglês**: The company experienced *rapid* growth this year.\n"
+            "  **Tradução**: A empresa experimentou um crescimento rápido este ano.\n\n"
+            "Atenção: Escreva as frases de exemplo originais estritamente em INGLÊS, e apenas a linha de 'Tradução' correspondente em PORTUGUÊS. Nunca traduza a frase original do exemplo para o português na linha 'Frase em Inglês'."
+        )
+
+        payload = {
+            "model": self.model,
+            "temperature": 0.4,
+            "max_tokens": 600,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Palavra: {word}"},
+            ],
+        }
+        try:
+            resp = self.session.post(
+                GROQ_URL, json=payload, timeout=self.timeout
+            )
+        except requests.RequestException as exc:
+            raise LLMError(f"network error contacting Groq: {exc}") from exc
+
+        if resp.status_code == 401:
+            raise LLMError("Groq rejected the API key (401). Check GROQ_API_KEY.")
+        if resp.status_code >= 400:
+            raise LLMError(f"Groq error {resp.status_code}: {resp.text[:200]}")
+
+        try:
+            data = resp.json()
+            out = data["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError) as exc:
+            raise LLMError(f"unexpected Groq response: {exc}") from exc
+
+        return out.strip()
+
+    # ------------------------------------------------------------------ #
+    def generate_meeting_summary(self, transcript_text):
+        """Generate a structured Markdown summary from a transcript."""
+        transcript_text = (transcript_text or "").strip()
+        if not transcript_text:
+            return ""
+
+        system_prompt = (
+            "Você é um assistente executivo sênior. O usuário fornecerá a transcrição crua de uma conversa ou reunião.\n"
+            "Sua tarefa é analisar o conteúdo falado e gerar um resumo executivo em Português do Brasil.\n"
+            "A resposta DEVE obrigatoriamente seguir a estrutura Markdown abaixo:\n\n"
+            "## 📌 Assunto Principal\n"
+            "[Identifique o tema central da conversa]\n\n"
+            "## 📝 Resumo Objetivo\n"
+            "[Um parágrafo resumindo o que foi discutido de forma concisa e direta]\n\n"
+            "## ✅ Tarefas e Ações\n"
+            "- [Liste tarefas a serem executadas, pontos de ação ou itens que precisam de análise futura de acordo com o contexto.]\n"
+            "- [Se não houver tarefas óbvias, deduza possíveis próximos passos baseados na conversa.]\n"
+        )
+
+        payload = {
+            "model": self.model,
+            "temperature": 0.3,
+            "max_tokens": 1000,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Transcrição da conversa:\n{transcript_text}"},
+            ],
+        }
+        try:
+            resp = self.session.post(
+                GROQ_URL, json=payload, timeout=180.0
+            )
+        except requests.RequestException as exc:
+            raise LLMError(f"network error contacting Groq: {exc}") from exc
+
+        if resp.status_code == 401:
+            raise LLMError("Groq rejected the API key (401). Check GROQ_API_KEY.")
+        if resp.status_code >= 400:
+            raise LLMError(f"Groq error {resp.status_code}: {resp.text[:200]}")
+
+        try:
+            data = resp.json()
+            out = data["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError) as exc:
+            raise LLMError(f"unexpected Groq response: {exc}") from exc
+
+        return out.strip()
