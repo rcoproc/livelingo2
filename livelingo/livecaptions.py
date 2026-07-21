@@ -1241,8 +1241,8 @@ class CaptionService:
                 )
             except Exception:
                 try:
-                    ui.info(f"[LC {n}] Caption: {src}", indent=0, panel="main")
-                    ui.success(f"[LC {n}] Translated: {tgt}", indent=0, panel="main")
+                    ui.info(f"[LC {n}] Caption: {src}", indent=0, panel="lc")
+                    ui.success(f"[LC {n}] Translated: {tgt}", indent=0, panel="lc")
                 except Exception:
                     pass
 
