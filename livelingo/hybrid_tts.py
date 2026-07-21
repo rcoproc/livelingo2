@@ -119,9 +119,13 @@ class HybridSynthesizer:
         else:
             for idx, segment in enumerate(segments):
                 if idx == 0:
-                    audio, sample_rate = self._synthesize_first_edge(segment, on_segment)
+                    audio, sample_rate = self._synthesize_first_edge(
+                        segment, on_segment
+                    )
                 else:
-                    audio, sample_rate = self.piper.synthesize_clause(segment, on_segment)
+                    audio, sample_rate = self.piper.synthesize_clause(
+                        segment, on_segment
+                    )
                     audio, sample_rate = self._to_cache_rate(audio, sample_rate)
                 if audio is not None and len(audio) > 0:
                     parts.append(audio)

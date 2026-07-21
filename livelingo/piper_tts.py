@@ -155,10 +155,9 @@ class PiperSynthesizer:
     def __init__(self, config, log=print):
         self.cfg = config
         self.log = log
-        self.voice_id = (
-            getattr(config, "PIPER_VOICE", "").strip()
-            or default_voice_for_lang(config.TARGET_LANG)
-        )
+        self.voice_id = getattr(
+            config, "PIPER_VOICE", ""
+        ).strip() or default_voice_for_lang(config.TARGET_LANG)
         if getattr(config, "PIPER_QUALITY", "medium").lower() == "fast":
             self.voice_id = fast_voice_for(self.voice_id)
         self.model_dir = getattr(config, "PIPER_MODEL_DIR", ".cache/models/piper")

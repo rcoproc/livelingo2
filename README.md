@@ -78,23 +78,49 @@ Python deps declared in [`requirements.txt`](requirements.txt).
 fixed version**; the malicious releases were removed. The audit script
 allowlists it (see `KNOWN_FALSE_POSITIVES` in the checker).
 
-**Audit + tests before deploy:**
+**Audit + tests before deploy**
+
+Install dev tooling once (`pytest`, `pip-audit`, `ruff`):
 
 ```powershell
-# runtime deps
 pip install -r requirements.txt
-
-# optional: pytest + pip-audit
 pip install -r requirements-dev.txt
+```
 
-# unit tests (security floors, translate/LLM/STT mocks, import smoke)
+#### One-shot checks (WSL / Linux) — recommended
+
+[`scripts/run_checks.sh`](scripts/run_checks.sh) runs, in order:
+
+1. **Format** — `ruff format` + safe import fixes (falls back to `black`/`isort` if present)
+2. **Security** — `python3 scripts/check_deps_security.py --project-only`
+3. **Tests** — `python3 -m pytest tests/`
+
+```bash
+# from the project root (WSL)
+cd /mnt/c/Users/rcopr/LiveLingo/LiveLingo   # adjust path if needed
+bash scripts/run_checks.sh
+# or:  ./scripts/run_checks.sh
+```
+
+Useful flags for `run_checks.sh`:
+
+| Flag | Meaning |
+|------|---------|
+| `--skip-format` | Skip ruff/black |
+| `--fail-on vuln` | Default: fail only on **CVEs** (outdated packages = warning) |
+| `--fail-on any` | Fail if there is any CVE **or** outdated package |
+| `--fail-on outdated` | Fail on outdated (and vulns) |
+| `--pytest -v` | Extra args forwarded to pytest |
+| `--no-project-only` | Audit the whole environment, not only project deps |
+
+#### Manual steps (Windows PowerShell / any shell)
+
+```powershell
 python -m pytest tests/ -v
-
-# CVE / outdated scan (project deps; EXIT 0 = no actionable vulns)
 python scripts/check_deps_security.py --project-only
 ```
 
-Useful flags for the security script:
+Useful flags for `check_deps_security.py`:
 
 | Flag | Meaning |
 |------|---------|
@@ -103,6 +129,28 @@ Useful flags for the security script:
 | `--json report.json` | Write a full machine-readable report |
 | `--ignore-vuln ID` | Extra advisory ignore (CVE / PYSEC / GHSA) |
 | `--no-default-ignores` | Disable the built-in historical allowlist |
+
+**How to read the security checklist**
+
+| Mark | Meaning |
+|------|---------|
+| `✓` | OK |
+| `!` | **Warning only** (e.g. a newer version exists on PyPI — not a CVE) |
+| `✗` | Action required (scan failed or actionable vulnerability) |
+
+- **“Components monitored (PyPI scan)”** = the outdated check **ran** (✓), not “everything is latest”.
+- **“Deps on latest PyPI version”** may show `!` for packages like `sounddevice` / `soundfile` when a newer release exists. That is **freshness**, not a security hole.
+- Default `--fail-on vuln` → **EXIT 0** if there are no actionable CVEs, even when some packages are outdated.
+- Status line: `WARN (freshness only)` = safe to deploy for security; upgrade when you can and re-test audio.
+- To make CI fail on outdated packages: `--fail-on any` (or `--fail-on outdated`).
+
+Exit codes (`check_deps_security.py` / checks script):
+
+| Code | Meaning |
+|------|---------|
+| `0` | OK for the selected `--fail-on` criterion |
+| `1` | Actionable finding (vuln and/or outdated, depending on flags) |
+| `2` | Tool/scan error (e.g. pip-audit could not run) |
 
 Audio modules that need PortAudio may be **skipped** in headless/WSL CI; that
 does not block the security floor or mocked pipeline tests.
@@ -441,8 +489,9 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
 ├── config.py           # all tunable settings (env / .env overridable)
 ├── list_devices.py     # prints audio devices + their indices
 ├── requirements.txt    # runtime deps (security floors documented above)
-├── requirements-dev.txt # pytest + pip-audit (CI / pre-deploy)
+├── requirements-dev.txt # pytest + pip-audit + ruff (CI / pre-deploy)
 ├── scripts/
+│   ├── run_checks.sh           # WSL: format → security → tests
 │   └── check_deps_security.py  # OWASP A06 audit (CVE + outdated)
 ├── tests/              # unit tests (floors, mocks, import smoke)
 ├── .env.example        # copy to .env to override settings

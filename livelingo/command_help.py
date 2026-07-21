@@ -21,6 +21,7 @@ def _alpha_key(text: str) -> str:
     s = unicodedata.normalize("NFKD", (text or "").casefold())
     return "".join(c for c in s if not unicodedata.combining(c))
 
+
 # group: audio | idiom | keys | sentence | session
 _COMMANDS: list[dict[str, str]] = [
     # --- Audio ---
@@ -47,7 +48,12 @@ _COMMANDS: list[dict[str, str]] = [
     # --- Keyboard ---
     {"id": "ctrl_c", "group": "keys", "token": "Ctrl+C", "sort": "ctrl+c"},
     {"id": "ctrl_q", "group": "keys", "token": "Ctrl+Q", "sort": "ctrl+q"},
-    {"id": "ctrl_shift_c", "group": "keys", "token": "Ctrl+Shift+C", "sort": "ctrl+shift+c"},
+    {
+        "id": "ctrl_shift_c",
+        "group": "keys",
+        "token": "Ctrl+Shift+C",
+        "sort": "ctrl+shift+c",
+    },
     {"id": "f1", "group": "keys", "token": "F1", "sort": "f1"},
     {"id": "f2", "group": "keys", "token": "F2", "sort": "f2"},
     {"id": "f3", "group": "keys", "token": "F3", "sort": "f3"},
@@ -92,7 +98,12 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "pc_last", "group": "session", "token": "pc last", "sort": "pc-last"},
     {"id": "pc_off", "group": "session", "token": "pc off", "sort": "pc-off"},
     {"id": "pc_on", "group": "session", "token": "pc on", "sort": "pc-on"},
-    {"id": "pc_restore", "group": "session", "token": "pc restore", "sort": "pc-restore"},
+    {
+        "id": "pc_restore",
+        "group": "session",
+        "token": "pc restore",
+        "sort": "pc-restore",
+    },
     {"id": "pc_undo", "group": "session", "token": "pc undo", "sort": "pc-undo"},
     {"id": "q", "group": "session", "token": "q", "sort": "q"},
     {"id": "u", "group": "session", "token": "u", "sort": "u"},
