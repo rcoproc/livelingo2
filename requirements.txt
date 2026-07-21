@@ -8,11 +8,17 @@
 faster-whisper==1.1.1
 
 # --- Translation (free Google endpoint, no API key) ---
+# 1.11.4 is latest legitimate release. PYSEC-2022-252 is a historical PyPI
+# account-takeover advisory with no fixed version; ignore in audit (see
+# scripts/check_deps_security.py KNOWN_FALSE_POSITIVES).
 deep-translator==1.11.4
 
 # --- HTTP client for the optional Groq LLM translation (free API key) ---
 # (also pulled in by deep-translator, declared here because we import it directly)
-requests>=2.31,<3
+# requests < 2.33.0 → CVE-2026-25645 (predictable temp zip extract path)
+requests>=2.33.0,<3
+# urllib3 is pulled by requests; pin floor for known CVEs (DoS/decompress chain)
+urllib3>=2.7.0,<3
 
 # --- Text-to-speech (Microsoft Edge voices, free, needs internet) ---
 # Use 7.x: Microsoft's endpoint now requires a time-based "Sec-MS-GEC" token.
@@ -32,7 +38,8 @@ soundfile==0.12.1
 numpy>=1.26,<3
 
 # --- Config from .env ---
-python-dotenv==1.0.1
+# >= 1.2.2 → CVE-2026-28684 (symlink follow in set_key/unset_key)
+python-dotenv>=1.2.2,<2
 
 # --- Colored terminal output on Windows ---
 colorama==0.4.6

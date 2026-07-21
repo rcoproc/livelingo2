@@ -1,0 +1,4 @@
+# Dev / CI test dependencies (not required to run LiveLingo)
+-r requirements.txt
+pytest>=8.0,<9
+pip-audit>=2.7

@@ -1,6 +1,6 @@
-# 🎙️ LiveLingo — Tradução de Voz em Tempo Real para Windows
+# 🎙️ LiveLingo2 — Tradução de Voz em Tempo Real para Windows
 
-**LiveLingo** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
+**LiveLingo2** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
 
 Além da tradução em tempo real, o projeto evoluiu para uma **ferramenta de reuniões multilíngues** com histórico persistente por sessão, comandos interativos no terminal, exportação de transcrições com resumo executivo por IA e auxiliar de vocabulário.
 
@@ -324,7 +324,7 @@ PIPER_MERGE_TAIL=true
 |-----------|------------|
 | **Windows 10/11** | O tool usa APIs de áudio do Windows (MME via PortAudio). WSL/Linux via `livelingo.sh`. |
 | **Python 3.10+** | 3.10 – 3.12 recomendado. Verifique com `python --version`. |
-| **VB-CABLE** | Cabo de áudio virtual gratuito. Download: **https://vb-audio.com/Cable/** |
+| **VB-CABLE** | Cabo de áudio virtual gratuito. Download: **<https://vb-audio.com/Cable/>** |
 | **Internet** | Necessária para tradução; TTS edge/hybrid no 1º chunk; opcional se usar só Piper + STT local (tradução Google ainda precisa de rede). |
 
 ### Instalar VB-CABLE
@@ -356,6 +356,53 @@ pip install -r requirements.txt
 ```
 
 > Com o motor STT **local**, a primeira execução baixa o modelo Whisper (`small` ≈ 0,5 GB, `medium` ≈ 1,5 GB) em `~/.cache/huggingface` — automático, aguarde uma vez. Com o motor **Groq** (recomendado), nenhum download é necessário.
+
+### Segurança de dependências (produção)
+
+O LiveLingo acompanha o **OWASP Top 10 A06** (*Vulnerable and Outdated Components*)
+para as deps Python em [`requirements.txt`](requirements.txt).
+
+**Pisos de segurança** (não faça downgrade):
+
+| Pacote | Mínimo | Motivo |
+|--------|--------|--------|
+| `python-dotenv` | **≥ 1.2.2** | CVE-2026-28684 (symlink em `set_key` / `unset_key`) |
+| `requests` | **≥ 2.33.0** | CVE-2026-25645 (caminho temporário previsível na extração zip) |
+| `urllib3` | **≥ 2.7.0** | Piso transitivo para advisories de decompress / DoS |
+
+`deep-translator==1.11.4` é a última release legítima. O advisory
+**PYSEC-2022-252** é *histórico* (tomada de conta no PyPI) e **não tem versão
+corrigida**; os pacotes maliciosos foram removidos. O script de auditoria
+coloca isso em allowlist (`KNOWN_FALSE_POSITIVES` no checker).
+
+**Auditoria + testes antes de subir em produção:**
+
+```powershell
+# deps de runtime
+pip install -r requirements.txt
+
+# opcional: pytest + pip-audit
+pip install -r requirements-dev.txt
+
+# testes unitários (pisos de segurança, mocks de translate/LLM/STT, smoke de import)
+python -m pytest tests/ -v
+
+# scan de CVE / desatualizados (deps do projeto; EXIT 0 = sem vulns acionáveis)
+python scripts/check_deps_security.py --project-only
+```
+
+Flags úteis do script de segurança:
+
+| Flag | Significado |
+|------|-------------|
+| `--project-only` | Só pacotes do `requirements.txt` (+ pisos de segurança) |
+| `--fail-on any` | Sai com erro se houver **qualquer** vuln **ou** pacote desatualizado |
+| `--json report.json` | Relatório completo em JSON |
+| `--ignore-vuln ID` | Ignora advisory extra (CVE / PYSEC / GHSA) |
+| `--no-default-ignores` | Desliga a allowlist histórica embutida |
+
+Módulos de áudio que dependem de PortAudio podem ser **pulados** em CI headless/WSL;
+isso não impede os testes de piso de segurança nem os mocks do pipeline.
 
 ### Scripts de atalho
 
@@ -447,12 +494,14 @@ Outros ajustes:
 
 Por padrão usa Google Translate. Para resultados **muito mais naturais** (o LLM corrige o STT imperfeito *e* traduz num passo), configure uma **key Groq gratuita**:
 
-1. Acesse **https://console.groq.com/keys** → cadastre-se (sem cartão).
+1. Acesse **<https://console.groq.com/keys>** → cadastre-se (sem cartão).
 2. Crie uma key (começa com `gsk_…`) e copie.
 3. Coloque no `.env`:
+
    ```
    GROQ_API_KEY=gsk_sua_key_aqui
    ```
+
 4. Execute `python main.py` — verá `LLM translation ready (Groq / …)` e um self-test rápido.
 
 > **Privacidade:** com STT Groq, o **áudio** é enviado para transcrição; com LLM, o **texto** reconhecido é enviado para tradução. Para manter áudio 100% local, `STT_ENGINE=local`. Sem key, STT roda local e só Google Translate é usado.
@@ -605,7 +654,11 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 ├── main.py                # ponto de entrada — sessões, comandos, pipeline
 ├── config.py              # configurações (sobrescrevíveis via .env)
 ├── list_devices.py        # lista dispositivos de áudio + índices
-├── requirements.txt       # dependências fixadas
+├── requirements.txt       # deps de runtime (pisos de segurança acima)
+├── requirements-dev.txt   # pytest + pip-audit (CI / pré-deploy)
+├── scripts/
+│   └── check_deps_security.py  # auditoria OWASP A06 (CVE + outdated)
+├── tests/                 # testes unitários (pisos, mocks, smoke)
 ├── .env.example           # copie para .env
 ├── livelingo.db           # banco SQLite (sessões, chunks, favoritos)
 ├── livelingo.bat          # atalho Windows
@@ -634,8 +687,9 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 
 ```text
 faster-whisper, deep-translator, edge-tts, piper-tts, onnxruntime,
-sounddevice, soundfile, numpy, python-dotenv, colorama, requests,
-nltk (sinônimos WordNet), pycaw + comtypes (Windows, mute [n])
+sounddevice, soundfile, numpy, python-dotenv (≥1.2.2), colorama,
+requests (≥2.33), urllib3 (≥2.7), nltk (sinônimos WordNet),
+pycaw + comtypes (Windows, mute [n])
 ```
 
 (`piper-tts` e `onnxruntime` só são necessários com `TTS_ENGINE=piper` ou `hybrid`.  
@@ -659,3 +713,4 @@ nltk (sinônimos WordNet), pycaw + comtypes (Windows, mute [n])
 O LiveLingo é adequado para **reuniões internacionais**, entrevistas, aulas ou qualquer cenário em que você precise falar num idioma e os outros ouvirem em outro — com registro persistente, edição pós-fala, favoritos e exportação com resumo executivo automático.
 
 Para a documentação em inglês, consulte [`README.md`](README.md).
+

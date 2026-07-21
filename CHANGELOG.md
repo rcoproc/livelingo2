@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+### Security
+
+- Bumped `python-dotenv` to **≥1.2.2** (CVE-2026-28684 symlink rewrite).
+- Bumped `requests` to **≥2.33.0** (CVE-2026-25645 temp zip extract path).
+- Pinned transitive `urllib3` floor **≥2.7.0** (decompress / DoS advisories).
+- Added `scripts/check_deps_security.py` (OWASP A06 / pip-audit + outdated).
+- Added unit tests under `tests/` (security floors, translate/LLM/STT mocks, import smoke).
+
 ### Added
 
 #### Windows LiveCaptions (inbound)
