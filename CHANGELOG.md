@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 ### Added
 
 - **`cls1` / `cls2`** — clear one Tradução column: `cls1` = left LiveCaptions (LC), `cls2` = right VOZ; `cls` still clears LC + VOZ + Sistema. Documented in menu, command-help tab (EN/pt), and READMEs.
+- **GitHub Actions CI** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml): on push to `main`/`master` and on PRs, runs dependency security (`check_deps_security.py --project-only --fail-on vuln`) + `pytest` on Python **3.10** and **3.12**. README badges (EN/pt-BR): live CI status, Python, tests, security, MIT license.
 
 ### Security
 
