@@ -8,6 +8,7 @@ colors work on every Windows console (legacy conhost included).
 import os
 import sys
 import threading
+
 from colorama import Fore, Style, init
 
 # autoreset=True -> every print resets the color automatically afterwards.
@@ -455,9 +456,7 @@ def banner(indent=3):
             + "        L I V E L I N G O   \U0001f399️  ->  \U0001f30d"
         )
         print(
-            pad
-            + Fore.CYAN
-            + "        Real-time speech translation into a virtual mic"
+            pad + Fore.CYAN + "        Real-time speech translation into a virtual mic"
         )
         print(
             pad
@@ -473,14 +472,7 @@ def info(msg, indent=0, panel="main"):
         # TUI sink must get the same left margin as classic prints.
         if _emit("info", _pad(indent) + text, panel=panel):
             return
-        print(
-            "\r\033[K"
-            + _pad(indent)
-            + Fore.CYAN
-            + "[i] "
-            + Style.RESET_ALL
-            + text
-        )
+        print("\r\033[K" + _pad(indent) + Fore.CYAN + "[i] " + Style.RESET_ALL + text)
 
 
 def success(msg, indent=0, panel="main"):
@@ -488,14 +480,7 @@ def success(msg, indent=0, panel="main"):
     with _print_lock:
         if _emit("success", _pad(indent) + text, panel=panel):
             return
-        print(
-            "\r\033[K"
-            + _pad(indent)
-            + Fore.GREEN
-            + "[ok] "
-            + Style.RESET_ALL
-            + text
-        )
+        print("\r\033[K" + _pad(indent) + Fore.GREEN + "[ok] " + Style.RESET_ALL + text)
 
 
 def warn(msg, indent=0, panel="main"):
@@ -503,14 +488,7 @@ def warn(msg, indent=0, panel="main"):
     with _print_lock:
         if _emit("warn", _pad(indent) + text, panel=panel):
             return
-        print(
-            "\r\033[K"
-            + _pad(indent)
-            + Fore.YELLOW
-            + "[!] "
-            + Style.RESET_ALL
-            + text
-        )
+        print("\r\033[K" + _pad(indent) + Fore.YELLOW + "[!] " + Style.RESET_ALL + text)
 
 
 def error(msg, indent=0, panel="main"):
@@ -538,13 +516,7 @@ def dim(msg, indent=0, panel="main"):
     with _print_lock:
         if _emit("dim", _pad(indent) + text, panel=panel):
             return
-        print(
-            "\r\033[K"
-            + _pad(indent)
-            + Style.DIM
-            + text
-            + Style.RESET_ALL
-        )
+        print("\r\033[K" + _pad(indent) + Style.DIM + text + Style.RESET_ALL)
 
 
 def raw(msg, indent=0, panel="main"):
@@ -562,9 +534,9 @@ _LISTEN_LOG_MIN_GAP = 0.9  # seconds between identical spam lines
 
 # High-res clocks for stage timing (compare latency across pipeline steps).
 _progress_timing = {
-    "listen_mono": None,   # perf_counter at last "Escutando" start
-    "listen_wall": None,   # HH:MM:SS.ffffff at that start
-    "last_mono": None,     # perf_counter of previous stage line
+    "listen_mono": None,  # perf_counter at last "Escutando" start
+    "listen_wall": None,  # HH:MM:SS.ffffff at that start
+    "last_mono": None,  # perf_counter of previous stage line
 }
 
 
@@ -776,9 +748,7 @@ def _cache_badge(from_cache=None):
     return ""
 
 
-def _emit_voz_chunk_block(
-    n, heard, translated, *, from_cache=None, blank_after=True
-):
+def _emit_voz_chunk_block(n, heard, translated, *, from_cache=None, blank_after=True):
     """
     Emit a VOZ (mic) chunk on the **right rail**.
 
@@ -811,22 +781,14 @@ def _emit_voz_chunk_block(
             e = _rich_escape
             if from_cache is True:
                 # Magenta — easy to spot HIT on Tradução tab
-                tgt_lab_rich = (
-                    f"[bold blue]{e(tgt_l)} [/]"
-                    f"[bold magenta]{e(badge)}: [/]"
-                )
+                tgt_lab_rich = f"[bold blue]{e(tgt_l)} [/][bold magenta]{e(badge)}: [/]"
             elif from_cache is False:
                 # Cyan — live Google/LLM
-                tgt_lab_rich = (
-                    f"[bold blue]{e(tgt_l)} [/]"
-                    f"[bold cyan]{e(badge)}: [/]"
-                )
+                tgt_lab_rich = f"[bold blue]{e(tgt_l)} [/][bold cyan]{e(badge)}: [/]"
             else:
                 tgt_lab_rich = f"[bold blue]{e(tgt_plain)}[/]"
             # 1) SOURCE (heard) — green
-            for i, line in enumerate(
-                _wrap_labeled_body(lab_src, heard, right_w)
-            ):
+            for i, line in enumerate(_wrap_labeled_body(lab_src, heard, right_w)):
                 if i == 0:
                     _emit(
                         "rich",
@@ -841,9 +803,7 @@ def _emit_voz_chunk_block(
                         f"{head}{ind_src}[green]{e(line)}[/]",
                     )
             # 2) TARGET (translated) — white + optional CACHE/LIVE
-            for i, line in enumerate(
-                _wrap_labeled_body(lab_tgt, translated, right_w)
-            ):
+            for i, line in enumerate(_wrap_labeled_body(lab_tgt, translated, right_w)):
                 if i == 0:
                     _emit(
                         "rich",
@@ -884,18 +844,9 @@ def _emit_voz_chunk_block(
                     + Style.RESET_ALL
                 )
             else:
-                print(
-                    "\r\033[K"
-                    + head
-                    + ind_src
-                    + Fore.GREEN
-                    + line
-                    + Style.RESET_ALL
-                )
+                print("\r\033[K" + head + ind_src + Fore.GREEN + line + Style.RESET_ALL)
         # 2) TARGET (translated)
-        for i, line in enumerate(
-            _wrap_labeled_body(lab_tgt, translated, right_w)
-        ):
+        for i, line in enumerate(_wrap_labeled_body(lab_tgt, translated, right_w)):
             if i == 0:
                 if badge:
                     tgt_part = (
@@ -907,12 +858,7 @@ def _emit_voz_chunk_block(
                         + Style.RESET_ALL
                     )
                 else:
-                    tgt_part = (
-                        Fore.BLUE
-                        + Style.BRIGHT
-                        + f"{tgt_l}: "
-                        + Style.RESET_ALL
-                    )
+                    tgt_part = Fore.BLUE + Style.BRIGHT + f"{tgt_l}: " + Style.RESET_ALL
                 print(
                     "\r\033[K"
                     + head
@@ -923,14 +869,7 @@ def _emit_voz_chunk_block(
                     + Style.RESET_ALL
                 )
             else:
-                print(
-                    "\r\033[K"
-                    + head
-                    + ind_tgt
-                    + Fore.WHITE
-                    + line
-                    + Style.RESET_ALL
-                )
+                print("\r\033[K" + head + ind_tgt + Fore.WHITE + line + Style.RESET_ALL)
         if blank_after:
             print()
 
@@ -999,18 +938,8 @@ def _emit_voz_meta_lines(n, lines, *, style="dim", panel="main", nowrap=False):
                     else:
                         _emit("dim", f"{head}{piece}", panel=panel)
                 else:
-                    col = (
-                        Fore.YELLOW + Style.BRIGHT
-                        if style == "yellow"
-                        else Style.DIM
-                    )
-                    print(
-                        "\r\033[K"
-                        + head
-                        + col
-                        + piece
-                        + Style.RESET_ALL
-                    )
+                    col = Fore.YELLOW + Style.BRIGHT if style == "yellow" else Style.DIM
+                    print("\r\033[K" + head + col + piece + Style.RESET_ALL)
 
 
 def chunk_status(n, heard, translated, timings, finalize=False, at=None):
@@ -1022,9 +951,7 @@ def chunk_status(n, heard, translated, timings, finalize=False, at=None):
     _emit_voz_chunk_block(n, heard, translated, blank_after=False)
     # Blank where timing would sit on Tradução
     _emit_chunk_blank()
-    timing = format_timing_line(
-        timings or {}, at=None, include_clock=False
-    )
+    timing = format_timing_line(timings or {}, at=None, include_clock=False)
     meta = []
     if timing:
         meta.append(timing)
@@ -1138,13 +1065,7 @@ def live_caption_block(n, original, translated, from_cache=None):
         else:
             col = Fore.CYAN + Style.BRIGHT
         print(
-            "\r\033[K"
-            + indent
-            + col
-            + tlab
-            + Style.RESET_ALL
-            + Fore.WHITE
-            + translated
+            "\r\033[K" + indent + col + tlab + Style.RESET_ALL + Fore.WHITE + translated
         )
         print()
 
@@ -1453,7 +1374,9 @@ def format_timing_line(timings, extra=None, at=None, include_clock=True):
     return line
 
 
-def chunk_timings(n, timings, extra=None, at=None, audio_path=None, audio_pending=False):
+def chunk_timings(
+    n, timings, extra=None, at=None, audio_path=None, audio_pending=False
+):
     """
     Meta under a live VOZ chunk:
 
@@ -1468,9 +1391,7 @@ def chunk_timings(n, timings, extra=None, at=None, audio_path=None, audio_pendin
         gravado: YYYY-MM-DD …
     """
     # Timing body without clock; extra as its own line (clearer on Sistema)
-    timing = format_timing_line(
-        timings, extra=None, at=None, include_clock=False
-    )
+    timing = format_timing_line(timings, extra=None, at=None, include_clock=False)
     meta = []
     if timing:
         meta.append(timing)
@@ -1643,9 +1564,7 @@ def _synonym_md_to_rich(line: str) -> str:
     # Numbered section header: 1. **Significado e Uso**:
     m = re.match(r"^(\d+\.\s*)\*\*(.+?)\*\*(\s*:?\s*)$", s)
     if m:
-        return (
-            f"[bold magenta]{e(m.group(1))}{e(m.group(2))}{e(m.group(3))}[/]"
-        )
+        return f"[bold magenta]{e(m.group(1))}{e(m.group(2))}{e(m.group(3))}[/]"
 
     # Bullet with bold label: - **Frase em Inglês**: rest
     m = re.match(r"^(\s*[-•]\s*)\*\*(.+?)\*\*(\s*:?\s*)(.*)$", s)
@@ -1764,8 +1683,7 @@ def synonyms_result(word, text):
             w_esc = _rich_escape((word or "").upper())
             _emit(
                 "rich",
-                f"{pad}[bold cyan]  ★ Sinônimos / Meaning: [/]"
-                f"[bold yellow]{w_esc}[/]",
+                f"{pad}[bold cyan]  ★ Sinônimos / Meaning: [/][bold yellow]{w_esc}[/]",
             )
             _emit("rich", f"{pad}[bold cyan]{rule}[/]")
             _emit("raw", "")

@@ -62,8 +62,8 @@ def _get_bool(name, default):
 # Languages
 # --------------------------------------------------------------------------- #
 # Source language you speak, target language you want others to hear.
-SOURCE_LANG = _get_str("SOURCE_LANG", "fr")   # French
-TARGET_LANG = _get_str("TARGET_LANG", "en")   # English
+SOURCE_LANG = _get_str("SOURCE_LANG", "fr")  # French
+TARGET_LANG = _get_str("TARGET_LANG", "en")  # English
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +203,7 @@ TTS_VOICE = _get_str("TTS_VOICE", "en-US-AriaNeural")
 # After swap, TTS_VOICE ↔ TTS_VOICE_ALT. Empty = pick a default elegant Edge voice
 # for SOURCE_LANG (the language that becomes the new target).
 TTS_VOICE_ALT = _get_str("TTS_VOICE_ALT", "")
-TTS_RATE = _get_str("TTS_RATE", "+0%")      # e.g. "+10%" faster, "-10%" slower
+TTS_RATE = _get_str("TTS_RATE", "+0%")  # e.g. "+10%" faster, "-10%" slower
 TTS_VOLUME = _get_str("TTS_VOLUME", "+0%")  # e.g. "+20%" louder
 
 # Piper (local TTS) — used when TTS_ENGINE=piper

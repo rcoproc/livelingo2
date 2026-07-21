@@ -30,10 +30,19 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.selection import Selection
-from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedContent, TabPane
-# Click events on Static bypass badge (#cmd-bypass)
+from textual.widgets import (
+    Footer,
+    Header,
+    Input,
+    RichLog,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
-from . import command_help, ui as ui_mod
+# Click events on Static bypass badge (#cmd-bypass)
+from . import command_help
+from . import ui as ui_mod
 
 
 # --------------------------------------------------------------------------- #
@@ -142,6 +151,7 @@ class MicMutedModal(ModalScreen[str]):
             event.prevent_default()
             event.stop()
             self.action_unmute()
+
 
 # Strip ANSI for log cleanliness when proxying print()
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -314,7 +324,9 @@ def _powershell_exe() -> list[str]:
     for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
         out.append(name)
     windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
-    out.append(os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+    out.append(
+        os.path.join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    )
     out.append(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
     # WSL mounts of the Windows host
     for letter in "cdefgh":
@@ -363,9 +375,9 @@ def _clipboard_set_image(path: str) -> bool:
     )
     for ps_bin in _powershell_exe():
         # Skip non-existent absolute paths (WSL candidates)
-        if (ps_bin.startswith("/") or (len(ps_bin) > 2 and ps_bin[1] == ":")) and not os.path.isfile(
-            ps_bin
-        ):
+        if (
+            ps_bin.startswith("/") or (len(ps_bin) > 2 and ps_bin[1] == ":")
+        ) and not os.path.isfile(ps_bin):
             continue
         for args in (
             [ps_bin, "-STA", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -893,13 +905,11 @@ class SelectableRichLog(RichLog):
             return TStrip.blank(width, self.rich_style)
 
         selection = self.text_selection
-        has_sel = (
-            selection is not None
-            and not (selection.start is None and selection.end is None)
+        has_sel = selection is not None and not (
+            selection.start is None and selection.end is None
         )
         has_search = bool(
-            (self._search_query or "").strip()
-            and y in (self._search_hit_ys or set())
+            (self._search_query or "").strip() and y in (self._search_hit_ys or set())
         )
 
         if not has_sel and not has_search:
@@ -922,17 +932,13 @@ class SelectableRichLog(RichLog):
                             "screen--selection"
                         )
                     except Exception:
-                        sel_style = Style(
-                            bgcolor="#f0d78c", color="#1a1b26", bold=True
-                        )
+                        sel_style = Style(bgcolor="#f0d78c", color="#1a1b26", bold=True)
                     if sel_style.bgcolor is not None and (
                         sel_style.color is None
                         or str(sel_style.bgcolor).lower()
                         in ("#0000af", "#000080", "blue", "navy", "#0a2540")
                     ):
-                        sel_style = Style(
-                            bgcolor="#f0d78c", color="#1a1b26", bold=True
-                        )
+                        sel_style = Style(bgcolor="#f0d78c", color="#1a1b26", bold=True)
                     start = max(0, min(int(start), len(line_text)))
                     end = max(start, min(int(end), len(line_text)))
                     if end > start:
@@ -941,9 +947,7 @@ class SelectableRichLog(RichLog):
             # 2) /search hits — other matches yellow; current match bright orange
             if has_search:
                 other_style = Style(bgcolor="#f0d78c", color="#1a1b26", bold=True)
-                current_style = Style(
-                    bgcolor="#ff9500", color="#1a1b26", bold=True
-                )
+                current_style = Style(bgcolor="#ff9500", color="#1a1b26", bold=True)
                 is_current = self._search_current_y is not None and int(
                     self._search_current_y
                 ) == int(y)
@@ -1622,7 +1626,10 @@ def _load_changelog_text() -> tuple[str | None, str | None]:
         with open(path, "r", encoding="utf-8") as f:
             return f.read(), None
     except Exception as exc:
-        return None, f"{i18n.get('news_read_error', 'Could not read CHANGELOG.md')}: {exc}"
+        return (
+            None,
+            f"{i18n.get('news_read_error', 'Could not read CHANGELOG.md')}: {exc}",
+        )
 
 
 # Command palette: titles stay English; help text under each option = SOURCE_LANG.
@@ -1707,6 +1714,7 @@ def _palette_help() -> dict:
     base = dict(_PALETTE_HELP_I18N["en"])
     base.update(pack)
     return base
+
 
 # Classic listen-indicator frames (robot idle / mic active).
 _IDLE_FRAMES = (
@@ -2185,9 +2193,7 @@ class LiveLingoApp(App):
         try:
             import config as _cfg
 
-            self._want_minimal_start = bool(
-                getattr(_cfg, "TUI_MINIMAL", False)
-            )
+            self._want_minimal_start = bool(getattr(_cfg, "TUI_MINIMAL", False))
         except Exception:
             self._want_minimal_start = False
         self._saved_window_geom: dict | None = None
@@ -2216,13 +2222,9 @@ class LiveLingoApp(App):
         except Exception:
             has_help = False
         if has_help:
-            yield SystemCommand(
-                "Keys", h["keys_hide"], self.action_hide_help_panel
-            )
+            yield SystemCommand("Keys", h["keys_hide"], self.action_hide_help_panel)
         else:
-            yield SystemCommand(
-                "Keys", h["keys_show"], self.action_show_help_panel
-            )
+            yield SystemCommand("Keys", h["keys_show"], self.action_show_help_panel)
 
         try:
             maximized = screen.maximized is not None
@@ -2234,13 +2236,9 @@ class LiveLingoApp(App):
             maximized = False
             allow_max = False
         if maximized:
-            yield SystemCommand(
-                "Minimize", h["minimize"], screen.action_minimize
-            )
+            yield SystemCommand("Minimize", h["minimize"], screen.action_minimize)
         elif allow_max:
-            yield SystemCommand(
-                "Maximize", h["maximize"], screen.action_maximize
-            )
+            yield SystemCommand("Maximize", h["maximize"], screen.action_maximize)
 
         yield SystemCommand(
             "Screenshot",
@@ -2423,9 +2421,7 @@ class LiveLingoApp(App):
             "busca: [bold]/texto[/] · [bold]/n[/]/[bold]/p[/] "
             "(ou [bold]find texto[/])  ·  abas: F3 cicla"
         )
-        log.write(
-            "[dim]Dica: Windows Terminal recomendado. Sair: Ctrl+Q ou [q].[/]"
-        )
+        log.write("[dim]Dica: Windows Terminal recomendado. Sair: Ctrl+Q ou [q].[/]")
         log.write(
             "[bold magenta]Live Captions[/] — faixa = ao vivo (parcial). "
             "Aba Tradução = só frases [bold]estáveis[/] no layout "
@@ -2510,6 +2506,7 @@ class LiveLingoApp(App):
             err = "CaptionService não iniciado"
             try:
                 import config as cfg
+
                 from .livecaptions import is_windows
 
                 if not getattr(cfg, "LIVE_CAPTIONS_ENABLED", True):
@@ -2580,8 +2577,9 @@ class LiveLingoApp(App):
         tgt_l = (d.get("caption_target_lang") or "").upper()
         if not src_l or not tgt_l:
             try:
-                from .livecaptions import caption_lang_pair
                 import config as cfg
+
+                from .livecaptions import caption_lang_pair
 
                 s, t = caption_lang_pair(cfg)
                 src_l, tgt_l = s.upper(), t.upper()
@@ -2633,15 +2631,11 @@ class LiveLingoApp(App):
         except Exception:
             pass
         try:
-            self.query_one("#caption-src", Static).update(
-                f"{src_l}  {_clip(src_show)}"
-            )
+            self.query_one("#caption-src", Static).update(f"{src_l}  {_clip(src_show)}")
         except Exception:
             pass
         try:
-            self.query_one("#caption-tgt", Static).update(
-                f"{tgt_l}  {_clip(tgt_show)}"
-            )
+            self.query_one("#caption-tgt", Static).update(f"{tgt_l}  {_clip(tgt_show)}")
         except Exception:
             pass
         disp_status = "paused" if paused else status
@@ -2663,9 +2657,7 @@ class LiveLingoApp(App):
                 return
             with open(_CMD_HISTORY_PATH, "r", encoding="utf-8", errors="replace") as f:
                 lines = [ln.rstrip("\n\r") for ln in f.readlines()]
-            self._cmd_history = [
-                ln for ln in lines if ln.strip()
-            ][-_CMD_HISTORY_MAX:]
+            self._cmd_history = [ln for ln in lines if ln.strip()][-_CMD_HISTORY_MAX:]
         except Exception:
             self._cmd_history = []
         self._cmd_history_i = -1
@@ -3049,8 +3041,7 @@ class LiveLingoApp(App):
             and has_text
         ) or (status == "translating")
         active = (
-            status not in ("disabled", "error", "idle", "")
-            or has_text
+            status not in ("disabled", "error", "idle", "") or has_text
         ) and status != "disabled"
         # Show LC chip whenever captions service is live/usable
         if status in ("disabled",):
@@ -3078,9 +3069,7 @@ class LiveLingoApp(App):
         t = _footer_i18n()
         # Special modes
         if self._passthrough:
-            markup = (
-                f"[bold #2d9a4e]● {t.get('pipe_bypass', 'BYPASS→Out')}[/]"
-            )
+            markup = f"[bold #2d9a4e]● {t.get('pipe_bypass', 'BYPASS→Out')}[/]"
             self._update_pipe_widget(bar, markup, busy=True, lc=False, force=force)
             return
         if self._mic_muted and self._pipe_stage in ("idle", "mic"):
@@ -3100,9 +3089,7 @@ class LiveLingoApp(App):
 
         stage = self._pipe_stage if self._pipe_stage in self._PIPE_ORDER else "idle"
         # idle → highlight mic as "ready to listen" (soft)
-        active_idx = (
-            self._PIPE_ORDER.index(stage) if stage in self._PIPE_ORDER else -1
-        )
+        active_idx = self._PIPE_ORDER.index(stage) if stage in self._PIPE_ORDER else -1
         # Pulse glyph for the active step
         pulse_on = (self._frame_i % 2) == 0
         active_dot = "●" if pulse_on else "◉"
@@ -3162,8 +3149,7 @@ class LiveLingoApp(App):
             if self._pipe_lc_busy:
                 lc_pulse = "●" if pulse_on else "◉"
                 markup += (
-                    f" [dim]│[/] [bold #e040fb]{lc_pulse}"
-                    f"{t.get('pipe_lc', 'LC')}[/]"
+                    f" [dim]│[/] [bold #e040fb]{lc_pulse}{t.get('pipe_lc', 'LC')}[/]"
                 )
             else:
                 markup += f" [dim]│ {t.get('pipe_lc', 'LC')}[/]"
@@ -3371,8 +3357,7 @@ class LiveLingoApp(App):
                 else:
                     self.post_log(
                         "success",
-                        f"Mic LIVE (app gate): '{mic_name}'. "
-                        f"Escuta ativa retomada.",
+                        f"Mic LIVE (app gate): '{mic_name}'. Escuta ativa retomada.",
                     )
                 try:
                     self.post_log("raw", "")
@@ -3528,9 +3513,7 @@ class LiveLingoApp(App):
         """Update Novidades + Command list tab titles for current SOURCE_LANG."""
         i18n = _footer_i18n()
         lang = _source_lang_code()
-        self._set_tab_label(
-            "#tab-news", i18n.get("tab_news", "What's New")
-        )
+        self._set_tab_label("#tab-news", i18n.get("tab_news", "What's New"))
         self._set_tab_label(
             "#tab-cmds",
             i18n.get("tab_commands", command_help.tab_title(lang)),
@@ -3560,7 +3543,9 @@ class LiveLingoApp(App):
         text, err = _load_changelog_text()
         if err or not text:
             try:
-                log.write(f"[yellow]{err or i18n.get('news_missing', 'CHANGELOG.md not found.')}[/]")
+                log.write(
+                    f"[yellow]{err or i18n.get('news_missing', 'CHANGELOG.md not found.')}[/]"
+                )
             except Exception:
                 pass
             return
@@ -3629,7 +3614,10 @@ class LiveLingoApp(App):
     def clear_log(self) -> None:
         """Clear both log panels (command [cls]). Must run on UI thread."""
         for log_id, note in (
-            ("#log", "[dim]Log limpo — [l] histórico · [lo] source · [lt] target · F3 Sistema[/]"),
+            (
+                "#log",
+                "[dim]Log limpo — [l] histórico · [lo] source · [lt] target · F3 Sistema[/]",
+            ),
             (
                 "#log-app",
                 "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
@@ -4146,11 +4134,17 @@ class LiveLingoApp(App):
             except Exception:
                 avail = 0
         if avail < 48:
-            avail = int(getattr(self, "_cached_log_width", 0) or 0) or _terminal_log_width(100)
+            avail = int(
+                getattr(self, "_cached_log_width", 0) or 0
+            ) or _terminal_log_width(100)
         avail = max(48, avail - 2)  # CSS padding 0 1
 
         # Group label column — wide enough for "Frase"/"Sentence"/"Audio"/…
-        labels = [t.get("sentence", "Sentence"), t.get("audio", "Audio"), t.get("idiom", "Idiom")]
+        labels = [
+            t.get("sentence", "Sentence"),
+            t.get("audio", "Audio"),
+            t.get("idiom", "Idiom"),
+        ]
         lw = max(8, min(12, max(len(s or "") for s in labels) + 1))
         gap = "  "  # space between command cells (readable, not cramped)
         body_budget = max(24, avail - lw)
@@ -4194,9 +4188,7 @@ class LiveLingoApp(App):
             for i, chunk in enumerate(packed):
                 cells = gap.join(esc_cmd(it) for it in chunk)
                 if i == 0:
-                    rows_out.append(
-                        f"[bold magenta]{lab_plain(label)}[/]{cells}"
-                    )
+                    rows_out.append(f"[bold magenta]{lab_plain(label)}[/]{cells}")
                 else:
                     rows_out.append(f"{lab_plain('')}{cells}")
             return rows_out
@@ -4302,7 +4294,9 @@ class LiveLingoApp(App):
         try:
             badge.update(text)
             try:
-                badge.tooltip = f"TTS_VOICE atual\nTrocar: ctts <nome>\nLista: lav / lv\n{voice}"
+                badge.tooltip = (
+                    f"TTS_VOICE atual\nTrocar: ctts <nome>\nLista: lav / lv\n{voice}"
+                )
             except Exception:
                 pass
         except Exception:
@@ -4382,9 +4376,7 @@ class LiveLingoApp(App):
         tgt_d = _display_lang_code(_tgt_u)
         g_lab, t_lab = ft["g_swap"], ft["t_target"]
         lang_block_short = f"{g_lab} {src_d} → {tgt_d} {t_lab}"
-        lang_block_long = (
-            f"{g_lab} {src_d} ({src_n}) → {tgt_d} ({tgt_n}) {t_lab}"
-        )
+        lang_block_long = f"{g_lab} {src_d} ({src_n}) → {tgt_d} ({tgt_n}) {t_lab}"
         # Subtitle only when the pair string changes (Header updates are costly)
         try:
             new_sub = f"{lang_block_short}  ·  ouvir {src_n} → falar {tgt_n}"
@@ -4408,9 +4400,7 @@ class LiveLingoApp(App):
             return
 
         if self._mic_muted:
-            muted_line = (
-                f"🔇  MIC MUTED   {lang_block_short}   |  escuta pausada  |  [n] reativar"
-            )
+            muted_line = f"🔇  MIC MUTED   {lang_block_short}   |  escuta pausada  |  [n] reativar"
             if getattr(self, "_last_header_line", None) != muted_line:
                 self._last_header_line = muted_line
                 header.update(muted_line)
@@ -4489,7 +4479,11 @@ class LiveLingoApp(App):
                 inp.placeholder = placeholder
         except Exception:
             pass
-        text = prefill if prefill is not None else getattr(self, "_prompt_prefill", "") or ""
+        text = (
+            prefill
+            if prefill is not None
+            else getattr(self, "_prompt_prefill", "") or ""
+        )
         try:
             inp.value = text
             inp.cursor_position = len(text or "")
@@ -4671,8 +4665,10 @@ class LiveLingoApp(App):
                 i -= 1
         else:
             # punctuation / symbols as one "word"
-            while i >= 0 and not text[i].isspace() and not (
-                text[i].isalnum() or text[i] in ("_", "-")
+            while (
+                i >= 0
+                and not text[i].isspace()
+                and not (text[i].isalnum() or text[i] in ("_", "-"))
             ):
                 i -= 1
         return i + 1
@@ -4692,8 +4688,10 @@ class LiveLingoApp(App):
             while i < n and (text[i].isalnum() or text[i] in ("_", "-")):
                 i += 1
         else:
-            while i < n and not text[i].isspace() and not (
-                text[i].isalnum() or text[i] in ("_", "-")
+            while (
+                i < n
+                and not text[i].isspace()
+                and not (text[i].isalnum() or text[i] in ("_", "-"))
             ):
                 i += 1
         return i
@@ -4864,9 +4862,7 @@ class LiveLingoApp(App):
         erase_id = key_name if len(key_name) >= len(key_raw) else key_raw
         if not erase_id:
             erase_id = key_name or key_raw
-        if "backspace" in erase_id or "delete" in erase_id or erase_id in (
-            "ctrl+w",
-        ):
+        if "backspace" in erase_id or "delete" in erase_id or erase_id in ("ctrl+w",):
             if self._handle_cmd_erase_keys(event, erase_id):
                 event.prevent_default()
                 event.stop()
@@ -4894,7 +4890,8 @@ class LiveLingoApp(App):
         if (
             ch is None
             and event.character is None
-            and key_name not in (
+            and key_name
+            not in (
                 "enter",
                 "return",
                 "backspace",
@@ -5053,8 +5050,7 @@ class LiveLingoApp(App):
                     pass
 
             if getattr(self.pipeline, "switch_session", False) or (
-                self.pipeline.stop_event.is_set()
-                and cmd in ("v", "q", "quit")
+                self.pipeline.stop_event.is_set() and cmd in ("v", "q", "quit")
             ):
                 self.call_from_thread(self.exit)
                 return
@@ -5270,13 +5266,17 @@ class LiveLingoApp(App):
         if not (text or "").strip():
             # Fallback: rendered strips (in case plain buffer is empty)
             try:
-                log = self._active_log_widget() or self.query_one("#log", SelectableRichLog)
+                log = self._active_log_widget() or self.query_one(
+                    "#log", SelectableRichLog
+                )
                 text = "\n".join(line.text for line in (log.lines or []))
             except Exception:
                 text = ""
         if not (text or "").strip():
             try:
-                self.notify("Log vazio — nada para copiar", severity="warning", timeout=2)
+                self.notify(
+                    "Log vazio — nada para copiar", severity="warning", timeout=2
+                )
             except Exception:
                 self.post_log("warn", "Log vazio — nada para copiar")
             return

@@ -186,7 +186,9 @@ def should_discard_transcript(audio, text, config=None):
 
     rms = audio_rms(audio)
     words = len(text.split())
-    duration = len(audio) / float(getattr(config, "SAMPLE_RATE", 16000) if config else 16000)
+    duration = len(audio) / float(
+        getattr(config, "SAMPLE_RATE", 16000) if config else 16000
+    )
 
     min_rms = getattr(config, "STT_MIN_RMS", 0.010) if config else 0.010
     max_words = getattr(config, "STT_LOW_ENERGY_MAX_WORDS", 6) if config else 6

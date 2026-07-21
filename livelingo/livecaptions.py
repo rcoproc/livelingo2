@@ -329,8 +329,7 @@ class LiveCaptionsReader:
             raise LiveCaptionsError("LiveCaptions only runs on Windows.")
         if not uia_available():
             raise LiveCaptionsError(
-                "Pacote 'uiautomation' ausente. "
-                "Instale: pip install uiautomation"
+                "Pacote 'uiautomation' ausente. Instale: pip install uiautomation"
             )
         import uiautomation as auto
 
@@ -374,9 +373,7 @@ class LiveCaptionsReader:
         while time.time() < deadline:
             try:
                 # Prefer class name (stable)
-                window = auto.WindowControl(
-                    ClassName=WINDOW_CLASS, searchDepth=1
-                )
+                window = auto.WindowControl(ClassName=WINDOW_CLASS, searchDepth=1)
                 if window.Exists(0, 0):
                     break
                 window = None
@@ -403,8 +400,7 @@ class LiveCaptionsReader:
             time.sleep(0.15)
         else:
             raise LiveCaptionsError(
-                "Falha ao abrir janela LiveCaptions "
-                f"(ClassName={WINDOW_CLASS})."
+                f"Falha ao abrir janela LiveCaptions (ClassName={WINDOW_CLASS})."
             )
 
         self._window = window
@@ -881,7 +877,10 @@ class CaptionService:
                 original_caption = to_translate
                 idle_count = 0
                 grew = bool(prev_cap) and is_same_utterance(prev_cap, to_translate)
-                if _ends_with_eos(to_translate) and _utf8_len(to_translate) >= SHORT_THRESHOLD:
+                if (
+                    _ends_with_eos(to_translate)
+                    and _utf8_len(to_translate) >= SHORT_THRESHOLD
+                ):
                     # EOS may be false mid-stream; still mark as partial if
                     # growing, "final" only if long enough — translate loop
                     # decides commit via stability / new utterance.
@@ -962,10 +961,9 @@ class CaptionService:
             # Skip identical open (already translated)
             if text == self._open_src and kind == "partial":
                 continue
-            if (
-                _normalize_for_match(text) == _normalize_for_match(self._last_logged_src)
-                and kind in ("stable", "final")
-            ):
+            if _normalize_for_match(text) == _normalize_for_match(
+                self._last_logged_src
+            ) and kind in ("stable", "final"):
                 continue
 
             self._emit(original=text, status="translating")
@@ -1024,11 +1022,7 @@ class CaptionService:
 
         cache = self.phrase_cache
         force_live = False
-        if (
-            allow_force
-            and cache is not None
-            and getattr(cache, "enabled", False)
-        ):
+        if allow_force and cache is not None and getattr(cache, "enabled", False):
             try:
                 force_live = bool(cache.consume_force_next())
             except Exception:
@@ -1036,11 +1030,7 @@ class CaptionService:
 
         cache_hit = False
         translated = None
-        if (
-            cache is not None
-            and getattr(cache, "enabled", False)
-            and not force_live
-        ):
+        if cache is not None and getattr(cache, "enabled", False) and not force_live:
             try:
                 cached = cache.lookup(src_lang, tgt_lang, text)
             except Exception:
@@ -1052,7 +1042,7 @@ class CaptionService:
                     self.cfg, "VERBOSE", False
                 ):
                     ui.dim(
-                        f'[LC] cache HIT · {src_lang}→{tgt_lang} · '
+                        f"[LC] cache HIT · {src_lang}→{tgt_lang} · "
                         f'"{text[:48]}" → "{(translated or "")[:48]}"',
                         panel="app",
                     )
@@ -1060,9 +1050,13 @@ class CaptionService:
         if not cache_hit:
             translated = self._do_translate_live(text)
             if (
-                getattr(self.cfg, "PHRASE_CACHE_LOG", True)
-                or getattr(self.cfg, "VERBOSE", False)
-            ) and cache is not None and getattr(cache, "enabled", False):
+                (
+                    getattr(self.cfg, "PHRASE_CACHE_LOG", True)
+                    or getattr(self.cfg, "VERBOSE", False)
+                )
+                and cache is not None
+                and getattr(cache, "enabled", False)
+            ):
                 ui.dim(
                     f"[LC] cache MISS · {src_lang}→{tgt_lang} (store on commit)",
                     panel="app",
@@ -1129,14 +1123,10 @@ class CaptionService:
 
         if pl is not None and hasattr(pl, "_persist_text_only") and sid:
             try:
-                pl._persist_text_only(
-                    chunk_num, original, translated, timing=timing
-                )
+                pl._persist_text_only(chunk_num, original, translated, timing=timing)
                 with getattr(pl, "history_lock", threading.Lock()):
                     if hasattr(pl, "history"):
-                        pl.history.append(
-                            (chunk_num, original, translated, "")
-                        )
+                        pl.history.append((chunk_num, original, translated, ""))
                 return
             except Exception as exc:
                 ui.dim(f"[LC] pipeline persist falhou: {exc}", panel="app")
@@ -1198,9 +1188,7 @@ class CaptionService:
         ):
             try:
                 cap_src, cap_tgt = self._ensure_lang_pair()
-                also_rev = bool(
-                    getattr(self.cfg, "PHRASE_CACHE_LC_ALSO_REVERSE", True)
-                )
+                also_rev = bool(getattr(self.cfg, "PHRASE_CACHE_LC_ALSO_REVERSE", True))
                 from .phrase_cache import normalize_phrase
 
                 ns, nt = normalize_phrase(src), normalize_phrase(tgt)
@@ -1242,9 +1230,7 @@ class CaptionService:
 
         # SQLite session chunk (caption langs in timing_json)
         try:
-            self._persist_to_db(
-                chunk_num, src, tgt, from_cache=from_cache
-            )
+            self._persist_to_db(chunk_num, src, tgt, from_cache=from_cache)
         except Exception as exc:
             ui.dim(f"[LC] persist: {exc}", panel="app")
 
@@ -1256,9 +1242,7 @@ class CaptionService:
             except Exception:
                 try:
                     ui.info(f"[LC {n}] Caption: {src}", indent=0, panel="main")
-                    ui.success(
-                        f"[LC {n}] Translated: {tgt}", indent=0, panel="main"
-                    )
+                    ui.success(f"[LC {n}] Translated: {tgt}", indent=0, panel="main")
                 except Exception:
                     pass
 

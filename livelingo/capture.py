@@ -64,9 +64,7 @@ class Recorder:
             1, int(config.SILENCE_DURATION / config.BLOCK_DURATION)
         )
         # Require sustained energy before "speech started" (laptop noise filter).
-        self.onset_blocks = max(
-            1, int(getattr(config, "VAD_ONSET_BLOCKS", 2) or 2)
-        )
+        self.onset_blocks = max(1, int(getattr(config, "VAD_ONSET_BLOCKS", 2) or 2))
         # Allow brief dips during onset without resetting the counter (soft PT
         # unstressed starts: "está", "vocês", "e", …).
         self.onset_gap_blocks = max(
@@ -78,9 +76,7 @@ class Recorder:
         self.rolling_chunk_frames = int(
             getattr(config, "ROLLING_CHUNK_DURATION", 2.5) * config.SAMPLE_RATE
         )
-        self.rolling_overlap_blocks = max(
-            1, int(0.15 / config.BLOCK_DURATION)
-        )
+        self.rolling_overlap_blocks = max(1, int(0.15 / config.BLOCK_DURATION))
         self.split_overlap_blocks = max(
             1, int(getattr(config, "VAD_SPLIT_OVERLAP", 1.5) / config.BLOCK_DURATION)
         )
@@ -152,9 +148,7 @@ class Recorder:
             base = max(
                 1,
                 int(
-                    float(
-                        getattr(self.cfg, "SOUND_OFF_SILENCE_DURATION", 2.0) or 2.0
-                    )
+                    float(getattr(self.cfg, "SOUND_OFF_SILENCE_DURATION", 2.0) or 2.0)
                     / self.cfg.BLOCK_DURATION
                 ),
             )
@@ -187,9 +181,7 @@ class Recorder:
         speech_sec = total_frames / float(self.sample_rate)
         if speech_sec < 2.5:
             return blocks
-        scale_max = float(
-            getattr(self.cfg, "SENTENCE_SILENCE_SCALE_MAX", 2.5) or 2.5
-        )
+        scale_max = float(getattr(self.cfg, "SENTENCE_SILENCE_SCALE_MAX", 2.5) or 2.5)
         scale_max = max(1.0, min(4.0, scale_max))
         # e.g. 8s speech → factor ≈ 1.5; 20s → ≈ 2.5 (capped)
         factor = min(scale_max, 1.0 + (speech_sec - 2.0) / 12.0)
@@ -366,10 +358,7 @@ class Recorder:
             end_threshold = self._silence_blocks_to_end(total_frames)
             ended = trailing_silence >= end_threshold
             too_long = total_frames >= self.max_chunk_frames
-            rolling = (
-                rolling_enabled
-                and total_frames >= self.rolling_chunk_frames
-            )
+            rolling = rolling_enabled and total_frames >= self.rolling_chunk_frames
             early_silence_need = self._early_split_silence_blocks(total_frames)
             paragraph_split = (
                 self._paragraph_split_active()

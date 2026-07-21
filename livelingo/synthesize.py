@@ -19,7 +19,6 @@ import soundfile as sf
 from .synthesis_error import SynthesisError
 from .tts_segments import split_tts_segments
 
-
 # Elegant defaults when TTS_VOICE_ALT is empty and user swaps languages ([g]).
 DEFAULT_EDGE_VOICE_BY_LANG = {
     "en": "en-US-ChristopherNeural",
@@ -105,9 +104,7 @@ def get_edge_voice_names(force: bool = False, timeout: float = 3.0):
             _EDGE_VOICE_LOAD_ERROR = f"timeout after {timeout}s"
             if _EDGE_VOICE_NAMES is not None:
                 return _EDGE_VOICE_NAMES
-            raise TimeoutError(
-                f"edge-tts list_voices excedeu {timeout}s"
-            ) from None
+            raise TimeoutError(f"edge-tts list_voices excedeu {timeout}s") from None
         _EDGE_VOICE_NAMES = names
         _EDGE_VOICE_LOAD_ERROR = None
         return _EDGE_VOICE_NAMES

@@ -18,27 +18,27 @@ Flow: microphone -> Whisper STT (Groq cloud or local faster-whisper)
 Press Ctrl+C / Ctrl+Q to stop (session id printed on exit for easy resume).
 """
 
+import datetime
 import os
+import re
 import subprocess
 import sys
-import threading
-import datetime
-import re
 import textwrap
-import unicodedata
+import threading
 import time
-from colorama import Fore, Style
+import unicodedata
 
 import numpy as np
+from colorama import Fore, Style
 
 import config as cfg
 from livelingo import db, devices, ui
 from livelingo.groq_transcribe import GroqSTTError, GroqTranscriber
 from livelingo.llm import GROQ_KEY_HELP, LLMError, LLMTranslator
 from livelingo.pipeline import Pipeline
+from livelingo.synonyms import SynonymError, build_synonym_lookup
 from livelingo.synthesize import build_synthesizer
 from livelingo.transcribe import Transcriber
-from livelingo.synonyms import SynonymError, build_synonym_lookup
 from livelingo.translate import Translator
 
 # Left margin (spaces) for startup log + menu/list blocks.
@@ -84,7 +84,7 @@ _LISTEN_STATUS = {
 
 def _listen_status_messages(source_lang=None):
     """Return (idle_msg, active_msg) for the current SOURCE_LANG."""
-    code = (source_lang if source_lang is not None else getattr(cfg, "SOURCE_LANG", "en"))
+    code = source_lang if source_lang is not None else getattr(cfg, "SOURCE_LANG", "en")
     code = (code or "en").lower().strip()
     if "-" in code:
         code = code.split("-", 1)[0]
@@ -376,9 +376,7 @@ class ListeningIndicator:
             pair = f"{src} → {tgt}"
             # Highlighted audio state next to pair (default OFF — enable with [s]).
             if self.sound_on:
-                audio_tag = (
-                    Fore.GREEN + Style.BRIGHT + "🔊 ÁUDIO ON" + Style.RESET_ALL
-                )
+                audio_tag = Fore.GREEN + Style.BRIGHT + "🔊 ÁUDIO ON" + Style.RESET_ALL
             else:
                 audio_tag = (
                     Fore.YELLOW
@@ -389,15 +387,11 @@ class ListeningIndicator:
             if self.is_speaking:
                 frame = active_frames[idx % len(active_frames)]
                 # Pair + audio flag immediately after robot/mic icon block.
-                msg = (
-                    f"\r\033[K{pad}{frame} {pair}  {audio_tag}  {active_msg}"
-                )
+                msg = f"\r\033[K{pad}{frame} {pair}  {audio_tag}  {active_msg}"
                 delay = 0.12
             else:
                 frame = idle_frames[idx % len(idle_frames)]
-                msg = (
-                    f"\r\033[K{pad}{frame} {pair}  {audio_tag}  {idle_msg}"
-                )
+                msg = f"\r\033[K{pad}{frame} {pair}  {audio_tag}  {idle_msg}"
                 delay = 0.25
 
             try:
@@ -448,9 +442,7 @@ def _vad_label():
 
 def _tts_menu_label():
     engine = (getattr(cfg, "TTS_ENGINE", "edge") or "edge").lower()
-    if engine == "hybrid" or (
-        engine == "piper" and getattr(cfg, "TTS_HYBRID", False)
-    ):
+    if engine == "hybrid" or (engine == "piper" and getattr(cfg, "TTS_HYBRID", False)):
         voice = getattr(cfg, "PIPER_VOICE", "") or f"auto:{cfg.TARGET_LANG}"
         return f"hybrid (edge+piper / {voice})"
     if engine == "piper":
@@ -461,8 +453,7 @@ def _tts_menu_label():
 
 def _print_streaming_info(indent=0):
     if not (
-        getattr(cfg, "STREAMING_LLM", False)
-        or getattr(cfg, "STREAMING_TTS", False)
+        getattr(cfg, "STREAMING_LLM", False) or getattr(cfg, "STREAMING_TTS", False)
     ):
         return
     # Leading spaces inside msg align under "[i] " when indent is applied.
@@ -526,11 +517,7 @@ def _print_f1_help(pipeline=None):
     # --- Languages / TTS / Sound / VAD (same format as main() startup) ---
     if pipeline is not None:
         try:
-            sound = (
-                "ON"
-                if pipeline.is_sound_enabled()
-                else "OFF (default)"
-            )
+            sound = "ON" if pipeline.is_sound_enabled() else "OFF (default)"
         except Exception:
             sound = "OFF (default)"
     else:
@@ -1221,7 +1208,9 @@ def _count_content_words(texts):
             key = unicodedata.normalize("NFC", raw.lower())
             # Compare stopwords with and without combining marks for "à".
             key_plain = "".join(
-                c for c in unicodedata.normalize("NFD", key) if not unicodedata.combining(c)
+                c
+                for c in unicodedata.normalize("NFD", key)
+                if not unicodedata.combining(c)
             )
             if key in _WORD_COUNT_STOP or key_plain in _WORD_COUNT_STOP:
                 continue
@@ -1568,14 +1557,19 @@ def _dispatch_phrase_cache_cmd(pipeline, raw_cmd, cmd):
             ui.raw("")
             return
         csv_path = tokens[2]
-        also_reverse = any(t.lower() in ("reverse", "rev", "--also-reverse") for t in tokens[3:])
+        also_reverse = any(
+            t.lower() in ("reverse", "rev", "--also-reverse") for t in tokens[3:]
+        )
         if not os.path.isfile(csv_path):
             # try relative to project root
             alt = os.path.join(os.path.dirname(os.path.abspath(__file__)), csv_path)
             if os.path.isfile(alt):
                 csv_path = alt
         try:
-            from livelingo.import_phrase_csv import format_import_stats, import_phrase_csv
+            from livelingo.import_phrase_csv import (
+                format_import_stats,
+                import_phrase_csv,
+            )
 
             ui.info(f"Importando CSV → phrase cache: {csv_path}", indent=3)
             stats = import_phrase_csv(
@@ -1671,13 +1665,13 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         preview = text if len(text) <= 80 else text[:77] + "…"
         if sound_on:
             ui.success(
-                f"enew: enfileirado — traduz + áudio (sound ON): \"{preview}\"",
+                f'enew: enfileirado — traduz + áudio (sound ON): "{preview}"',
                 indent=3,
             )
         else:
             ui.info(
                 f"enew: enfileirado — só texto (sound OFF; [s] para ouvir): "
-                f"\"{preview}\"",
+                f'"{preview}"',
                 indent=3,
             )
     elif cmd == "e":
@@ -1693,9 +1687,11 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         if not in_tui:
             try:
                 import readline
+
                 def hook():
                     readline.insert_text(last_heard)
                     readline.redisplay()
+
                 readline.set_pre_input_hook(hook)
                 has_readline = True
             except ImportError:
@@ -1748,9 +1744,11 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         if not in_tui:
             try:
                 import readline
+
                 def hook():
                     readline.insert_text(last_heard)
                     readline.redisplay()
+
                 readline.set_pre_input_hook(hook)
                 has_readline = True
             except ImportError:
@@ -1792,13 +1790,14 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         else:
             ui.info("No changes made.")
     elif cmd == "d":
-
         last_heard = pipeline.get_last_heard()
         if not last_heard:
             ui.warn("No sentences in history to delete.")
             return
         print(f'Last sentence: "{last_heard}"')
-        print("Are you sure you want to delete this sentence? (y/n): ", end="", flush=True)
+        print(
+            "Are you sure you want to delete this sentence? (y/n): ", end="", flush=True
+        )
         confirm = sys.stdin.readline().strip().lower()
         if confirm in ("y", "yes", "s", "sim"):
             pipeline.delete_last_chunk()
@@ -1811,7 +1810,11 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.warn(f"Chunk {chunk_num} not found in history to delete.")
             return
         print(f'Sentence of chunk {chunk_num}: "{last_heard}"')
-        print(f"Are you sure you want to delete sentence {chunk_num}? (y/n): ", end="", flush=True)
+        print(
+            f"Are you sure you want to delete sentence {chunk_num}? (y/n): ",
+            end="",
+            flush=True,
+        )
         confirm = sys.stdin.readline().strip().lower()
         if confirm in ("y", "yes", "s", "sim"):
             pipeline.delete_chunk(chunk_num)
@@ -1860,17 +1863,14 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 + Fore.YELLOW
                 + Style.BRIGHT
                 + f"{g_pad}[g]  Swap agendado: {info['old_pair']}  ⇒  {info['new_pair']}   "
-                f"(termina a frase/tradução em curso, depois inverte)"
-                + Style.RESET_ALL
+                f"(termina a frase/tradução em curso, depois inverte)" + Style.RESET_ALL
             )
             ui.info(
                 "A frase atual NÃO será perdida — o idioma só muda após o processamento.",
                 indent=3,
             )
             # Refresh menu line so it shows pending target pair.
-            _print_swap_lang_menu_line(
-                pipeline, pending_new_pair=info.get("new_pair")
-            )
+            _print_swap_lang_menu_line(pipeline, pending_new_pair=info.get("new_pair"))
         elif status == "cancelled_pending":
             print(
                 "\r\033[K"
@@ -1890,8 +1890,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 + Fore.YELLOW
                 + Style.BRIGHT
                 + f"{g_pad}[g]  Idiomas: {info['old_pair']}  ⇒  {info['new_pair']}   "
-                f"(STT={src} · TTS voice={voice})"
-                + Style.RESET_ALL
+                f"(STT={src} · TTS voice={voice})" + Style.RESET_ALL
             )
             for w in info.get("warnings") or []:
                 ui.warn(w, indent=3)
@@ -1987,8 +1986,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 + Fore.YELLOW
                 + Style.BRIGHT
                 + f"   [t]  TARGET: {old}  ⇒  {tgt}   "
-                f"(SOURCE={src} · TTS={voice})"
-                + Style.RESET_ALL
+                f"(SOURCE={src} · TTS={voice})" + Style.RESET_ALL
             )
             ui.info(
                 f"Próximas traduções: fale {src} → ouvem {tgt}.",
@@ -2026,9 +2024,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             try:
                 if hasattr(indicator, "set_passthrough"):
                     if hasattr(indicator, "call_from_thread"):
-                        indicator.call_from_thread(
-                            indicator.set_passthrough, active
-                        )
+                        indicator.call_from_thread(indicator.set_passthrough, active)
                     else:
                         indicator.set_passthrough(active)
             except Exception:
@@ -2136,20 +2132,23 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             # Decouple summary generator from active translation engine:
             # Use existing translator if it's an LLMTranslator, otherwise spin up a temp one
             from livelingo.llm import LLMTranslator
+
             summary_generator = pipeline.translator
             if not hasattr(summary_generator, "generate_meeting_summary"):
                 summary_generator = LLMTranslator(cfg)
 
             # Concatenate all original heard lines for analysis
-            transcript_full = "\n".join(
-                f"- {_entry_heard(e)}" for e in full_trans
-            )
+            transcript_full = "\n".join(f"- {_entry_heard(e)}" for e in full_trans)
             try:
-                summary_text = summary_generator.generate_meeting_summary(transcript_full)
+                summary_text = summary_generator.generate_meeting_summary(
+                    transcript_full
+                )
             except Exception as exc:
                 ui.error(f"Could not generate AI summary: {exc}")
         else:
-            ui.warn("Note: AI summary disabled (requires GROQ_API_KEY to be set in .env).")
+            ui.warn(
+                "Note: AI summary disabled (requires GROQ_API_KEY to be set in .env)."
+            )
 
         synonyms = pipeline.get_synonyms()
 
@@ -2232,9 +2231,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         f.write(f"### {word.upper()}\n")
                         f.write(f"{explanation}\n\n")
 
-                word_count = _count_content_words(
-                    _entry_heard(e) for e in full_trans
-                )
+                word_count = _count_content_words(_entry_heard(e) for e in full_trans)
                 n_lc = len(lc_entries)
                 n_voz = len(voz_entries)
                 f.write("---\n")
@@ -2297,9 +2294,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         def _resolve_audio(chunk_num):
             audio_raw = audio_map.get(chunk_num, "")
             if not audio_raw:
-                cand = os.path.join(
-                    pipeline.cache_dir, f"chunk_{chunk_num}.wav"
-                )
+                cand = os.path.join(pipeline.cache_dir, f"chunk_{chunk_num}.wav")
                 if os.path.isfile(cand):
                     audio_raw = cand
             return audio_raw
@@ -2347,40 +2342,22 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             """TUI: emit wrapped meta with rail alignment preserved."""
             e = e or (lambda x: x)
             head = shift + meta_indent
-            for piece in _meta_pieces(
-                shift, meta_indent, text, nowrap=nowrap
-            ):
+            for piece in _meta_pieces(shift, meta_indent, text, nowrap=nowrap):
                 if style == "dim":
                     ui.dim(f"{pad}{head}{piece}")
                 elif style == "magenta":
-                    ui.rich(
-                        f"{pad}{head}[dim magenta]{e(piece)}[/]"
-                    )
+                    ui.rich(f"{pad}{head}[dim magenta]{e(piece)}[/]")
                 elif style == "yellow":
-                    ui.rich(
-                        f"{pad}{head}[bold yellow]{e(piece)}[/]"
-                    )
+                    ui.rich(f"{pad}{head}[bold yellow]{e(piece)}[/]")
                 elif style == "yellow_dim":
-                    ui.rich(
-                        f"{pad}{head}[yellow]{e(piece)}[/]"
-                    )
+                    ui.rich(f"{pad}{head}[yellow]{e(piece)}[/]")
                 else:
                     ui.dim(f"{pad}{head}{piece}")
 
-        def _emit_meta_classic(
-            shift, meta_indent, text, style="", *, nowrap=False
-        ):
+        def _emit_meta_classic(shift, meta_indent, text, style="", *, nowrap=False):
             head = shift + meta_indent
-            for piece in _meta_pieces(
-                shift, meta_indent, text, nowrap=nowrap
-            ):
-                print(
-                    pad
-                    + head
-                    + style
-                    + piece
-                    + (Style.RESET_ALL if style else "")
-                )
+            for piece in _meta_pieces(shift, meta_indent, text, nowrap=nowrap):
+                print(pad + head + style + piece + (Style.RESET_ALL if style else ""))
 
         def _timing_meta_lines(timing, created_at) -> list[str]:
             """
@@ -2429,9 +2406,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 )
                 is_lc = _is_livecaptions_entry(timing)
                 src_l, tgt_l = _entry_lang_pair(timing, is_lc=is_lc)
-                recorded = (
-                    ui.format_recorded_stamp(created_at) if created_at else ""
-                )
+                recorded = ui.format_recorded_stamp(created_at) if created_at else ""
 
                 if is_lc:
                     # LEFT rail — magenta/cyan (inbound captions)
@@ -2444,9 +2419,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     ind_cap = " " * len(lab_cap)
                     ind_tr = " " * len(lab_tr)
 
-                    for i, line in enumerate(
-                        _wrap_labeled_body(lab_cap, heard, col_w)
-                    ):
+                    for i, line in enumerate(_wrap_labeled_body(lab_cap, heard, col_w)):
                         if i == 0:
                             ui.rich(
                                 f"{pad}{shift}"
@@ -2455,9 +2428,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"[green]{e(line)}[/]"
                             )
                         else:
-                            ui.rich(
-                                f"{pad}{shift}{ind_cap}[green]{e(line)}[/]"
-                            )
+                            ui.rich(f"{pad}{shift}{ind_cap}[green]{e(line)}[/]")
                     for i, line in enumerate(
                         _wrap_labeled_body(lab_tr, translated, col_w)
                     ):
@@ -2469,9 +2440,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"[bold white]{e(line)}[/]"
                             )
                         else:
-                            ui.rich(
-                                f"{pad}{shift}{ind_tr}[bold white]{e(line)}[/]"
-                            )
+                            ui.rich(f"{pad}{shift}{ind_tr}[bold white]{e(line)}[/]")
                     meta_indent = " " * len(prefix)
                     if recorded:
                         _emit_meta_tui(
@@ -2482,9 +2451,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                             e=e,
                         )
                     for tline in _timing_meta_lines(timing, created_at):
-                        _emit_meta_tui(
-                            shift, meta_indent, tline, style="dim", e=e
-                        )
+                        _emit_meta_tui(shift, meta_indent, tline, style="dim", e=e)
                     for c_id, c_text, c_at in _comment_items(chunk_num):
                         stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
                         body = " ".join((c_text or "").split())
@@ -2506,9 +2473,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     ind_src = " " * len(lab_src)
                     ind_tgt = " " * len(lab_tgt)
 
-                    for i, line in enumerate(
-                        _wrap_labeled_body(lab_src, heard, col_w)
-                    ):
+                    for i, line in enumerate(_wrap_labeled_body(lab_src, heard, col_w)):
                         if i == 0:
                             ui.rich(
                                 f"{pad}{shift}"
@@ -2517,9 +2482,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"[green]{e(line)}[/]"
                             )
                         else:
-                            ui.rich(
-                                f"{pad}{shift}{ind_src}[green]{e(line)}[/]"
-                            )
+                            ui.rich(f"{pad}{shift}{ind_src}[green]{e(line)}[/]")
                     for i, line in enumerate(
                         _wrap_labeled_body(lab_tgt, translated, col_w)
                     ):
@@ -2531,16 +2494,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"[bold white]{e(line)}[/]"
                             )
                         else:
-                            ui.rich(
-                                f"{pad}{shift}{ind_tgt}[bold white]{e(line)}[/]"
-                            )
+                            ui.rich(f"{pad}{shift}{ind_tgt}[bold white]{e(line)}[/]")
 
                     meta_indent = " " * len(prefix)
                     audio_raw = _resolve_audio(chunk_num)
                     for tline in _timing_meta_lines(timing, created_at):
-                        _emit_meta_tui(
-                            shift, meta_indent, tline, style="dim", e=e
-                        )
+                        _emit_meta_tui(shift, meta_indent, tline, style="dim", e=e)
                     if recorded:
                         _emit_meta_tui(
                             shift,
@@ -2551,9 +2510,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         )
                     # Full path, one line, right-aligned (no wrap / no …)
                     try:
-                        ui._emit_audio_path_one_line(
-                            chunk_num, audio_raw, panel="main"
-                        )
+                        ui._emit_audio_path_one_line(chunk_num, audio_raw, panel="main")
                     except Exception:
                         for al in ui.format_audio_lines(audio_raw):
                             _emit_meta_tui(
@@ -2578,10 +2535,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 ui.raw("")  # blank between chunks
 
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
-            tot = (
-                f"Total: {len(full_trans)}  ·  "
-                f"LC◄ {n_lc}  ·  VOZ► {n_voz}"
-            )
+            tot = f"Total: {len(full_trans)}  ·  LC◄ {n_lc}  ·  VOZ► {n_voz}"
             ui.rich(f"{pad}[bold cyan]{e(_title_line(tot))}[/]")
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
             return
@@ -2601,9 +2555,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         print()
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
         _print_plain(
-            _title_line(
-                "HISTORICO (cronologico) · LC ◄ esquerda · VOZ ► direita"
-            ),
+            _title_line("HISTORICO (cronologico) · LC ◄ esquerda · VOZ ► direita"),
             Fore.CYAN + Style.BRIGHT,
         )
         leg_l = "◄ LC entrada (LiveCaptions)"
@@ -2626,14 +2578,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         print(pad)
 
         for entry in full_trans:
-            chunk_num, heard, translated, created_at, timing = (
-                _unpack_transcript_entry(entry)
+            chunk_num, heard, translated, created_at, timing = _unpack_transcript_entry(
+                entry
             )
             is_lc = _is_livecaptions_entry(timing)
             src_l, tgt_l = _entry_lang_pair(timing, is_lc=is_lc)
-            recorded = (
-                ui.format_recorded_stamp(created_at) if created_at else ""
-            )
+            recorded = ui.format_recorded_stamp(created_at) if created_at else ""
 
             if is_lc:
                 col_w = left_w
@@ -2643,9 +2593,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 lab_tr = f"{' ' * len(prefix)}{tgt_l}: "
                 ind_cap = " " * len(lab_cap)
                 ind_tr = " " * len(lab_tr)
-                for i, line in enumerate(
-                    _wrap_labeled_body(lab_cap, heard, col_w)
-                ):
+                for i, line in enumerate(_wrap_labeled_body(lab_cap, heard, col_w)):
                     if i == 0:
                         print(
                             pad
@@ -2663,16 +2611,9 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         )
                     else:
                         print(
-                            pad
-                            + shift
-                            + ind_cap
-                            + Fore.GREEN
-                            + line
-                            + Style.RESET_ALL
+                            pad + shift + ind_cap + Fore.GREEN + line + Style.RESET_ALL
                         )
-                for i, line in enumerate(
-                    _wrap_labeled_body(lab_tr, translated, col_w)
-                ):
+                for i, line in enumerate(_wrap_labeled_body(lab_tr, translated, col_w)):
                     if i == 0:
                         print(
                             pad
@@ -2688,12 +2629,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         )
                     else:
                         print(
-                            pad
-                            + shift
-                            + ind_tr
-                            + Fore.WHITE
-                            + line
-                            + Style.RESET_ALL
+                            pad + shift + ind_tr + Fore.WHITE + line + Style.RESET_ALL
                         )
                 meta_indent = " " * len(prefix)
                 if recorded:
@@ -2704,9 +2640,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         Style.DIM,
                     )
                 for tline in _timing_meta_lines(timing, created_at):
-                    _emit_meta_classic(
-                        shift, meta_indent, tline, Style.DIM
-                    )
+                    _emit_meta_classic(shift, meta_indent, tline, Style.DIM)
             else:
                 # SOURCE (heard) → TARGET (translated)
                 col_w = right_w
@@ -2716,9 +2650,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 lab_tgt = f"{' ' * len(prefix)}{tgt_l}: "
                 ind_src = " " * len(lab_src)
                 ind_tgt = " " * len(lab_tgt)
-                for i, line in enumerate(
-                    _wrap_labeled_body(lab_src, heard, col_w)
-                ):
+                for i, line in enumerate(_wrap_labeled_body(lab_src, heard, col_w)):
                     if i == 0:
                         print(
                             pad
@@ -2735,12 +2667,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         )
                     else:
                         print(
-                            pad
-                            + shift
-                            + ind_src
-                            + Fore.GREEN
-                            + line
-                            + Style.RESET_ALL
+                            pad + shift + ind_src + Fore.GREEN + line + Style.RESET_ALL
                         )
                 for i, line in enumerate(
                     _wrap_labeled_body(lab_tgt, translated, col_w)
@@ -2760,19 +2687,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         )
                     else:
                         print(
-                            pad
-                            + shift
-                            + ind_tgt
-                            + Fore.WHITE
-                            + line
-                            + Style.RESET_ALL
+                            pad + shift + ind_tgt + Fore.WHITE + line + Style.RESET_ALL
                         )
                 meta_indent = " " * len(prefix)
                 audio_raw = _resolve_audio(chunk_num)
                 for tline in _timing_meta_lines(timing, created_at):
-                    _emit_meta_classic(
-                        shift, meta_indent, tline, Style.DIM
-                    )
+                    _emit_meta_classic(shift, meta_indent, tline, Style.DIM)
                 if recorded:
                     _emit_meta_classic(
                         shift,
@@ -2782,9 +2702,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     )
                 # Full path, one line, right-aligned (no wrap / no …)
                 try:
-                    ui._emit_audio_path_one_line(
-                        chunk_num, audio_raw, panel="main"
-                    )
+                    ui._emit_audio_path_one_line(chunk_num, audio_raw, panel="main")
                 except Exception:
                     for al in ui.format_audio_lines(audio_raw):
                         _emit_meta_classic(
@@ -2901,9 +2819,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         exists = True
                         break
         if not exists:
-            ui.warn(
-                f"Chunk {chunk_num} não encontrado. Use [l] para ver os números."
-            )
+            ui.warn(f"Chunk {chunk_num} não encontrado. Use [l] para ver os números.")
             return
 
         saved = 0
@@ -3114,7 +3030,11 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             if text:
                 ui.raw(text)
     elif cmd == "v":
-        print("Are you sure you want to switch or restart the session? (y/n): ", end="", flush=True)
+        print(
+            "Are you sure you want to switch or restart the session? (y/n): ",
+            end="",
+            flush=True,
+        )
         confirm = sys.stdin.readline().strip().lower()
         if confirm in ("y", "yes", "s", "sim"):
             pipeline.switch_session = True
@@ -3369,9 +3289,7 @@ EXIT / RESUME TIP
   Press Ctrl+C or Ctrl+Q to stop a live session.
   The session id is printed on exit so you can resume later with:
     livelingo <session_id>
-""".strip(
-        "\n"
-    )
+""".strip("\n")
     print(text)
     return 0
 
@@ -3575,8 +3493,7 @@ def _select_session():
 
     # Choice is 1 (new session)
     title = _prompt(
-        "Enter title/subject for the new session "
-        "(Enter=automatic, 0=back to menu): "
+        "Enter title/subject for the new session (Enter=automatic, 0=back to menu): "
     )
     if title.lower() in ("0", "b", "back", "voltar"):
         ui.info("Returning to session menu…", indent=m)
@@ -3588,9 +3505,7 @@ def _select_session():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     # for a clean ID
     normalized = (
-        unicodedata.normalize("NFKD", title)
-        .encode("ascii", "ignore")
-        .decode("ascii")
+        unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
     )
     slug = re.sub(r"[^\w\s-]", "", normalized.lower())
     slug = re.sub(r"[-\s]+", "-", slug).strip("-_")
@@ -3686,7 +3601,9 @@ def main():
         if cfg.MONITOR_PLAYBACK:
             if cfg.MONITOR_DEVICE:
                 try:
-                    monitor_idx, _ = devices.resolve_device(cfg.MONITOR_DEVICE, "output")
+                    monitor_idx, _ = devices.resolve_device(
+                        cfg.MONITOR_DEVICE, "output"
+                    )
                 except ValueError as exc:
                     _log_warn(f"Monitor device problem ({exc}); using default output.")
                     monitor_idx = devices.default_output_index()
@@ -3829,9 +3746,7 @@ def main():
                             "([lc] pause · [lc show]/[lc hide])."
                         )
                 else:
-                    _log_warn(
-                        "LIVE_CAPTIONS_ENABLED=true mas OS ≠ Windows — ignorado."
-                    )
+                    _log_warn("LIVE_CAPTIONS_ENABLED=true mas OS ≠ Windows — ignorado.")
             except Exception as exc:
                 _log_warn(f"Live Captions não iniciou: {exc}")
                 caption_service = None

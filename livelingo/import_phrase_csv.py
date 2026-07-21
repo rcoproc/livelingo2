@@ -103,9 +103,7 @@ def import_phrase_csv(
             # Prefer named pre_import backup
             import time as _time
 
-            os.makedirs(
-                os.path.join(".cache", "phrase_cache_backups"), exist_ok=True
-            )
+            os.makedirs(os.path.join(".cache", "phrase_cache_backups"), exist_ok=True)
             stamp = _time.strftime("%Y%m%d_%H%M%S")
             pre_path = os.path.join(
                 ".cache", "phrase_cache_backups", f"pre_import_{stamp}.json"
@@ -272,7 +270,9 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         description="Import phrase pairs from CSV into LiveLingo translation_pairs cache"
     )
-    p.add_argument("csv_path", help="Path to exported CSV (SourceText, TranslatedText, …)")
+    p.add_argument(
+        "csv_path", help="Path to exported CSV (SourceText, TranslatedText, …)"
+    )
     p.add_argument(
         "--source-lang",
         default="en",

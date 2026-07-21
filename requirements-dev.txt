@@ -1,4 +1,7 @@
 # Dev / CI test dependencies (not required to run LiveLingo)
+#   pip install -r requirements-dev.txt
+#   bash scripts/run_checks.sh
 -r requirements.txt
 pytest>=8.0,<9
 pip-audit>=2.7
+ruff>=0.8.0

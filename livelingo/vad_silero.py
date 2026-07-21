@@ -50,9 +50,7 @@ class SileroVAD:
             log("Downloading Silero VAD model (one-time)...")
             urllib.request.urlretrieve(SILERO_MODEL_URL, path)
 
-        return ort.InferenceSession(
-            path, providers=["CPUExecutionProvider"]
-        )
+        return ort.InferenceSession(path, providers=["CPUExecutionProvider"])
 
     def _run_window(self, window):
         window = np.ascontiguousarray(window, dtype=np.float32).reshape(1, -1)

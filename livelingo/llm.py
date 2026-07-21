@@ -22,14 +22,25 @@ import requests
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-#GROQ_URL = "http://192.168.137.1:4000/v1/chat/completions"
+# GROQ_URL = "http://192.168.137.1:4000/v1/chat/completions"
 
 # Friendly names for the most common language codes (used in the prompt).
 _LANG_NAMES = {
-    "fr": "French", "en": "English", "es": "Spanish", "de": "German",
-    "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "ru": "Russian",
-    "ar": "Arabic", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
-    "pl": "Polish", "tr": "Turkish", "hi": "Hindi",
+    "fr": "French",
+    "en": "English",
+    "es": "Spanish",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "pl": "Polish",
+    "tr": "Turkish",
+    "hi": "Hindi",
 }
 
 GROQ_KEY_HELP = """\
@@ -239,9 +250,7 @@ class LLMTranslator:
             ],
         }
         try:
-            resp = self.session.post(
-                GROQ_URL, json=payload, timeout=self.timeout
-            )
+            resp = self.session.post(GROQ_URL, json=payload, timeout=self.timeout)
         except requests.RequestException as exc:
             raise LLMError(f"network error contacting Groq: {exc}") from exc
 
@@ -303,17 +312,14 @@ class LLMTranslator:
             ],
         }
         try:
-            resp = self.session.post(
-                GROQ_URL, json=payload, timeout=timeout
-            )
+            resp = self.session.post(GROQ_URL, json=payload, timeout=timeout)
         except requests.RequestException as exc:
             raise LLMError(f"network error contacting Groq: {exc}") from exc
 
         if resp.status_code == 401:
             raise LLMError("Groq rejected the API key (401). Check GROQ_API_KEY.")
         if resp.status_code == 413 or (
-            resp.status_code == 429
-            and "too large" in (resp.text or "").lower()
+            resp.status_code == 429 and "too large" in (resp.text or "").lower()
         ):
             raise LLMError(
                 f"Groq request too large ({resp.status_code}): transcript "
@@ -322,9 +328,7 @@ class LLMTranslator:
                 f"GROQ_MODEL to a higher-tier model. Detail: {resp.text[:180]}"
             )
         if resp.status_code >= 400:
-            raise LLMError(
-                f"Groq error {resp.status_code}: {resp.text[:280]}"
-            )
+            raise LLMError(f"Groq error {resp.status_code}: {resp.text[:280]}")
 
         try:
             data = resp.json()
@@ -455,8 +459,7 @@ class LLMTranslator:
                         from . import ui as _ui
 
                         _ui.dim(
-                            f"Resumo IA: aguardando {pause:.0f}s "
-                            f"(limite TPM Groq)…"
+                            f"Resumo IA: aguardando {pause:.0f}s (limite TPM Groq)…"
                         )
                     except Exception:
                         pass
@@ -465,8 +468,7 @@ class LLMTranslator:
                 from . import ui as _ui
 
                 _ui.dim(
-                    f"Resumo IA: parte {i}/{n} "
-                    f"(~{self._estimate_tokens(piece)} tok)…"
+                    f"Resumo IA: parte {i}/{n} (~{self._estimate_tokens(piece)} tok)…"
                 )
             except Exception:
                 pass
@@ -507,9 +509,7 @@ class LLMTranslator:
                 try:
                     from . import ui as _ui
 
-                    _ui.dim(
-                        f"Resumo IA: aguardando {pause:.0f}s antes do merge…"
-                    )
+                    _ui.dim(f"Resumo IA: aguardando {pause:.0f}s antes do merge…")
                 except Exception:
                     pass
                 time.sleep(pause)
