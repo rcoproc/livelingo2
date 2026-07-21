@@ -502,6 +502,12 @@ def print_outdated(items: list[Outdated]) -> None:
     print(
         c(
             DIM,
+            "    (aviso de frescor — NÃO é CVE; exit 0 com --fail-on vuln)",
+        )
+    )
+    print(
+        c(
+            DIM,
             f"    (diretos no requirements: {len(proj)} | transitivos/outros: {len(other)})\n",
         )
     )
@@ -529,6 +535,7 @@ def print_owasp_summary(
     outdated: list[Outdated],
     *,
     vuln_scan_ok: bool,
+    outdated_scan_ok: bool = True,
 ) -> None:
     banner("3) Resumo OWASP / recomendações")
     a06_fail = bool(vulns) or not vuln_scan_ok
@@ -537,22 +544,52 @@ def print_owasp_summary(
     status = (
         c(RED, "FAIL")
         if a06_fail
-        else (c(YELLOW, "WARN") if a06_warn else c(GREEN, "PASS"))
+        else (c(YELLOW, "WARN (só frescor)") if a06_warn else c(GREEN, "PASS"))
     )
     print(f"  A06:2021 Vulnerable and Outdated Components  →  {status}")
+    if a06_warn and not a06_fail:
+        print(
+            c(
+                DIM,
+                "  (WARN = há versões mais novas no PyPI; sem CVE acionável → deploy OK)",
+            )
+        )
     print()
     print("  Checklist alinhado OWASP Dependency Checking:")
-    checks = [
-        ("Inventário de componentes (requirements.txt)", REQUIREMENTS.is_file()),
-        ("Scan de CVEs conhecidos (pip-audit / OSV)", vuln_scan_ok and not vulns),
-        ("Componentes desatualizados monitorados", not outdated),
+
+    # status: "pass" | "warn" | "fail"
+    # "monitorados" = inventário/scan rodou (não exige zero outdated)
+    rows: list[tuple[str, str]] = [
         (
-            "Versões com patch de segurança disponíveis",
-            all(v.fix_versions for v in vulns) if vulns else vuln_scan_ok,
+            "Inventário de componentes (requirements.txt)",
+            "pass" if REQUIREMENTS.is_file() else "fail",
+        ),
+        (
+            "Scan de CVEs conhecidos (pip-audit / OSV)",
+            "fail" if (not vuln_scan_ok or vulns) else "pass",
+        ),
+        (
+            "Componentes desatualizados monitorados (scan PyPI)",
+            "pass" if outdated_scan_ok else "fail",
+        ),
+        (
+            "Deps do projeto na última versão do PyPI",
+            "pass" if not outdated else "warn",
+        ),
+        (
+            "Sem CVE acionável (ou com fix publicado)",
+            "fail"
+            if (not vuln_scan_ok or (vulns and not all(v.fix_versions for v in vulns)))
+            else "pass",
         ),
     ]
-    for label, ok in checks:
-        mark = c(GREEN, "✓") if ok else c(RED, "✗")
+    for label, st in rows:
+        if st == "pass":
+            mark = c(GREEN, "✓")
+        elif st == "warn":
+            mark = c(YELLOW, "!")
+        else:
+            mark = c(RED, "✗")
         print(f"    {mark}  {label}")
 
     print()
@@ -568,14 +605,19 @@ def print_owasp_summary(
         print("    2. Rode de novo este script até zerar vulnerabilidades")
         print("    3. Commit do requirements.txt atualizado")
     elif outdated:
-        print(c(BOLD, "  Ação sugerida:"))
-        print("    • Avalie upgrades de deps diretas (coluna [req])")
+        print(c(BOLD, "  Ação opcional (não bloqueia produção):"))
+        print("    • Avalie upgrades de deps diretas (coluna [req]) quando tiver tempo")
         print(
-            "    • Teste o app após cada bump (especialmente faster-whisper, edge-tts, textual)"
+            "    • Teste áudio/STT após bump (sounddevice, soundfile, edge-tts, …)"
+        )
+        print(
+            c(
+                DIM,
+                "    • Para falhar o CI se houver outdated:  --fail-on outdated  ou  --fail-on any",
+            )
         )
     else:
         print(c(GREEN, "  Nenhuma ação de segurança pendente nas dependências."))
-
 
 def build_report(
     vulns: list[Vuln],
@@ -709,6 +751,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     outdated: list[Outdated] = []
     errors: list[str] = []
     vuln_scan_ok = args.skip_vuln  # skipped = not a failure of the scan itself
+    outdated_scan_ok = args.skip_outdated
     audit_mode = ""
 
     # --- Vulnerabilities ---
@@ -749,9 +792,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args.skip_outdated:
         outdated, err = list_outdated(declared)
         if err:
+            outdated_scan_ok = False
             errors.append(err)
             print(c(RED, f"\n[erro] checagem outdated: {err}"))
         else:
+            outdated_scan_ok = True
             if args.project_only:
                 outdated = [o for o in outdated if o.in_requirements]
             print_outdated(outdated)
@@ -759,8 +804,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(c(DIM, "\n  (checagem outdated pulada)"))
 
     if not args.skip_vuln or not args.skip_outdated:
-        print_owasp_summary(vulns, outdated, vuln_scan_ok=vuln_scan_ok)
-
+        print_owasp_summary(
+            vulns,
+            outdated,
+            vuln_scan_ok=vuln_scan_ok,
+            outdated_scan_ok=outdated_scan_ok,
+        )
     report = build_report(vulns, outdated, tool_versions)
     report.summary["vuln_scan_ok"] = vuln_scan_ok
     report.summary["audit_mode"] = audit_mode
