@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-21
+
+First stable release of **LiveLingo2** (fork of [roirude/LiveLingo](https://github.com/roirude/LiveLingo)).
+Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
+
+**Highlights:** TUI with Tradução split **LC | VOZ**, Windows LiveCaptions, phrase translation cache (TM), dual-channel export, voice bypass, sentence-split, OWASP A06 dependency floors + GitHub Actions CI (pytest + pip-audit), README badges.
+
 ### Changed
 
 - **Tradução split vertical (LC | VOZ)** — real dual log panes under the Tradução tab (replaces space-padded dual-rail **inside one widget** for TUI):
@@ -210,3 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 ### Added
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
+
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0
+[0.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v0.1.0
