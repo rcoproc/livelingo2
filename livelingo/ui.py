@@ -24,6 +24,9 @@ _log_sink = None
 _width_provider = None
 # Temporary panel override (e.g. F1 help → Sistema tab). Nested via stack.
 _panel_override_stack: list = []
+# Optional pipeline stage sink: callable(stage: str, meta: dict) for TUI pipe bar.
+# Stages: idle | mic | stt | translate | tts | play | lc | lc_idle
+_pipeline_stage_sink = None
 
 
 def set_log_sink(sink):
@@ -35,6 +38,33 @@ def set_log_sink(sink):
 
 def get_log_sink():
     return _log_sink
+
+
+def set_pipeline_stage_sink(sink):
+    """Route pipeline stage changes to the TUI activity bar (or None)."""
+    global _pipeline_stage_sink
+    with _print_lock:
+        _pipeline_stage_sink = sink
+
+
+def get_pipeline_stage_sink():
+    return _pipeline_stage_sink
+
+
+def pipeline_stage(stage: str, **meta):
+    """
+    Notify the TUI of a VOZ pipeline step (non-blocking, best-effort).
+
+    stage: idle | mic | stt | translate | tts | play
+    Optional meta: chunk, detail, source ("voz"|"lc")
+    """
+    cb = _pipeline_stage_sink
+    if cb is None:
+        return
+    try:
+        cb(str(stage or "idle"), dict(meta) if meta else {})
+    except Exception:
+        pass
 
 
 def set_width_provider(provider):
@@ -114,6 +144,7 @@ __all__ = [
     "chunk_timings",
     "chunk_progress",
     "listen_progress",
+    "pipeline_stage",
     "format_timing_line",
     "clock_hhmmss",
     "format_recorded_stamp",
@@ -128,6 +159,8 @@ __all__ = [
     "favorites_popup",
     "set_log_sink",
     "get_log_sink",
+    "set_pipeline_stage_sink",
+    "get_pipeline_stage_sink",
     "set_width_provider",
     "get_width_provider",
     "log_panel",
@@ -135,6 +168,18 @@ __all__ = [
     "panel_width",
     "rule_line",
 ]
+
+# Map chunk_progress stages → pipe-bar stage ids
+_CHUNK_TO_PIPE = {
+    "stt": "stt",
+    "heard": "stt",
+    "translate": "translate",
+    "translated": "translate",
+    "tts": "tts",
+    "tts_bg": "tts",
+    "ready": "play",  # audio path will refine to play; sound-off → idle soon
+    "ready_text": "idle",
+}
 
 # Pipeline UX stages (always shown — not VERBOSE-only).
 _CHUNK_PROGRESS = {
@@ -219,6 +264,154 @@ def _one_line(text, budget):
     if len(text) <= budget:
         return text
     return text[: budget - 1] + "…"
+
+
+def _display_lang_label(code: str) -> str:
+    """Short UI label: pt → BR, else upper code."""
+    c = (code or "?").lower().strip()
+    if "-" in c:
+        c = c.split("-", 1)[0]
+    if c in ("pt", "por", "pt-br", "pt_br"):
+        return "BR"
+    return (c or "?").upper()
+
+
+def _voz_lang_pair():
+    """(src_label, tgt_label) for live mic/VOZ chunks from config."""
+    try:
+        import config as cfg
+
+        src = getattr(cfg, "SOURCE_LANG", "?")
+        tgt = getattr(cfg, "TARGET_LANG", "?")
+    except Exception:
+        src, tgt = "?", "?"
+    return _display_lang_label(src), _display_lang_label(tgt)
+
+
+# VOZ (mic) blocks sit on the right rail; nudge left so they are not flush
+# against the far right edge (user: ~15 cols more to the left).
+_VOZ_RAIL_LEFT_NUDGE = 15
+
+
+def _rail_geometry(margin=3):
+    """
+    Dual-rail geometry matching list `l`: LC left · VOZ right.
+
+    Returns (pad, content_w, left_w, right_w, left_shift, right_shift).
+    VOZ starts mid-screen minus `_VOZ_RAIL_LEFT_NUDGE` columns.
+    """
+    m = max(0, int(margin or 0))
+    pad = " " * m
+    content_w = content_width(margin=m)
+    gutter = 1
+    left_w = max(28, (content_w - gutter) // 2)
+    # Shift VOZ ~15 cols left; reclaim that width for wrapping budget
+    shift_cols = max(0, left_w + gutter - _VOZ_RAIL_LEFT_NUDGE)
+    right_w = max(28, content_w - shift_cols)
+    left_shift = ""
+    right_shift = " " * shift_cols
+    return pad, content_w, left_w, right_w, left_shift, right_shift
+
+
+def _wrap_labeled_body(label_plain: str, body: str, width: int) -> list:
+    """
+    Wrap body so first line fits after label; later lines align under body.
+    `width` = full line budget for label+body (rail column width).
+    """
+    body = " ".join((body or "").split())
+    if not body:
+        return [""]
+    width = max(8, int(width))
+    limit = max(8, width - len(label_plain))
+    words = body.split(" ")
+    lines = []
+    cur = ""
+    for w in words:
+        trial = w if not cur else f"{cur} {w}"
+        if len(trial) <= limit:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            while len(w) > limit:
+                lines.append(w[:limit])
+                w = w[limit:]
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def _wrap_path_body(label_plain: str, path: str, width: int) -> list:
+    """
+    Wrap a filesystem path under ``label_plain`` (e.g. ``audio: ``).
+
+    Prefers breaks after ``\\`` / ``/`` so folder names stay intact. Never
+    inserts middle ellipsis — the full path is always present across lines.
+    """
+    path = (path or "").strip()
+    if not path:
+        return [""]
+    width = max(8, int(width))
+    limit = max(8, width - len(label_plain or ""))
+    # Tokenize keeping separators attached to the preceding segment
+    segs: list[str] = []
+    buf = ""
+    for ch in path:
+        buf += ch
+        if ch in ("\\", "/"):
+            segs.append(buf)
+            buf = ""
+    if buf:
+        segs.append(buf)
+    if not segs:
+        return [path]
+
+    lines: list[str] = []
+    cur = ""
+    for seg in segs:
+        trial = cur + seg
+        if len(trial) <= limit:
+            cur = trial
+            continue
+        if cur:
+            lines.append(cur)
+            cur = ""
+        # Single segment longer than limit (rare) — hard-split, keep all chars
+        while len(seg) > limit:
+            lines.append(seg[:limit])
+            seg = seg[limit:]
+        cur = seg
+    if cur:
+        lines.append(cur)
+    return lines or [path]
+
+
+def _audio_display_pieces(text: str, budget: int) -> list[str]:
+    """
+    Split an ``audio: <path>`` line into right-rail pieces (full path, no …).
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    label = "audio: "
+    if text.lower().startswith("audio: "):
+        label = text[:7]
+        body = text[7:]
+    elif text.lower().startswith("audio:"):
+        body = text[len("audio:") :].lstrip()
+        label = "audio: "
+    else:
+        return _wrap_labeled_body("", text, budget)
+
+    parts = _wrap_path_body(label, body, budget)
+    out = []
+    for i, part in enumerate(parts):
+        if i == 0:
+            out.append(f"{label}{part}")
+        else:
+            out.append(f"{' ' * len(label)}{part}")
+    return out
 
 
 def _pad(indent):
@@ -450,9 +643,12 @@ def listen_progress(active: bool):
         suffix = _progress_clock_suffix(listen_start=True)
         # Etapas/timestamps → painel "app" da TUI (não polui tradução)
         dim(f"🎙️  Escutando voz…{suffix}", panel="app")
+        pipeline_stage("mic", source="voz")
     else:
         suffix = _progress_clock_suffix(listen_end=True)
         dim(f"⏹️  Fim da fala — processando…{suffix}", panel="app")
+        # Utterance closed — STT usually follows immediately
+        pipeline_stage("stt", source="voz")
 
 
 def _emit_chunk_progress_line(stage: str, text: str) -> None:
@@ -482,6 +678,11 @@ def chunk_progress(n, stage: str, detail: str = ""):
     head = f"{prefix}{icon}  {label}"
     det = " ".join((detail or "").split()).strip()  # collapse newlines/spaces
     clocks = _progress_clock_suffix()
+
+    # TUI pipe bar (Mic → STT → Trad → TTS → Out)
+    pipe = _CHUNK_TO_PIPE.get(stage)
+    if pipe:
+        pipeline_stage(pipe, chunk=n, detail=det[:80] if det else "", source="voz")
 
     if det:
         # TUI Sistema: never hard-truncate with "…" — panel wraps with scrollbar.
@@ -560,110 +761,392 @@ def _emit_chunk_blank(panel="main"):
         print()
 
 
-def chunk_status(n, heard, translated, timings, finalize=False, at=None):
+def _cache_badge(from_cache=None):
     """
-    Print the live per-chunk status line plus a dim timing breakdown.
+    Optional CACHE/LIVE badge when phrase cache is in play.
 
-    Layout (one blank line between consecutive chunks only):
-        [chunk N] Heard: …
-                  Translated: …
-        (blank)
-                  timing: …   (classic; TUI → app panel)
+    True  → [CACHE] (HIT)
+    False → [LIVE]  (MISS / force / live path while cache on)
+    None  → no badge (cache off / legacy)
+    """
+    if from_cache is True:
+        return "[CACHE]"
+    if from_cache is False:
+        return "[LIVE]"
+    return ""
+
+
+def _emit_voz_chunk_block(
+    n, heard, translated, *, from_cache=None, blank_after=True
+):
+    """
+    Emit a VOZ (mic) chunk on the **right rail**.
+
+        <right> [Chunk N] BR: heard…          (SOURCE)
+                          EN [CACHE]: tr…     (TARGET)
+
+    Order always follows system SOURCE → TARGET (heard then translated).
+    from_cache: True=CACHE (magenta), False=LIVE (cyan), None=no badge.
     """
     heard = (heard or "").strip()
     translated = (translated or "").strip()
-    prefix = f"[chunk {n}] "
-    indent = " " * len(prefix)
-    timing = format_timing_line(timings or {}, at=at)
+    pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
+    src_l, tgt_l = _voz_lang_pair()
+    badge = _cache_badge(from_cache)
+    # Plain labels for wrap math: "EN [CACHE]: " or "EN: "
+    if badge:
+        tgt_plain = f"{tgt_l} {badge}: "
+    else:
+        tgt_plain = f"{tgt_l}: "
+    prefix = f"[Chunk {n}] "
+    # Source first (with chunk prefix), target second (hang-indent)
+    lab_src = f"{prefix}{src_l}: "
+    lab_tgt = f"{' ' * len(prefix)}{tgt_plain}"
+    ind_src = " " * len(lab_src)
+    ind_tgt = " " * len(lab_tgt)
+    head = pad + right_shift
 
     with _print_lock:
         if _log_sink is not None:
-            # Match classic colors: yellow chunk, green heard, blue→white translated
             e = _rich_escape
-            _emit(
-                "rich",
-                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
-            )
-            _emit(
-                "rich",
-                f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
-            )
-            # Single separator after block (not blank before + after → double gap)
-            _emit_chunk_blank()
-            # Timing is technical → Sistema/app panel (main stays clean)
-            if timing:
-                _emit("dim", f"{indent}{timing}", panel="app")
+            if from_cache is True:
+                # Magenta — easy to spot HIT on Tradução tab
+                tgt_lab_rich = (
+                    f"[bold blue]{e(tgt_l)} [/]"
+                    f"[bold magenta]{e(badge)}: [/]"
+                )
+            elif from_cache is False:
+                # Cyan — live Google/LLM
+                tgt_lab_rich = (
+                    f"[bold blue]{e(tgt_l)} [/]"
+                    f"[bold cyan]{e(badge)}: [/]"
+                )
+            else:
+                tgt_lab_rich = f"[bold blue]{e(tgt_plain)}[/]"
+            # 1) SOURCE (heard) — green
+            for i, line in enumerate(
+                _wrap_labeled_body(lab_src, heard, right_w)
+            ):
+                if i == 0:
+                    _emit(
+                        "rich",
+                        f"{head}"
+                        f"[bold yellow]{e(prefix)}[/]"
+                        f"[white]{e(src_l)}: [/]"
+                        f"[green]{e(line)}[/]",
+                    )
+                else:
+                    _emit(
+                        "rich",
+                        f"{head}{ind_src}[green]{e(line)}[/]",
+                    )
+            # 2) TARGET (translated) — white + optional CACHE/LIVE
+            for i, line in enumerate(
+                _wrap_labeled_body(lab_tgt, translated, right_w)
+            ):
+                if i == 0:
+                    _emit(
+                        "rich",
+                        f"{head}"
+                        f"[white]{e(' ' * len(prefix))}[/]"
+                        f"{tgt_lab_rich}"
+                        f"[bold white]{e(line)}[/]",
+                    )
+                else:
+                    _emit(
+                        "rich",
+                        f"{head}{ind_tgt}[bold white]{e(line)}[/]",
+                    )
+            if blank_after:
+                _emit_chunk_blank()
             return
-        print(
-            "\r\033[K"
-            + Fore.YELLOW
-            + Style.BRIGHT
-            + prefix
-            + Style.RESET_ALL
-            + Fore.WHITE
-            + "Heard: "
-            + Fore.GREEN
-            + heard
-        )
-        print(
-            "\r\033[K"
-            + indent
-            + Fore.BLUE
-            + Style.BRIGHT
-            + "Translated: "
-            + Style.RESET_ALL
-            + Fore.WHITE
-            + translated
-        )
-        print()  # one blank after Translated
-        if timing:
-            print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
-        if finalize:
+
+        if from_cache is True:
+            badge_col = Fore.MAGENTA + Style.BRIGHT
+        elif from_cache is False:
+            badge_col = Fore.CYAN + Style.BRIGHT
+        else:
+            badge_col = Fore.BLUE + Style.BRIGHT
+        # 1) SOURCE (heard)
+        for i, line in enumerate(_wrap_labeled_body(lab_src, heard, right_w)):
+            if i == 0:
+                print(
+                    "\r\033[K"
+                    + head
+                    + Fore.YELLOW
+                    + Style.BRIGHT
+                    + prefix
+                    + Style.RESET_ALL
+                    + Fore.WHITE
+                    + f"{src_l}: "
+                    + Fore.GREEN
+                    + line
+                    + Style.RESET_ALL
+                )
+            else:
+                print(
+                    "\r\033[K"
+                    + head
+                    + ind_src
+                    + Fore.GREEN
+                    + line
+                    + Style.RESET_ALL
+                )
+        # 2) TARGET (translated)
+        for i, line in enumerate(
+            _wrap_labeled_body(lab_tgt, translated, right_w)
+        ):
+            if i == 0:
+                if badge:
+                    tgt_part = (
+                        Fore.BLUE
+                        + Style.BRIGHT
+                        + f"{tgt_l} "
+                        + badge_col
+                        + f"{badge}: "
+                        + Style.RESET_ALL
+                    )
+                else:
+                    tgt_part = (
+                        Fore.BLUE
+                        + Style.BRIGHT
+                        + f"{tgt_l}: "
+                        + Style.RESET_ALL
+                    )
+                print(
+                    "\r\033[K"
+                    + head
+                    + (" " * len(prefix))
+                    + tgt_part
+                    + Fore.WHITE
+                    + line
+                    + Style.RESET_ALL
+                )
+            else:
+                print(
+                    "\r\033[K"
+                    + head
+                    + ind_tgt
+                    + Fore.WHITE
+                    + line
+                    + Style.RESET_ALL
+                )
+        if blank_after:
             print()
 
 
-def chunk_text_preview(n, heard, translated):
-    """Show heard + translated without timing (timing comes after TTS)."""
-    heard = (heard or "").strip()
+def _ellipsize_middle(text: str, max_len: int) -> str:
+    """
+    Fit text on one line: keep head + tail with a middle ellipsis.
+
+    Paths keep more of the tail (filename) so ``chunk_N.wav`` stays readable.
+    """
+    text = text or ""
+    max_len = max(4, int(max_len or 0))
+    if len(text) <= max_len:
+        return text
+    if max_len <= 5:
+        return text[: max_len - 1] + "…"
+    # Tail-heavy: ~55% of budget for the end (filename / session folder)
+    tail = max(8, (max_len * 55) // 100)
+    head = max_len - tail - 1  # 1 for …
+    if head < 3:
+        return "…" + text[-(max_len - 1) :]
+    return text[:head] + "…" + text[-tail:]
+
+
+def _emit_voz_meta_lines(n, lines, *, style="dim", panel="main", nowrap=False):
+    """
+    Emit meta under a VOZ chunk, keeping the **right-rail** indent.
+
+    style: dim | yellow  (matches list `l` VOZ rail)
+    nowrap: if True, emit each line as-is (still full text — no middle
+    ellipsis). If False, soft-wrap to the rail width and re-apply the right
+    shift on every physical line so RichLog does not dump continuations at
+    column 0.
+    """
+    if not lines:
+        return
+    pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
+    prefix = f"[Chunk {n}] "
+    meta_indent = " " * len(prefix)
+    head = pad + right_shift + meta_indent
+    budget = max(12, right_w - len(meta_indent))
+    with _print_lock:
+        for text in lines:
+            # Keep path separators (\, /); only collapse pure whitespace runs
+            # when wrapping ordinary meta (not forced single-line).
+            # Full text (paths keep every folder segment). Strip ends only —
+            # never middle-ellipsis folder/file names.
+            text = (text or "").strip()
+            if not text:
+                continue
+            if nowrap:
+                pieces = [text]
+            elif text.lower().startswith("audio:"):
+                pieces = _audio_display_pieces(text, budget)
+            else:
+                pieces = _wrap_labeled_body("", text, budget)
+            for piece in pieces:
+                if _log_sink is not None:
+                    e = _rich_escape
+                    if style == "yellow":
+                        _emit(
+                            "rich",
+                            f"{head}[bold yellow]{e(piece)}[/]",
+                            panel=panel,
+                        )
+                    else:
+                        _emit("dim", f"{head}{piece}", panel=panel)
+                else:
+                    col = (
+                        Fore.YELLOW + Style.BRIGHT
+                        if style == "yellow"
+                        else Style.DIM
+                    )
+                    print(
+                        "\r\033[K"
+                        + head
+                        + col
+                        + piece
+                        + Style.RESET_ALL
+                    )
+
+
+def chunk_status(n, heard, translated, timings, finalize=False, at=None):
+    """
+    Print live VOZ chunk on the right rail.
+
+    Tradução: text + blank (timing goes to Sistema in TUI).
+    """
+    _emit_voz_chunk_block(n, heard, translated, blank_after=False)
+    # Blank where timing would sit on Tradução
+    _emit_chunk_blank()
+    timing = format_timing_line(
+        timings or {}, at=None, include_clock=False
+    )
+    meta = []
+    if timing:
+        meta.append(timing)
+    if at:
+        rec = format_recorded_stamp(at)
+        if rec:
+            meta.append(f"gravado: {rec}")
+    if meta:
+        # TUI → Sistema; classic → under chunk
+        panel = "app" if _log_sink is not None else "main"
+        _emit_voz_meta_lines(n, meta, style="dim", panel=panel)
+    if finalize and _log_sink is None:
+        print()
+
+
+def _translated_label(from_cache=None):
+    """
+    Label for the translated line (no trailing colon).
+
+    from_cache:
+      True  → came from phrase cache (HIT)
+      False → live Google/LLM (MISS / force / cache off path marked live)
+      None  → no badge (cache disabled / legacy)
+    """
+    if from_cache is True:
+        return "Translated [CACHE]"
+    if from_cache is False:
+        return "Translated [LIVE]"
+    return "Translated"
+
+
+# Longest role label used for column alignment of phrase text after ": ".
+_ROLE_LABEL_WIDTH = len("Translated [CACHE]: ")
+
+
+def _role_labels_aligned(from_cache=None):
+    """
+    Return (heard_label, translated_label) plain strings, same width.
+
+    Both end with ': ' and are left-padded with spaces after the colon so the
+    phrase text of Heard and Translated starts on the same column.
+    """
+    tlab = f"{_translated_label(from_cache)}: "
+    hlab = "Heard: "
+    w = max(_ROLE_LABEL_WIDTH, len(tlab), len(hlab))
+    return hlab.ljust(w), tlab.ljust(w)
+
+
+def chunk_text_preview(n, heard, translated, from_cache=None):
+    """
+    Show VOZ chunk on the right rail without timing (timing after TTS).
+
+    SOURCE → TARGET order:
+        <right> [Chunk N] BR: heard…
+                          EN [CACHE]: translated…
+    Blank line comes after audio meta (see chunk_timings).
+    """
+    _emit_voz_chunk_block(
+        n, heard, translated, from_cache=from_cache, blank_after=False
+    )
+
+
+def live_caption_block(n, original, translated, from_cache=None):
+    """
+    Final Live Captions pair on Tradução — same layout as voice chunks.
+
+        [LC 3]  Caption:    English caption from Windows…
+                Translated: Tradução em português…
+
+    from_cache: True=HIT badge, False=LIVE badge, None=plain.
+    Only call for **stable/final** utterances (not partial growth spam).
+    """
+    original = (original or "").strip()
     translated = (translated or "").strip()
-    prefix = f"[chunk {n}] "
+    if not original and not translated:
+        return
+    prefix = f"[LC {n}] "
     indent = " " * len(prefix)
+    hlab, tlab = _role_labels_aligned(from_cache)
+    # Caption (not mic Heard) — keep column width from aligned labels
+    hlab = ("Caption: ").ljust(len(hlab))
     with _print_lock:
         if _log_sink is not None:
             e = _rich_escape
             _emit(
                 "rich",
-                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
+                f"[bold magenta]{e(prefix)}[/][white]{e(hlab)}[/][green]{e(original)}[/]",
             )
-            _emit(
-                "rich",
-                f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
-            )
-            # Exactly one blank line between consecutive chunks (not two)
+            if from_cache is True:
+                lab = f"{indent}[bold magenta]{e(tlab)}[/]"
+            elif from_cache is False:
+                lab = f"{indent}[bold cyan]{e(tlab)}[/]"
+            else:
+                lab = f"{indent}[bold cyan]{e(tlab)}[/]"
+            _emit("rich", f"{lab}[bold white]{e(translated)}[/]")
             _emit_chunk_blank()
             return
         print(
             "\r\033[K"
-            + Fore.YELLOW
+            + Fore.MAGENTA
             + Style.BRIGHT
             + prefix
             + Style.RESET_ALL
             + Fore.WHITE
-            + "Heard: "
+            + hlab
             + Fore.GREEN
-            + heard
+            + original
         )
+        if from_cache is True:
+            col = Fore.MAGENTA + Style.BRIGHT
+        else:
+            col = Fore.CYAN + Style.BRIGHT
         print(
             "\r\033[K"
             + indent
-            + Fore.BLUE
-            + Style.BRIGHT
-            + "Translated: "
+            + col
+            + tlab
             + Style.RESET_ALL
             + Fore.WHITE
             + translated
         )
-        print()  # blank after Translated
+        print()
 
 
 def clock_hhmmss(stamp=None):
@@ -832,7 +1315,7 @@ def _audio_path_exists(path):
     return False
 
 
-def format_audio_lines(path, missing_hint=None, pending_write=False):
+def format_audio_lines(path, missing_hint=None, pending_write=False, max_width=None):
     """
     Return list of plain display lines for a chunk audio reference.
 
@@ -841,10 +1324,18 @@ def format_audio_lines(path, missing_hint=None, pending_write=False):
     may already have been played from memory — do NOT show "missing").
     Missing on disk (and not pending) → path + missing note on next line,
     aligned under the path after ``audio: ``.
+
+    Paths are always the **full** host path (no middle ``…`` ellipsis).
+    ``max_width`` is accepted for API compat but does **not** truncate the
+    path — the right-rail emitter wraps long lines with hang-indent instead.
     """
+    del max_width  # never truncate folder/file names (user needs full path)
     label = "audio: "
     if missing_hint is None:
         missing_hint = _audio_msg("not_generated")
+
+    def _one(path_disp: str) -> str:
+        return f"{label}{str(path_disp or '')}"
 
     if not path or not str(path).strip():
         return [f"{label}{missing_hint}"]
@@ -853,34 +1344,71 @@ def format_audio_lines(path, missing_hint=None, pending_write=False):
     display = share or path
 
     if pending_write:
-        # File will appear shortly; optional quiet "saving" only if wanted —
-        # user asked not to see false "missing" after a spoken chunk.
-        return [f"{label}{display}"]
+        # File will appear shortly — show full path even while flushing.
+        return [_one(display)]
 
     if _audio_path_exists(path) or _audio_path_exists(share):
-        return [f"{label}{display}"]
+        return [_one(display)]
 
     # Truly missing on disk (e.g. deleted, or list history without WAV)
     pad = " " * len(label)
-    return [
-        f"{label}{display}",
-        f"{pad}{_audio_msg('missing')}",
-    ]
+    return [_one(display), f"{pad}{_audio_msg('missing')}"]
+
+
+def _voz_audio_line_width(n=None) -> int:
+    """Usable width for one right-rail audio meta line (under [Chunk N] indent)."""
+    _pad, _cw, _lw, right_w, _ls, _rs = _rail_geometry(margin=3)
+    prefix = f"[Chunk {n if n is not None else 0}] "
+    # Use a typical prefix width; caller may pass real n for accuracy
+    meta_indent = len(prefix) if n is not None else len("[Chunk 999] ")
+    return max(12, right_w - meta_indent)
+
+
+def _emit_audio_path_one_line(n, path, *, pending_write=False, panel="main"):
+    """
+    Emit ``audio: <full path>`` as **exactly one** physical line.
+
+    - Full host path (no middle ``…``).
+    - No soft wrap into a second line (uses full content width, not the
+      narrow VOZ rail budget).
+    - Right-aligned within the log content area (grows left if long).
+    ``n`` is kept for API symmetry with other VOZ meta helpers.
+    """
+    del n  # geometry uses full width; chunk prefix not on audio line
+    lines = format_audio_lines(path, pending_write=pending_write)
+    pad, content_w, _lw, _rw, _ls, _rs = _rail_geometry(margin=3)
+    with _print_lock:
+        for text in lines:
+            text = (text or "").strip()
+            if not text:
+                continue
+            # Right-align inside content width when it fits; never truncate.
+            if content_w > 0 and len(text) < content_w:
+                text = (" " * (content_w - len(text))) + text
+            head = pad  # full width available (not right-rail-only)
+            if _log_sink is not None:
+                e = _rich_escape
+                _emit(
+                    "rich",
+                    f"{head}[bold yellow]{e(text)}[/]",
+                    panel=panel,
+                )
+            else:
+                print(
+                    "\r\033[K"
+                    + head
+                    + Fore.YELLOW
+                    + Style.BRIGHT
+                    + text
+                    + Style.RESET_ALL
+                )
 
 
 def print_audio_ref(n, path, indent=None, pending_write=False):
-    """Print dim audio lines under a chunk block (same indent as timing)."""
-    prefix = f"[chunk {n}] "
-    pad = " " * len(prefix) if indent is None else " " * int(indent)
-    lines = format_audio_lines(path, pending_write=pending_write)
-    with _print_lock:
-        if _log_sink is not None:
-            # Live audio paths are technical meta → Sistema/app panel
-            for line in lines:
-                _emit("dim", f"{pad}{line}", panel="app")
-            return
-        for line in lines:
-            print("\r\033[K" + pad + Style.DIM + line + Style.RESET_ALL)
+    """Print full audio path under a VOZ chunk — one line, right-aligned."""
+    del indent  # geometry owns indent
+    _emit_audio_path_one_line(n, path, pending_write=pending_write, panel="main")
+    _emit_chunk_blank()
 
 
 def format_timing_line(timings, extra=None, at=None, include_clock=True):
@@ -927,77 +1455,112 @@ def format_timing_line(timings, extra=None, at=None, include_clock=True):
 
 def chunk_timings(n, timings, extra=None, at=None, audio_path=None, audio_pending=False):
     """
-    Print final timing line once TTS completes (includes HH:MM:SS).
+    Meta under a live VOZ chunk:
 
-    audio_pending: WAV still being written in a background thread (audio may
-    already have played from RAM). Show path without "file missing".
+    Tradução (main):
+        <blank where timing sat>
+        audio: …
+        <blank>
+
+    Sistema (app) in TUI — classic keeps dim lines under the chunk:
+        timing: STT … | translate … | TTS …
+        (sound OFF …)          # if extra
+        gravado: YYYY-MM-DD …
     """
-    prefix = f"[chunk {n}] "
-    indent = " " * len(prefix)
-    timing = format_timing_line(timings, extra=extra, at=at, include_clock=True)
-    with _print_lock:
+    # Timing body without clock; extra as its own line (clearer on Sistema)
+    timing = format_timing_line(
+        timings, extra=None, at=None, include_clock=False
+    )
+    meta = []
+    if timing:
+        meta.append(timing)
+    extra_s = " ".join(str(extra or "").split())
+    if extra_s:
+        meta.append(extra_s)
+    if at:
+        rec = format_recorded_stamp(at)
+        if rec:
+            meta.append(f"gravado: {rec}")
+
+    # Blank on Tradução in place of the timing block
+    _emit_chunk_blank()
+
+    if meta:
         if _log_sink is not None:
-            # Timing + live audio path → Sistema/app (main = Heard/Translated only)
-            if timing:
-                _emit("dim", f"{indent}{timing}", panel="app")
-            if audio_path is not None:
-                for line in format_audio_lines(
-                    audio_path, pending_write=bool(audio_pending)
-                ):
-                    _emit("dim", f"{indent}{line}", panel="app")
-            return
-        if timing:
-            print("\r\033[K" + indent + Style.DIM + timing + Style.RESET_ALL)
-        if audio_path is not None:
-            for line in format_audio_lines(
-                audio_path, pending_write=bool(audio_pending)
-            ):
-                print("\r\033[K" + indent + Style.DIM + line + Style.RESET_ALL)
-        print()
+            # Sistema tab — technical meta, not mixed with Heard/Translated
+            prefix = f"[Chunk {n}] "
+            for line in meta:
+                _emit("dim", f"{prefix}{line}", panel="app")
+        else:
+            _emit_voz_meta_lines(n, meta, style="dim", panel="main")
+
+    if audio_path is not None:
+        _emit_audio_path_one_line(
+            n,
+            audio_path,
+            pending_write=bool(audio_pending),
+            panel="main",
+        )
+    # Blank after audio on Tradução
+    _emit_chunk_blank()
 
 
 def chunk_stream_start(n, heard):
     """
-    Print heard + empty translated line for streaming updates.
+    Print VOZ stream skeleton on the right rail (SOURCE heard + TARGET …).
 
-    Both lines are forced to a single terminal row so \\033[1A updates stay
-    aligned even when the monologue would otherwise wrap.
+    Single-line bodies so classic \\033[1A updates stay aligned.
     """
     heard = (heard or "").strip()
-    prefix = f"[chunk {n}] "
-    indent = " " * len(prefix)
-    width = _term_width()
-    heard_budget = max(8, width - len(prefix) - len("Heard: ") - 1)
-    heard_disp = _one_line(heard, heard_budget)
+    pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
+    src_l, tgt_l = _voz_lang_pair()
+    prefix = f"[Chunk {n}] "
+    lab_src = f"{prefix}{src_l}: "
+    lab_tgt = f"{' ' * len(prefix)}{tgt_l}: "
+    head = pad + right_shift
+    src_budget = max(8, right_w - len(lab_src))
+    tgt_budget = max(8, right_w - len(lab_tgt))
+    heard_disp = _one_line(heard, src_budget)
     with _print_lock:
         if _log_sink is not None:
             e = _rich_escape
+            # 1) SOURCE first
             _emit(
                 "rich",
-                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard_disp)}[/]",
+                f"{head}"
+                f"[bold yellow]{e(prefix)}[/]"
+                f"[white]{e(src_l)}: [/]"
+                f"[green]{e(heard_disp)}[/]",
             )
+            # 2) TARGET placeholder
             _emit(
                 "rich",
-                f"{indent}[bold blue]Translated: [/][bold white]…[/]",
+                f"{head}"
+                f"[white]{e(' ' * len(prefix))}[/]"
+                f"[bold blue]{e(tgt_l)}: [/]"
+                f"[bold white]…[/]",
             )
             return
         print(
             "\r\033[K"
+            + head
             + Fore.YELLOW
             + Style.BRIGHT
             + prefix
             + Style.RESET_ALL
             + Fore.WHITE
-            + "Heard: "
+            + f"{src_l}: "
             + Fore.GREEN
             + heard_disp
+            + Style.RESET_ALL
         )
         print(
             "\r\033[K"
-            + indent
+            + head
+            + (" " * len(prefix))
             + Fore.BLUE
             + Style.BRIGHT
-            + "Translated: "
+            + f"{tgt_l}: "
             + Style.RESET_ALL
             + Fore.WHITE
             + "…"
@@ -1005,28 +1568,35 @@ def chunk_stream_start(n, heard):
 
 
 def chunk_stream_update(n, translated):
-    """Overwrite the single-line translated row while LLM tokens stream in."""
+    """Overwrite/append the translated (target) row while LLM tokens stream."""
     translated = (translated or "").strip() or "…"
-    prefix = f"[chunk {n}] "
-    indent = " " * len(prefix)
-    width = _term_width()
-    budget = max(8, width - len(indent) - len("Translated: ") - 1)
+    pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
+    _src_l, tgt_l = _voz_lang_pair()
+    prefix = f"[Chunk {n}] "
+    # Target is line 2 (hang-indent under source prefix)
+    lab_tgt = f"{' ' * len(prefix)}{tgt_l}: "
+    head = pad + right_shift
+    budget = max(8, right_w - len(lab_tgt))
     disp = _one_line(translated, budget)
     with _print_lock:
         if _log_sink is not None:
-            # TUI: append stream ticks (no cursor-up) with classic blue/white.
             e = _rich_escape
             _emit(
                 "rich",
-                f"{indent}[bold blue]Translated: [/][bold white]{e(disp)}[/]",
+                f"{head}"
+                f"[white]{e(' ' * len(prefix))}[/]"
+                f"[bold blue]{e(tgt_l)}: [/]"
+                f"[bold white]{e(disp)}[/]",
             )
             return
+        # Classic: cursor after tgt (line 2); go up 1 and rewrite target only.
         sys.stdout.write(
             "\033[1A\r\033[K"
-            + indent
+            + head
+            + (" " * len(prefix))
             + Fore.BLUE
             + Style.BRIGHT
-            + "Translated: "
+            + f"{tgt_l}: "
             + Style.RESET_ALL
             + Fore.WHITE
             + disp
@@ -1035,54 +1605,26 @@ def chunk_stream_update(n, translated):
         sys.stdout.flush()
 
 
-def chunk_stream_done(n, heard, translated):
+def chunk_stream_done(n, heard, translated, from_cache=None):
     """
-    Finalize streamed block: rewrite both lines with full text (may wrap).
+    Finalize streamed VOZ block on the right rail (full wrap).
 
-    Cursor sits after the single-line Translated row from streaming, so we
-    move up two rows and replace the compact stream block with the full preview.
+    Classic: cursor after compact stream → move up 2 and replace with full block.
+    TUI: append final right-rail block (no cursor rewrite).
+    Blank after audio comes from chunk_timings.
     """
-    heard = (heard or "").strip()
-    translated = (translated or "").strip()
-    prefix = f"[chunk {n}] "
-    indent = " " * len(prefix)
+    if _log_sink is not None:
+        _emit_voz_chunk_block(
+            n, heard, translated, from_cache=from_cache, blank_after=False
+        )
+        return
     with _print_lock:
-        if _log_sink is not None:
-            # TUI: final block; one blank after only (no blank before + after)
-            e = _rich_escape
-            _emit(
-                "rich",
-                f"[bold yellow]{e(prefix)}[/][white]Heard: [/][green]{e(heard)}[/]",
-            )
-            _emit(
-                "rich",
-                f"{indent}[bold blue]Translated: [/][bold white]{e(translated)}[/]",
-            )
-            _emit_chunk_blank()
-            return
-        # Clear compact Heard + Translated rows, then print full text.
+        # Clear compact src + tgt rows, then print full right-rail block.
         sys.stdout.write("\033[2A\r\033[K")
-        print(
-            Fore.YELLOW
-            + Style.BRIGHT
-            + prefix
-            + Style.RESET_ALL
-            + Fore.WHITE
-            + "Heard: "
-            + Fore.GREEN
-            + heard
+        # _emit_voz_chunk_block acquires the lock again (RLock) — OK.
+        _emit_voz_chunk_block(
+            n, heard, translated, from_cache=from_cache, blank_after=False
         )
-        print(
-            "\r\033[K"
-            + indent
-            + Fore.BLUE
-            + Style.BRIGHT
-            + "Translated: "
-            + Style.RESET_ALL
-            + Fore.WHITE
-            + translated
-        )
-        print()  # blank after Translated (timing follows)
         sys.stdout.flush()
 
 

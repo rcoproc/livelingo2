@@ -152,6 +152,29 @@ GROQ_MODEL = _get_str("GROQ_MODEL", "llama-3.3-70b-versatile")
 # Seconds to wait for the LLM response before giving up on a chunk.
 LLM_TIMEOUT = _get_float("LLM_TIMEOUT", 15.0)
 
+# Max estimated tokens of transcript per Groq request when generating the
+# share/export AI summary (`c`). Free-tier llama-3.1-8b-instant is often ~6k TPM;
+# default 4000 leaves room for system prompt + output. 0 = use built-in default.
+SUMMARY_MAX_INPUT_TOKENS = _get_int("SUMMARY_MAX_INPUT_TOKENS", 4000)
+
+# --------------------------------------------------------------------------- #
+# Phrase translation cache (TM) — exact full-sentence memory for latency tests
+# --------------------------------------------------------------------------- #
+# When true, lookup (SOURCE_LANG, TARGET_LANG, normalized heard) before calling
+# Google/LLM. HIT skips the network; MISS translates then stores.
+# Toggle at runtime: [pc on] / [pc off]. Force next live translate: [pc force].
+PHRASE_CACHE = _get_bool("PHRASE_CACHE", False)
+# Max entries in the in-process LRU dict (SQLite keeps full history).
+PHRASE_CACHE_SIZE = _get_int("PHRASE_CACHE_SIZE", 10000)
+# On startup, load frequent pairs from chunks + translation_pairs tables.
+PHRASE_CACHE_WARMUP = _get_bool("PHRASE_CACHE_WARMUP", True)
+# When true, log every HIT/MISS to the Sistema panel (always for HIT when on).
+PHRASE_CACHE_LOG = _get_bool("PHRASE_CACHE_LOG", True)
+# LiveCaptions store: also write the inverted pair (e.g. LC EN→PT also stores
+# PT→EN with the same texts swapped). Grows the opposite-direction TM so voice
+# in Portuguese can HIT phrases learned from English captions.
+PHRASE_CACHE_LC_ALSO_REVERSE = _get_bool("PHRASE_CACHE_LC_ALSO_REVERSE", True)
+
 # Synonym command [o]: wordnet (offline WordNet + Moby, default) | llm (Groq) | auto
 SYNONYMS_ENGINE = _get_str("SYNONYMS_ENGINE", "wordnet").lower()
 # Translate WordNet definitions/examples to Portuguese via Google (needs internet).
@@ -309,28 +332,37 @@ PARAGRAPH_MIN_SPEECH = _get_float("PARAGRAPH_MIN_SPEECH", 5.0)
 # Audio overlap (seconds) kept after a paragraph split.
 PARAGRAPH_SPLIT_OVERLAP = _get_float("PARAGRAPH_SPLIT_OVERLAP", 0.3)
 
-# Sentence-early emit: on a short pause after enough speech, emit that audio as
-# its own chunk (STT+translate+UI) and keep listening — do not wait for the full
-# monologue / long end-silence. Prefer this for faster per-phrase text (esp.
-# sound OFF). When true, SENTENCE_* thresholds override PARAGRAPH_* for splits.
+# Sentence-early emit: on a pause after enough speech, emit that audio as its
+# own chunk (STT+translate+UI) and keep listening — do not wait for the full
+# monologue / long end-silence. Prefer for faster per-phrase text (esp. sound
+# OFF). When true, SENTENCE_* thresholds override PARAGRAPH_* for splits.
+# Tip for long unfinished sentences: raise SENTENCE_SILENCE / MIN_SPEECH, or
+# set SENTENCE_SPLIT=false to only flush on true end-of-turn silence.
 SENTENCE_SPLIT = _get_bool("SENTENCE_SPLIT", True)
 # Only sentence-split when sound is OFF (safer with live TTS). Set false to
 # also early-emit phrases while sound is ON.
 SENTENCE_SPLIT_SOUND_OFF_ONLY = _get_bool("SENTENCE_SPLIT_SOUND_OFF_ONLY", True)
 # Pause (seconds) treated as end-of-sentence while still in an utterance.
-SENTENCE_SILENCE = _get_float("SENTENCE_SILENCE", 0.55)
+# ~0.9–1.1 resists breath/hesitation mid-phrase; 0.55 felt too eager.
+SENTENCE_SILENCE = _get_float("SENTENCE_SILENCE", 0.95)
 # Minimum speech (seconds) before a sentence pause can emit a chunk.
-SENTENCE_MIN_SPEECH = _get_float("SENTENCE_MIN_SPEECH", 1.0)
+# Higher = fewer mid-thought cuts on long answers.
+SENTENCE_MIN_SPEECH = _get_float("SENTENCE_MIN_SPEECH", 2.5)
 # Overlap (seconds) kept after a sentence split (avoids clipping next onset).
 SENTENCE_SPLIT_OVERLAP = _get_float("SENTENCE_SPLIT_OVERLAP", 0.25)
+# Max multiplier on SENTENCE_SILENCE as the monologue grows (adaptive early-split).
+# e.g. 0.95s × 2.5 ≈ 2.4s pause required after ~20s of continuous speech.
+SENTENCE_SILENCE_SCALE_MAX = _get_float("SENTENCE_SILENCE_SCALE_MAX", 2.5)
 
 # Sound OFF: process STT+translation in parallel (one worker per early chunk).
 SOUND_OFF_PARALLEL = _get_bool("SOUND_OFF_PARALLEL", True)
 SOUND_OFF_WORKERS = _get_int("SOUND_OFF_WORKERS", 2)
 # Sound OFF: skip TTS entirely (text only; saves CPU — replay needs re-synthesis).
 TTS_SKIP_WHEN_MUTED = _get_bool("TTS_SKIP_WHEN_MUTED", True)
-# Shorter end-of-speech pause (seconds) when sound is OFF ([s] muted).
-SOUND_OFF_SILENCE_DURATION = _get_float("SOUND_OFF_SILENCE_DURATION", 2.0)
+# Base end-of-speech pause (seconds) when sound is OFF ([s] muted). Used as the
+# *starting* silence (then adaptive scales up) — not a hard ceiling.
+# Avoid values < 1.2 if speakers often pause mid-thought.
+SOUND_OFF_SILENCE_DURATION = _get_float("SOUND_OFF_SILENCE_DURATION", 1.8)
 
 # Utterances shorter than this (after trimming) are ignored as noise/clicks.
 MIN_SPEECH_DURATION = _get_float("MIN_SPEECH_DURATION", 0.4)
@@ -392,6 +424,39 @@ MUTE_CAPTURE_HANGOVER_MS = _get_int("MUTE_CAPTURE_HANGOVER_MS", 350)
 # classic = colorama prints + readline (legacy)
 # tui     = Textual full-screen: scrollable log + fixed listen status at bottom
 UI_MODE = _get_str("UI_MODE", "tui").lower()
+# Start TUI already in compact/minimal layout (menu strip hidden; command line stays).
+# Same as pressing F4 / [u] once at launch. Default false = full menu visible.
+TUI_MINIMAL = _get_bool("TUI_MINIMAL", False)
+
+# --------------------------------------------------------------------------- #
+# Live Captions (Windows 11 LiveCaptions → faixa superior da TUI)
+# --------------------------------------------------------------------------- #
+# Scrapes OS captions via UI Automation (independent of mic→Whisper→TTS).
+# Requires Windows 11 22H2+ and: pip install uiautomation
+# Set language in Windows LiveCaptions settings (not only SOURCE_LANG).
+LIVE_CAPTIONS_ENABLED = _get_bool("LIVE_CAPTIONS_ENABLED", True)
+# Hide LiveCaptions window after launch (like LiveCaptions-Translator).
+LIVE_CAPTIONS_HIDE_WINDOW = _get_bool("LIVE_CAPTIONS_HIDE_WINDOW", True)
+# Kill LiveCaptions.exe when LiveLingo exits (default: leave process running).
+LIVE_CAPTIONS_KILL_ON_EXIT = _get_bool("LIVE_CAPTIONS_KILL_ON_EXIT", False)
+# Poll interval for CaptionsTextBlock (ms). LCT uses ~25.
+LIVE_CAPTIONS_POLL_MS = _get_int("LIVE_CAPTIONS_POLL_MS", 25)
+# Sentence flush heuristics (ticks of POLL_MS): idle unchanged / sync while growing.
+LIVE_CAPTIONS_MAX_IDLE = _get_int("LIVE_CAPTIONS_MAX_IDLE", 50)
+LIVE_CAPTIONS_MAX_SYNC = _get_int("LIVE_CAPTIONS_MAX_SYNC", 3)
+# Min seconds between partial (in-progress) translate API calls for the strip.
+LIVE_CAPTIONS_PARTIAL_INTERVAL_S = _get_float("LIVE_CAPTIONS_PARTIAL_INTERVAL_S", 0.7)
+# Also write **final/stable** LC pairs into the Tradução log tab (not partials).
+LIVE_CAPTIONS_LOG = _get_bool("LIVE_CAPTIONS_LOG", True)
+# Language direction for captions (inbound) vs voice pipeline (outbound):
+#   Voice BR→EN = you speak PT, others hear EN.
+#   Captions usually hear EN (meeting) and you want to READ PT → invert pair.
+# true  = LC source=TARGET_LANG, LC target=SOURCE_LANG (default, recommended)
+# false = same direction as voice (SOURCE→TARGET)
+LIVE_CAPTIONS_INVERT_LANGS = _get_bool("LIVE_CAPTIONS_INVERT_LANGS", True)
+# Optional explicit pair (overrides invert when both set), e.g. en / pt
+LIVE_CAPTIONS_SOURCE_LANG = _get_str("LIVE_CAPTIONS_SOURCE_LANG", "")
+LIVE_CAPTIONS_TARGET_LANG = _get_str("LIVE_CAPTIONS_TARGET_LANG", "")
 
 # --------------------------------------------------------------------------- #
 # Debug / Verbose Mode

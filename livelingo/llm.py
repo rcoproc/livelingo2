@@ -16,6 +16,7 @@ Uses `requests` (already installed as a dependency of deep-translator).
 """
 
 import json
+import time
 
 import requests
 
@@ -258,50 +259,271 @@ class LLMTranslator:
         return out.strip()
 
     # ------------------------------------------------------------------ #
-    def generate_meeting_summary(self, transcript_text):
-        """Generate a structured Markdown summary from a transcript."""
-        transcript_text = (transcript_text or "").strip()
-        if not transcript_text:
-            return ""
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Rough token count (safe overestimate for mixed EN/PT)."""
+        # ~3 chars/token for Romance languages is a common overestimate.
+        n = len(text or "")
+        return max(1, (n + 2) // 3)
 
-        system_prompt = (
-            "Você é um assistente executivo sênior. O usuário fornecerá a transcrição crua de uma conversa ou reunião.\n"
-            "Sua tarefa é analisar o conteúdo falado e gerar um resumo executivo em Português do Brasil.\n"
-            "A resposta DEVE obrigatoriamente seguir a estrutura Markdown abaixo:\n\n"
-            "## 📌 Assunto Principal\n"
-            "[Identifique o tema central da conversa]\n\n"
-            "## 📝 Resumo Objetivo\n"
-            "[Um parágrafo resumindo o que foi discutido de forma concisa e direta]\n\n"
-            "## ✅ Tarefas e Ações\n"
-            "- [Liste tarefas a serem executadas, pontos de ação ou itens que precisam de análise futura de acordo com o contexto.]\n"
-            "- [Se não houver tarefas óbvias, deduza possíveis próximos passos baseados na conversa.]\n"
-        )
+    def _summary_input_budget(self) -> int:
+        """
+        Max transcript tokens for one Groq request.
 
+        Free-tier 8b-instant often caps ~6000 TPM *per request*. Leave room
+        for system prompt (~400) + max_tokens output (800) + margin.
+        Override: SUMMARY_MAX_INPUT_TOKENS in config.
+        """
+        try:
+            override = int(getattr(self.cfg, "SUMMARY_MAX_INPUT_TOKENS", 0) or 0)
+        except (TypeError, ValueError):
+            override = 0
+        if override > 500:
+            return override
+        # Default conservative budget works for llama-3.1-8b-instant free tier.
+        return 4000
+
+    def _chat_completion(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float = 0.3,
+        max_tokens: int = 800,
+        timeout: float = 180.0,
+    ) -> str:
+        """Single non-stream chat call; raises LLMError on failure."""
         payload = {
             "model": self.model,
-            "temperature": 0.3,
-            "max_tokens": 1000,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
             "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Transcrição da conversa:\n{transcript_text}"},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
         }
         try:
             resp = self.session.post(
-                GROQ_URL, json=payload, timeout=180.0
+                GROQ_URL, json=payload, timeout=timeout
             )
         except requests.RequestException as exc:
             raise LLMError(f"network error contacting Groq: {exc}") from exc
 
         if resp.status_code == 401:
             raise LLMError("Groq rejected the API key (401). Check GROQ_API_KEY.")
+        if resp.status_code == 413 or (
+            resp.status_code == 429
+            and "too large" in (resp.text or "").lower()
+        ):
+            raise LLMError(
+                f"Groq request too large ({resp.status_code}): transcript "
+                f"exceeds model/TPM limit. LiveLingo will chunk automatically; "
+                f"if this persists, set SUMMARY_MAX_INPUT_TOKENS lower or "
+                f"GROQ_MODEL to a higher-tier model. Detail: {resp.text[:180]}"
+            )
         if resp.status_code >= 400:
-            raise LLMError(f"Groq error {resp.status_code}: {resp.text[:200]}")
+            raise LLMError(
+                f"Groq error {resp.status_code}: {resp.text[:280]}"
+            )
 
         try:
             data = resp.json()
             out = data["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError) as exc:
             raise LLMError(f"unexpected Groq response: {exc}") from exc
+        return (out or "").strip()
 
-        return out.strip()
+    def _split_transcript_chunks(self, transcript_text: str, budget: int) -> list:
+        """
+        Split transcript into pieces under `budget` tokens, preferring
+        line boundaries (each line is usually one phrase).
+        """
+        text = (transcript_text or "").strip()
+        if not text:
+            return []
+        if self._estimate_tokens(text) <= budget:
+            return [text]
+
+        lines = text.split("\n")
+        chunks = []
+        cur: list = []
+        cur_tok = 0
+        for line in lines:
+            line_tok = self._estimate_tokens(line) + 1
+            # Single huge line — hard-cut by characters
+            if line_tok > budget:
+                if cur:
+                    chunks.append("\n".join(cur))
+                    cur, cur_tok = [], 0
+                # ~3 chars/token
+                step = max(200, budget * 3)
+                for i in range(0, len(line), step):
+                    chunks.append(line[i : i + step])
+                continue
+            if cur and cur_tok + line_tok > budget:
+                chunks.append("\n".join(cur))
+                cur, cur_tok = [], 0
+            cur.append(line)
+            cur_tok += line_tok
+        if cur:
+            chunks.append("\n".join(cur))
+        return chunks or [text[: budget * 3]]
+
+    def generate_meeting_summary(self, transcript_text):
+        """
+        Structured Markdown executive summary from a transcript.
+
+        Long sessions are map-reduced so free-tier Groq TPM limits
+        (e.g. 6000 on llama-3.1-8b-instant) are not exceeded.
+        """
+        transcript_text = (transcript_text or "").strip()
+        if not transcript_text:
+            return ""
+
+        final_system = (
+            "Você é um assistente executivo sênior. O usuário fornecerá a "
+            "transcrição crua de uma conversa ou reunião.\n"
+            "Sua tarefa é analisar o conteúdo falado e gerar um resumo "
+            "executivo em Português do Brasil.\n"
+            "A resposta DEVE obrigatoriamente seguir a estrutura Markdown "
+            "abaixo:\n\n"
+            "## 📌 Assunto Principal\n"
+            "[Identifique o tema central da conversa]\n\n"
+            "## 📝 Resumo Objetivo\n"
+            "[Um parágrafo resumindo o que foi discutido de forma concisa "
+            "e direta]\n\n"
+            "## ✅ Tarefas e Ações\n"
+            "- [Liste tarefas a serem executadas, pontos de ação ou itens "
+            "que precisam de análise futura de acordo com o contexto.]\n"
+            "- [Se não houver tarefas óbvias, deduza possíveis próximos "
+            "passos baseados na conversa.]\n"
+        )
+        partial_system = (
+            "Você resume trechos de uma reunião em Português do Brasil. "
+            "Seja denso e fiel ao texto. Estrutura:\n"
+            "### Trecho\n"
+            "- Assunto: …\n"
+            "- Pontos: …\n"
+            "- Ações: …\n"
+            "Sem introdução fora dessa estrutura."
+        )
+        merge_system = (
+            "Você é um assistente executivo sênior. Abaixo há resumos "
+            "parciais de uma mesma reunião (a transcrição foi dividida por "
+            "limite de tokens da API).\n"
+            "Una tudo num único resumo executivo em Português do Brasil, "
+            "sem repetir, seguindo EXATAMENTE:\n\n"
+            "## 📌 Assunto Principal\n\n"
+            "## 📝 Resumo Objetivo\n\n"
+            "## ✅ Tarefas e Ações\n"
+        )
+
+        budget = self._summary_input_budget()
+        pieces = self._split_transcript_chunks(transcript_text, budget)
+
+        # Fast path: fits in one request
+        if len(pieces) == 1:
+            try:
+                return self._chat_completion(
+                    system=final_system,
+                    user=f"Transcrição da conversa:\n{pieces[0]}",
+                    temperature=0.3,
+                    max_tokens=1000,
+                )
+            except LLMError as exc:
+                # If still too large (bad estimate), force smaller budget once
+                msg = str(exc).lower()
+                if "too large" not in msg and "413" not in msg:
+                    raise
+                pieces = self._split_transcript_chunks(
+                    transcript_text, max(1500, budget // 2)
+                )
+
+        # Map: partial summaries (pace calls — free-tier ~6k TPM/min)
+        partials = []
+        n = len(pieces)
+        tpm_cap = 5500.0  # stay under common free-tier 6000 TPM
+        last_call = 0.0
+        for i, piece in enumerate(pieces, 1):
+            est = self._estimate_tokens(piece) + 600  # +reply headroom
+            if last_call > 0:
+                need = 60.0 * est / tpm_cap
+                waited = time.monotonic() - last_call
+                if waited < need:
+                    pause = min(25.0, need - waited)
+                    try:
+                        from . import ui as _ui
+
+                        _ui.dim(
+                            f"Resumo IA: aguardando {pause:.0f}s "
+                            f"(limite TPM Groq)…"
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(pause)
+            try:
+                from . import ui as _ui
+
+                _ui.dim(
+                    f"Resumo IA: parte {i}/{n} "
+                    f"(~{self._estimate_tokens(piece)} tok)…"
+                )
+            except Exception:
+                pass
+            part = self._chat_completion(
+                system=partial_system,
+                user=f"Trecho {i}/{n} da transcrição:\n{piece}",
+                temperature=0.2,
+                max_tokens=500,
+            )
+            last_call = time.monotonic()
+            if part:
+                partials.append(f"### Parte {i}/{n}\n{part}")
+
+        if not partials:
+            raise LLMError("Groq returned empty partial summaries.")
+
+        merged_src = "\n\n".join(partials)
+        # If merge payload still huge, keep only the partials (already useful)
+        if self._estimate_tokens(merged_src) > budget:
+            # Truncate oldest partials until under budget
+            kept = []
+            tok = 0
+            for p in reversed(partials):
+                pt = self._estimate_tokens(p)
+                if kept and tok + pt > budget:
+                    break
+                kept.append(p)
+                tok += pt
+            merged_src = "\n\n".join(reversed(kept))
+
+        # Pace before final merge too
+        est_m = self._estimate_tokens(merged_src) + 1000
+        if last_call > 0:
+            need = 60.0 * est_m / tpm_cap
+            waited = time.monotonic() - last_call
+            if waited < need:
+                pause = min(25.0, need - waited)
+                try:
+                    from . import ui as _ui
+
+                    _ui.dim(
+                        f"Resumo IA: aguardando {pause:.0f}s antes do merge…"
+                    )
+                except Exception:
+                    pass
+                time.sleep(pause)
+
+        try:
+            from . import ui as _ui
+
+            _ui.dim("Resumo IA: unindo partes no resumo executivo final…")
+        except Exception:
+            pass
+
+        return self._chat_completion(
+            system=merge_system,
+            user=f"Resumos parciais da reunião:\n\n{merged_src}",
+            temperature=0.3,
+            max_tokens=1000,
+        )
