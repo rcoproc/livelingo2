@@ -2,11 +2,15 @@
 tui_app.py
 ==========
 Textual TUI for LiveLingo: fixed listen header (robot + source/target) +
-two scrollable log tabs (Tradução / Sistema) + command input.
+four scrollable log tabs (Tradução / Sistema / Novidades / Command list)
++ command input.
 
 Pipeline (mic/STT/TTS) keeps running in background threads; this module only
 owns the screen. Logs arrive via ui.set_log_sink(kind, text, panel); commands
 reuse main dispatch in a worker thread with stdin/stdout proxies.
+
+The Novidades ("What's New") tab shows CHANGELOG.md; the Command list tab
+lists all menu commands (Markdown, i18n by SOURCE_LANG).
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import traceback
 from typing import Callable, Iterable
 
@@ -26,8 +31,117 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.selection import Selection
 from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedContent, TabPane
+# Click events on Static bypass badge (#cmd-bypass)
 
-from . import ui as ui_mod
+from . import command_help, ui as ui_mod
+
+
+# --------------------------------------------------------------------------- #
+# Mic mute modal — red / white, centered; only [n] unmutes (TUI stays behind)
+# --------------------------------------------------------------------------- #
+class MicMutedModal(ModalScreen[str]):
+    """
+    Full-screen dim overlay with a centered red dialog while the mic is muted.
+
+    Background TUI remains visible (dimmed). Sole action: press **n** to unmute.
+    """
+
+    CSS = """
+    MicMutedModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.55);
+    }
+    #mic-mute-box {
+        width: 56;
+        max-width: 92%;
+        height: auto;
+        background: #c62828;
+        color: #ffffff;
+        border: tall #ffffff;
+        padding: 1 2;
+        layout: vertical;
+    }
+    #mic-mute-box Static {
+        width: 100%;
+        color: #ffffff;
+        background: transparent;
+        text-align: center;
+    }
+    #mic-mute-title {
+        text-style: bold;
+        text-align: center;
+        color: #ffffff;
+        padding-bottom: 1;
+    }
+    #mic-mute-name {
+        text-align: center;
+        color: #ffebee;
+        text-style: italic;
+    }
+    #mic-mute-msg, #mic-mute-msg2 {
+        text-align: center;
+        color: #ffffff;
+        padding-top: 0;
+    }
+    #mic-mute-msg {
+        padding-top: 1;
+    }
+    #mic-mute-hint {
+        text-align: center;
+        text-style: bold;
+        color: #ffffff;
+        background: #8e0000;
+        padding: 1 1;
+        margin-top: 1;
+        border: solid #ffffff;
+    }
+    """
+
+    BINDINGS = [
+        Binding("n", "unmute", "n desmutar", show=True, priority=True),
+        Binding("N", "unmute", "n desmutar", show=False, priority=True),
+    ]
+
+    def __init__(
+        self,
+        *,
+        title: str = "MIC MUTED",
+        mic_name: str = "",
+        message: str = "",
+        message2: str = "",
+        hint: str = "[n]  desmutar",
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._title = title or "MIC MUTED"
+        self._mic_name = (mic_name or "").strip()
+        self._message = (message or "").strip()
+        self._message2 = (message2 or "").strip()
+        self._hint = hint or "[n]  desmutar"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="mic-mute-box"):
+            yield Static(f"🔇  {self._title}", id="mic-mute-title")
+            if self._mic_name:
+                yield Static(self._mic_name, id="mic-mute-name")
+            if self._message:
+                yield Static(self._message, id="mic-mute-msg")
+            if self._message2:
+                yield Static(self._message2, id="mic-mute-msg2")
+            yield Static(self._hint, id="mic-mute-hint")
+
+    def action_unmute(self) -> None:
+        """Only way out: dismiss with 'n' so the app unmutes the mic."""
+        self.dismiss("n")
+
+    def on_key(self, event: events.Key) -> None:
+        # Accept plain n / N even when focus is odd (some terminals)
+        key = (event.key or event.name or "").lower()
+        ch = (event.character or "").lower()
+        if key in ("n",) or ch == "n":
+            event.prevent_default()
+            event.stop()
+            self.action_unmute()
 
 # Strip ANSI for log cleanliness when proxying print()
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -487,6 +601,10 @@ class SelectableRichLog(RichLog):
         self._plain_lines: list[str] = []
         # Last measured content width while the pane was visible (≥40).
         self._last_good_width = 0
+        # Vim-style / search highlight (applied in _render_line)
+        self._search_query: str = ""
+        self._search_hit_ys: set[int] = set()
+        self._search_current_y: int | None = None
 
     def _safe_render_width(self) -> int:
         """
@@ -566,10 +684,124 @@ class SelectableRichLog(RichLog):
 
     def clear(self) -> None:
         self._plain_lines.clear()
+        self.clear_search_highlight(refresh=False)
         try:
             return super().clear()
         except Exception:
             return None
+
+    def set_search_highlight(
+        self,
+        query: str,
+        hit_ys: list[int] | None,
+        current_y: int | None,
+    ) -> None:
+        """Highlight search hits; current_y is the active match (stronger color)."""
+        self._search_query = (query or "").strip()
+        self._search_hit_ys = set(int(y) for y in (hit_ys or []) if y is not None)
+        try:
+            self._search_current_y = int(current_y) if current_y is not None else None
+        except Exception:
+            self._search_current_y = None
+        try:
+            self._line_cache.clear()
+        except Exception:
+            pass
+        try:
+            self.refresh()
+        except Exception:
+            pass
+
+    def clear_search_highlight(self, *, refresh: bool = True) -> None:
+        """Remove / search highlight from this log."""
+        self._search_query = ""
+        self._search_hit_ys = set()
+        self._search_current_y = None
+        try:
+            self._line_cache.clear()
+        except Exception:
+            pass
+        if refresh:
+            try:
+                self.refresh()
+            except Exception:
+                pass
+
+    def find_match_ys(self, query: str) -> list[int]:
+        """
+        Return content Y indices (rendered strips preferred) matching query.
+
+        Case-insensitive substring search. Used by vim-style `/` log search.
+        """
+        q = (query or "").casefold()
+        if not q:
+            return []
+        hits: list[int] = []
+        # Prefer baked/wrapped strips — Y matches scroll content_y.
+        try:
+            lines = getattr(self, "lines", None)
+            if lines:
+                for y, line in enumerate(lines):
+                    try:
+                        text = getattr(line, "text", None)
+                        if text is None:
+                            text = str(line)
+                    except Exception:
+                        text = ""
+                    if q in (text or "").casefold():
+                        hits.append(y)
+                if hits or len(lines) > 0:
+                    return hits
+        except Exception:
+            hits = []
+        # Fallback: logical plain lines (may not match wrap Y exactly)
+        for y, line in enumerate(self._plain_lines):
+            if q in (line or "").casefold():
+                hits.append(y)
+        return hits
+
+    def scroll_to_content_y(self, y: int) -> None:
+        """Scroll so content row `y` is visible (prefer upper third). UI thread."""
+        try:
+            self.auto_scroll = False
+        except Exception:
+            pass
+        try:
+            region_h = int(self.scrollable_content_region.height or 0)
+        except Exception:
+            region_h = 0
+        if region_h < 1:
+            try:
+                region_h = int(getattr(self.size, "height", 0) or 0)
+            except Exception:
+                region_h = 10
+        region_h = max(3, region_h)
+        target = max(0, int(y) - max(0, region_h // 3))
+        try:
+            max_y = int(getattr(self, "max_scroll_y", 0) or 0)
+            if max_y > 0:
+                target = min(target, max_y)
+        except Exception:
+            pass
+        for kwargs in (
+            {"animate": False, "immediate": True},
+            {"animate": False},
+            {},
+        ):
+            try:
+                self.scroll_to(0, target, **kwargs)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                break
+        try:
+            self.refresh(layout=True)
+        except Exception:
+            try:
+                self.refresh()
+            except Exception:
+                pass
 
     def get_plain_text(self) -> str:
         """Full log as plain text (for copy-all)."""
@@ -626,8 +858,32 @@ class SelectableRichLog(RichLog):
             pass
         return strip
 
+    def _search_spans_on_line(self, text: str) -> list[tuple[int, int]]:
+        """Case-insensitive match spans of the current search query on one line."""
+        q = (self._search_query or "").strip()
+        if not q or not text:
+            return []
+        spans: list[tuple[int, int]] = []
+        try:
+            for m in re.finditer(re.escape(q), text, flags=re.IGNORECASE):
+                a, b = m.span()
+                if b > a:
+                    spans.append((a, b))
+        except Exception:
+            # Fallback: simple casefold scan (ASCII-safe)
+            lower = text.casefold()
+            ql = q.casefold()
+            start = 0
+            while True:
+                idx = lower.find(ql, start)
+                if idx < 0:
+                    break
+                spans.append((idx, idx + len(ql)))
+                start = idx + max(1, len(ql))
+        return spans
+
     def _render_line(self, y: int, scroll_x: int, width: int):
-        """Render content line y; apply selection highlight when active."""
+        """Render content line y; apply selection + /search highlights."""
         from rich.cells import cell_len
         from rich.style import Style
         from rich.text import Text
@@ -637,44 +893,80 @@ class SelectableRichLog(RichLog):
             return TStrip.blank(width, self.rich_style)
 
         selection = self.text_selection
-        if selection is None:
-            return super()._render_line(y, scroll_x, width)
+        has_sel = (
+            selection is not None
+            and not (selection.start is None and selection.end is None)
+        )
+        has_search = bool(
+            (self._search_query or "").strip()
+            and y in (self._search_hit_ys or set())
+        )
 
-        # Never paint SELECT_ALL (None, None) as full-widget blue fill —
-        # that happens only when offsets are missing; once apply_offsets is
-        # wired, normal drags use real start/end. Still guard for safety.
-        if selection.start is None and selection.end is None:
+        if not has_sel and not has_search:
             return super()._render_line(y, scroll_x, width)
 
         try:
             full = self.lines[y]
-            line_text = Text(full.text, no_wrap=True)
-            span = selection.get_span(y)
-            if span is not None:
-                start, end = span
-                if end == -1:
-                    end = len(line_text)
-                try:
-                    sel_style = self.screen.get_component_rich_style(
-                        "screen--selection"
+            raw = full.text if hasattr(full, "text") else str(full)
+            line_text = Text(raw, no_wrap=True)
+
+            # 1) Mouse selection (if any)
+            if has_sel:
+                span = selection.get_span(y)
+                if span is not None:
+                    start, end = span
+                    if end == -1:
+                        end = len(line_text)
+                    try:
+                        sel_style = self.screen.get_component_rich_style(
+                            "screen--selection"
+                        )
+                    except Exception:
+                        sel_style = Style(
+                            bgcolor="#f0d78c", color="#1a1b26", bold=True
+                        )
+                    if sel_style.bgcolor is not None and (
+                        sel_style.color is None
+                        or str(sel_style.bgcolor).lower()
+                        in ("#0000af", "#000080", "blue", "navy", "#0a2540")
+                    ):
+                        sel_style = Style(
+                            bgcolor="#f0d78c", color="#1a1b26", bold=True
+                        )
+                    start = max(0, min(int(start), len(line_text)))
+                    end = max(start, min(int(end), len(line_text)))
+                    if end > start:
+                        line_text.stylize(sel_style, start, end)
+
+            # 2) /search hits — other matches yellow; current match bright orange
+            if has_search:
+                other_style = Style(bgcolor="#f0d78c", color="#1a1b26", bold=True)
+                current_style = Style(
+                    bgcolor="#ff9500", color="#1a1b26", bold=True
+                )
+                is_current = self._search_current_y is not None and int(
+                    self._search_current_y
+                ) == int(y)
+                # Soft whole-line wash so the row is easy to spot while scrolling
+                if is_current:
+                    line_text.stylize(
+                        Style(bgcolor="#3d2e12", color=None), 0, len(line_text)
                     )
-                except Exception:
-                    # Soft yellow highlight — never reverse/navy "erase" look
-                    sel_style = Style(bgcolor="#f0d78c", color="#1a1b26", bold=True)
-                # If theme only set bgcolor and left color empty/dark-on-dark, force contrast
-                if sel_style.bgcolor is not None and (
-                    sel_style.color is None
-                    or str(sel_style.bgcolor).lower()
-                    in ("#0000af", "#000080", "blue", "navy", "#0a2540")
-                ):
-                    sel_style = Style(bgcolor="#f0d78c", color="#1a1b26", bold=True)
-                start = max(0, min(int(start), len(line_text)))
-                end = max(start, min(int(end), len(line_text)))
-                if end > start:
-                    line_text.stylize(sel_style, start, end)
+                else:
+                    line_text.stylize(
+                        Style(bgcolor="#2a2818", color=None), 0, len(line_text)
+                    )
+                for a, b in self._search_spans_on_line(raw):
+                    a = max(0, min(a, len(line_text)))
+                    b = max(a, min(b, len(line_text)))
+                    if b > a:
+                        line_text.stylize(
+                            current_style if is_current else other_style, a, b
+                        )
+
             strip = TStrip(
                 line_text.render(self.app.console),
-                cell_len(full.text),
+                cell_len(raw),
             )
             return strip.crop_extend(scroll_x, scroll_x + width, self.rich_style)
         except Exception:
@@ -781,6 +1073,8 @@ _FOOTER_I18N = {
         "export": "Export",
         "replay": "Replay",
         "replay_n": "Replay N",
+        "replay_src": "Replay Heard",
+        "replay_src_n": "Heard N",
         "snd": "Snd",
         "mic": "Mic",
         "bypass": "Bypass",
@@ -809,6 +1103,39 @@ _FOOTER_I18N = {
         "g_swap": "g(swap)",
         "t_target": "t(target)",
         "cmd_tts": "TTS",
+        "tab_news": "What's New",
+        "news_header": "Project changelog (CHANGELOG.md)",
+        "news_missing": "CHANGELOG.md not found in the project root.",
+        "news_read_error": "Could not read CHANGELOG.md",
+        "tab_commands": "Command list",
+        "search_hit": 'Search: "{q}" — {i}/{n}',
+        "search_none": 'No matches: "{q}"',
+        "search_no_active": "No active search. Use /text first.  (/n next · /p prev)",
+        "search_help": (
+            "Log search: /text  ·  /n next  ·  /p previous  ·  /  repeat  ·  "
+            "aliases: find text  ·  find:text  ·  s?text"
+        ),
+        "search_empty_log": "Active log tab is empty — nothing to search.",
+        "bypass_on_label": "F2 Sua Voz",
+        "bypass_off_label": "F2 Audio Trad.",
+        "bypass_tooltip_on": "BYPASS ON — your raw voice → output (no translation). F2 / click / [b] to turn off.",
+        "bypass_tooltip_off": "BYPASS OFF — translated audio path. F2 / click / [b] to send your voice directly.",
+        # Pipeline activity bar (left of command box)
+        "pipe_mic": "Mic",
+        "pipe_stt": "STT",
+        "pipe_tr": "Trad",
+        "pipe_tts": "TTS",
+        "pipe_out": "Out",
+        "pipe_mic_active": "Ouvindo",
+        "pipe_stt_active": "STT…",
+        "pipe_tr_active": "Traduz…",
+        "pipe_tts_active": "TTS…",
+        "pipe_out_active": "Cable",
+        "pipe_lc": "LC",
+        "pipe_lc_active": "LC●",
+        "pipe_bypass": "BYPASS→Out",
+        "pipe_muted": "Mic muted",
+        "pipe_tip": "VOZ: Mic → STT → Trad → TTS → Cable Out · LC = LiveCaptions",
     },
     "pt": {
         "sentence": "Frase",
@@ -833,6 +1160,8 @@ _FOOTER_I18N = {
         "export": "Export",
         "replay": "Replay",
         "replay_n": "Replay N",
+        "replay_src": "Replay Heard",
+        "replay_src_n": "Heard N",
         "snd": "Som",
         "mic": "Mic",
         "bypass": "Bypass",
@@ -861,6 +1190,38 @@ _FOOTER_I18N = {
         "g_swap": "g(trocar)",
         "t_target": "t(alvo)",
         "cmd_tts": "TTS",
+        "tab_news": "Novidades",
+        "news_header": "Changelog do projeto (CHANGELOG.md)",
+        "news_missing": "CHANGELOG.md nao encontrado na raiz do projeto.",
+        "news_read_error": "Nao foi possivel ler CHANGELOG.md",
+        "tab_commands": "Lista de comandos",
+        "search_hit": 'Busca: "{q}" — {i}/{n}',
+        "search_none": 'Nenhuma ocorrência: "{q}"',
+        "search_no_active": "Sem busca ativa. Use /texto primeiro.  (/n próximo · /p anterior)",
+        "search_help": (
+            "Busca no log: /texto  ·  /n próximo  ·  /p anterior  ·  /  repetir  ·  "
+            "aliases: find texto  ·  find:texto  ·  s?texto"
+        ),
+        "search_empty_log": "Aba de log ativa vazia — nada para buscar.",
+        "bypass_on_label": "F2 Sua Voz",
+        "bypass_off_label": "F2 Audio Trad.",
+        "bypass_tooltip_on": "BYPASS ON — sua voz vai direto à saída (sem tradução). F2 / clique / [b] para desligar.",
+        "bypass_tooltip_off": "BYPASS OFF — caminho de áudio traduzido. F2 / clique / [b] para enviar sua voz direta.",
+        "pipe_mic": "Mic",
+        "pipe_stt": "STT",
+        "pipe_tr": "Trad",
+        "pipe_tts": "TTS",
+        "pipe_out": "Out",
+        "pipe_mic_active": "Ouvindo",
+        "pipe_stt_active": "STT…",
+        "pipe_tr_active": "Traduz…",
+        "pipe_tts_active": "TTS…",
+        "pipe_out_active": "Cable",
+        "pipe_lc": "LC",
+        "pipe_lc_active": "LC●",
+        "pipe_bypass": "BYPASS→Out",
+        "pipe_muted": "Mic mudo",
+        "pipe_tip": "VOZ: Mic → STT → Trad → TTS → Cable Out · LC = LiveCaptions",
     },
     "es": {
         "sentence": "Frase",
@@ -903,6 +1264,20 @@ _FOOTER_I18N = {
         "g_swap": "g(cambiar)",
         "t_target": "t(destino)",
         "cmd_tts": "TTS",
+        "tab_news": "Novedades",
+        "news_header": "Changelog del proyecto (CHANGELOG.md)",
+        "news_missing": "No se encontro CHANGELOG.md en la raiz del proyecto.",
+        "news_read_error": "No se pudo leer CHANGELOG.md",
+        "tab_commands": "Lista de comandos",
+        "search_hit": 'Búsqueda: "{q}" — {i}/{n}',
+        "search_none": 'Sin coincidencias: "{q}"',
+        "search_no_active": "Sin búsqueda activa. Use /texto primero.  (/n sig. · /p ant.)",
+        "search_help": "Buscar en log: /texto  ·  /n siguiente  ·  /p anterior  ·  /  repetir",
+        "search_empty_log": "Pestaña de log vacía — nada que buscar.",
+        "bypass_on_label": "F2 Tu voz",
+        "bypass_off_label": "F2 Audio trad.",
+        "bypass_tooltip_on": "BYPASS ON — tu voz va directa a la salida (sin traducción). F2 / clic / [b] para apagar.",
+        "bypass_tooltip_off": "BYPASS OFF — ruta de audio traducido. F2 / clic / [b] para voz directa.",
     },
     "fr": {
         "sentence": "Phrase",
@@ -945,6 +1320,20 @@ _FOOTER_I18N = {
         "g_swap": "g(echange)",
         "t_target": "t(cible)",
         "cmd_tts": "TTS",
+        "tab_news": "Nouveautes",
+        "news_header": "Changelog du projet (CHANGELOG.md)",
+        "news_missing": "CHANGELOG.md introuvable a la racine du projet.",
+        "news_read_error": "Impossible de lire CHANGELOG.md",
+        "tab_commands": "Liste des commandes",
+        "search_hit": 'Recherche: "{q}" — {i}/{n}',
+        "search_none": 'Aucune occurrence: "{q}"',
+        "search_no_active": "Pas de recherche active. Utilisez /texte d'abord.  (/n suiv. · /p préc.)",
+        "search_help": "Recherche log: /texte  ·  /n suivant  ·  /p précédent  ·  /  répéter",
+        "search_empty_log": "Onglet de log vide — rien à chercher.",
+        "bypass_on_label": "F2 Votre voix",
+        "bypass_off_label": "F2 Audio trad.",
+        "bypass_tooltip_on": "BYPASS ON — votre voix va direct à la sortie (sans traduction). F2 / clic / [b] pour arrêter.",
+        "bypass_tooltip_off": "BYPASS OFF — chemin audio traduit. F2 / clic / [b] pour voix directe.",
     },
     "de": {
         "sentence": "Satz",
@@ -987,6 +1376,20 @@ _FOOTER_I18N = {
         "g_swap": "g(tausch)",
         "t_target": "t(ziel)",
         "cmd_tts": "TTS",
+        "tab_news": "Neuigkeiten",
+        "news_header": "Projekt-Changelog (CHANGELOG.md)",
+        "news_missing": "CHANGELOG.md im Projektstamm nicht gefunden.",
+        "news_read_error": "CHANGELOG.md konnte nicht gelesen werden",
+        "tab_commands": "Befehlsliste",
+        "search_hit": 'Suche: "{q}" — {i}/{n}',
+        "search_none": 'Keine Treffer: "{q}"',
+        "search_no_active": "Keine aktive Suche. Zuerst /text.  (/n weiter · /p zurück)",
+        "search_help": "Log-Suche: /text  ·  /n weiter  ·  /p zurück  ·  /  wiederholen",
+        "search_empty_log": "Aktiver Log-Tab leer — nichts zu suchen.",
+        "bypass_on_label": "F2 Stimme",
+        "bypass_off_label": "F2 Audio übers.",
+        "bypass_tooltip_on": "BYPASS ON — Ihre Stimme geht direkt zum Ausgang (ohne Übersetzung). F2 / Klick / [b] aus.",
+        "bypass_tooltip_off": "BYPASS OFF — übersetzter Audiopfad. F2 / Klick / [b] für Direktstimme.",
     },
     "it": {
         "sentence": "Frase",
@@ -1029,6 +1432,20 @@ _FOOTER_I18N = {
         "g_swap": "g(scambia)",
         "t_target": "t(target)",
         "cmd_tts": "TTS",
+        "tab_news": "Novita",
+        "news_header": "Changelog del progetto (CHANGELOG.md)",
+        "news_missing": "CHANGELOG.md non trovato nella root del progetto.",
+        "news_read_error": "Impossibile leggere CHANGELOG.md",
+        "tab_commands": "Elenco comandi",
+        "search_hit": 'Ricerca: "{q}" — {i}/{n}',
+        "search_none": 'Nessuna occorrenza: "{q}"',
+        "search_no_active": "Nessuna ricerca attiva. Usa /testo prima.  (/n succ. · /p prec.)",
+        "search_help": "Cerca nel log: /testo  ·  /n successivo  ·  /p precedente  ·  /  ripeti",
+        "search_empty_log": "Scheda log vuota — nulla da cercare.",
+        "bypass_on_label": "F2 Tua voce",
+        "bypass_off_label": "F2 Audio trad.",
+        "bypass_tooltip_on": "BYPASS ON — la tua voce va diretta all'uscita (senza traduzione). F2 / clic / [b] per spegnere.",
+        "bypass_tooltip_off": "BYPASS OFF — percorso audio tradotto. F2 / clic / [b] per voce diretta.",
     },
     "zh": {
         "sentence": "句子",
@@ -1071,6 +1488,20 @@ _FOOTER_I18N = {
         "g_swap": "g(交换)",
         "t_target": "t(目标)",
         "cmd_tts": "TTS",
+        "tab_news": "更新",
+        "news_header": "项目更新日志 (CHANGELOG.md)",
+        "news_missing": "项目根目录未找到 CHANGELOG.md。",
+        "news_read_error": "无法读取 CHANGELOG.md",
+        "tab_commands": "命令列表",
+        "search_hit": '搜索: "{q}" — {i}/{n}',
+        "search_none": '无匹配: "{q}"',
+        "search_no_active": "无活动搜索。请先 /文本。  (/n 下一个 · /p 上一个)",
+        "search_help": "日志搜索: /文本  ·  /n 下一个  ·  /p 上一个  ·  / 重复",
+        "search_empty_log": "当前日志页为空 — 无可搜索内容。",
+        "bypass_on_label": "F2 您的声音",
+        "bypass_off_label": "F2 翻译音频",
+        "bypass_tooltip_on": "BYPASS 开 — 原始人声直达输出（无翻译）。F2 / 点击 / [b] 关闭。",
+        "bypass_tooltip_off": "BYPASS 关 — 翻译音频路径。F2 / 点击 / [b] 直送人声。",
     },
     "ja": {
         "sentence": "文",
@@ -1113,6 +1544,20 @@ _FOOTER_I18N = {
         "g_swap": "g(入替)",
         "t_target": "t(対象)",
         "cmd_tts": "TTS",
+        "tab_news": "新着",
+        "news_header": "プロジェクト変更履歴 (CHANGELOG.md)",
+        "news_missing": "プロジェクト直下に CHANGELOG.md が見つかりません。",
+        "news_read_error": "CHANGELOG.md を読めませんでした",
+        "tab_commands": "コマンド一覧",
+        "search_hit": '検索: "{q}" — {i}/{n}',
+        "search_none": '一致なし: "{q}"',
+        "search_no_active": "検索がありません。先に /text。  (/n 次 · /p 前)",
+        "search_help": "ログ検索: /text  ·  /n 次  ·  /p 前  ·  / 再実行",
+        "search_empty_log": "アクティブログが空です — 検索対象なし。",
+        "bypass_on_label": "F2 あなたの声",
+        "bypass_off_label": "F2 翻訳音声",
+        "bypass_tooltip_on": "BYPASS ON — 生の声を出力へ（翻訳なし）。F2 / クリック / [b] でオフ。",
+        "bypass_tooltip_off": "BYPASS OFF — 翻訳音声パス。F2 / クリック / [b] で直送。",
     },
 }
 
@@ -1146,6 +1591,38 @@ def _footer_i18n() -> dict:
     base = dict(_FOOTER_I18N["en"])
     base.update(pack)
     return base
+
+
+def _project_root() -> str:
+    """LiveLingo project root (parent of livelingo package)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _changelog_path() -> str | None:
+    """Return path to CHANGELOG.md if present (case variants)."""
+    root = _project_root()
+    for name in ("CHANGELOG.md", "changelog.md", "Changelog.md"):
+        path = os.path.join(root, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _load_changelog_text() -> tuple[str | None, str | None]:
+    """
+    Load CHANGELOG.md from project root.
+
+    Returns (text, error_message). On success error_message is None.
+    """
+    path = _changelog_path()
+    i18n = _footer_i18n()
+    if not path:
+        return None, i18n.get("news_missing", "CHANGELOG.md not found.")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read(), None
+    except Exception as exc:
+        return None, f"{i18n.get('news_read_error', 'Could not read CHANGELOG.md')}: {exc}"
 
 
 # Command palette: titles stay English; help text under each option = SOURCE_LANG.
@@ -1297,7 +1774,7 @@ def _lang_pair_parts():
 
 
 class LiveLingoApp(App):
-    """Main LiveLingo TUI — listen header + Tradução/Sistema log tabs + cmd."""
+    """Main LiveLingo TUI — listen header + 4 log tabs + cmd."""
 
     TITLE = "LiveLingo"
     SUB_TITLE = "real-time voice translation"
@@ -1349,9 +1826,73 @@ class LiveLingoApp(App):
         background: $panel;
         height: 1;
     }
-    /* Dual log: Tradução (chunks/comandos) + Sistema (etapas/timing) */
+    /*
+     * Live Captions strip (above log tabs) — fixed height so #log-tabs (1fr)
+     * shrinks. Original + translated lines for Windows LiveCaptions PoC.
+     */
+    #captions-panel {
+        /* 8 rows: border 2 + title 1 + src 2 + tgt 2 + status 1 */
+        height: 8;
+        min-height: 8;
+        max-height: 8;
+        layout: vertical;
+        width: 1fr;
+        margin: 0;
+        padding: 0 1;
+        background: #1a1b26;
+        border: solid #7aa2f7;
+        overflow: hidden;
+    }
+    #captions-panel.-error {
+        border: solid #f7768e;
+    }
+    #captions-panel.-paused {
+        border: solid #e0a020;
+    }
+    #captions-title {
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        width: 1fr;
+        text-style: bold;
+        color: #7aa2f7;
+        content-align: left middle;
+        overflow: hidden;
+    }
+    #caption-src {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
+        width: 1fr;
+        color: #c0caf5;
+        content-align: left top;
+        overflow: hidden;
+        padding: 0;
+    }
+    #caption-tgt {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
+        width: 1fr;
+        color: #9ece6a;
+        text-style: bold;
+        content-align: left top;
+        overflow: hidden;
+        padding: 0;
+    }
+    #caption-status {
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        width: 1fr;
+        color: #565f89;
+        content-align: left middle;
+        overflow: hidden;
+    }
+    /* Log tabs: Tradução + Sistema + Novidades + Command list (shrink under captions) */
     #log-tabs {
         height: 1fr;
+        min-height: 5;
         width: 1fr;
         margin: 0;
         padding: 0;
@@ -1365,7 +1906,7 @@ class LiveLingoApp(App):
         height: 1fr;
         padding: 0;
     }
-    #log, #log-app {
+    #log, #log-app, #log-news, #log-cmds {
         height: 1fr;
         margin: 0;
         padding: 0 1;
@@ -1378,26 +1919,26 @@ class LiveLingoApp(App):
         overflow-x: auto;
     }
     /* Keep panes full-width so wrap width is sane when switching tabs */
-    #tab-main, #tab-app {
+    #tab-main, #tab-app, #tab-news, #tab-cmds {
         width: 1fr;
         height: 1fr;
     }
     /*
      * Menu + command bar (above docked Footer — do NOT dock #bottom).
      *
-     * height 10 − border-top 1 = 9 content:
+     * height 9 content (no top border):
      *   #hint 6 (≈5 menu lines + 1 blank) + #cmd-row 3
      */
     #bottom {
-        height: 10;
+        height: 9;
         layout: vertical;
         background: $panel;
-        border-top: solid $accent;
+        border: none;
         padding: 0 1 0 1;
     }
     /* Compact UI ([u]): menu hidden — only command row */
     #bottom.-compact {
-        height: 4;
+        height: 3;
     }
     #hint {
         height: 6;
@@ -1423,6 +1964,69 @@ class LiveLingoApp(App):
         layout: horizontal;
         background: $panel;
         padding: 0;
+    }
+    /*
+     * Pipeline activity bar — left of command box.
+     * Shows Mic → STT → Trad → TTS → Out (+ LC when LiveCaptions is busy).
+     */
+    #pipe-bar {
+        width: auto;
+        min-width: 32;
+        max-width: 48;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        margin-right: 1;
+        padding: 0 1;
+        background: $surface;
+        color: $text;
+        border: round #3d4f6f;
+        content-align: left middle;
+        overflow: hidden;
+        text-style: none;
+    }
+    #pipe-bar.-busy {
+        border: round $accent;
+    }
+    #pipe-bar.-lc {
+        border: round #c44dff;
+    }
+    /*
+     * Side badges (#cmd-bypass left, #cmd-tts right) — same chrome:
+     * height 3, padding 0 1, bold, content-align center, border: round.
+     */
+    #cmd-bypass, #cmd-tts {
+        width: auto;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        padding: 0 1;
+        text-style: bold;
+        content-align: center middle;
+        overflow: hidden;
+    }
+    /* Bypass OFF: white fill + dark rounded border. */
+    #cmd-bypass {
+        min-width: 14;
+        max-width: 28;
+        margin-right: 1;
+        background: #ffffff;
+        color: #1a1b26;
+        border: round #1a1b26;
+    }
+    #cmd-bypass.-off {
+        background: #ffffff;
+        color: #1a1b26;
+        border: round #1a1b26;
+    }
+    /* Bypass ON: green fill + dark round border. */
+    #cmd-bypass.-on {
+        background: #2d9a4e;
+        color: #ffffff;
+        border: round #1a1b26;
+    }
+    #cmd-bypass:hover {
+        text-style: bold underline;
     }
     /*
      * Border on outer #cmd-box (height 3 = top + text + bottom).
@@ -1455,21 +2059,15 @@ class LiveLingoApp(App):
     #cmd:focus {
         border: none;
     }
+    /* TTS badge: black fill, blue border (same as #cmd-box), white text. */
     #cmd-tts {
-        width: auto;
         min-width: 12;
         max-width: 42;
-        height: 3;
-        min-height: 3;
-        max-height: 3;
         margin-left: 1;
-        padding: 0 1;
-        background: #e0a020;
-        color: #1a1b26;
+        background: #0d0d0d;
+        color: #ffffff;
+        border: round $accent;
         text-style: bold;
-        content-align: center middle;
-        border: round #c48910;
-        overflow: hidden;
     }
 
     /* ---- Command palette (Ctrl+P): continuous box lines, not hkey/???? ---- */
@@ -1500,8 +2098,9 @@ class LiveLingoApp(App):
     }
     """
 
-    # Ctrl+C = selection (or full log if none); Ctrl+Shift+C / F2 = always full log.
-    # F3 = toggle Tradução ↔ Sistema log tabs.
+    # Ctrl+C = selection (or full log if none); Ctrl+Shift+C = full log.
+    # F2 = voice bypass (white/green badge left of command box).
+    # F3 = cycle Tradução → Sistema → Novidades → …
     BINDINGS = [
         Binding("ctrl+c", "copy_selection", "Copy", show=True, priority=True),
         Binding(
@@ -1513,7 +2112,7 @@ class LiveLingoApp(App):
         ),
         Binding("ctrl+q", "quit_app", "Quit", show=True, priority=True),
         Binding("f1", "show_help", "Help", show=True),
-        Binding("f2", "copy_log", "Copy log", show=True, priority=True),
+        Binding("f2", "toggle_bypass", "Bypass", show=True, priority=True),
         Binding("f3", "toggle_log_tab", "Log tab", show=True, priority=True),
         Binding("f4", "toggle_compact_ui", "Compact UI", show=True, priority=True),
     ]
@@ -1528,6 +2127,7 @@ class LiveLingoApp(App):
         dispatch_command: Callable,
         listen_msgs_fn: Callable,
         help_fn: Callable | None = None,
+        caption_service=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -1536,6 +2136,7 @@ class LiveLingoApp(App):
         self._dispatch = dispatch_command
         self._listen_msgs_fn = listen_msgs_fn
         self._help_fn = help_fn
+        self.caption_service = caption_service
         self._prompt_q: queue.Queue = queue.Queue()
         self._prompt_waiting = threading.Event()
         self._prompt_label = ""
@@ -1550,17 +2151,54 @@ class LiveLingoApp(App):
         self._speaking = False
         self._sound_on = False
         self._mic_muted = False
+        self._mic_mute_name: str = ""
         self._passthrough = False
         self._log_queue: queue.Queue = queue.Queue()
         self._cached_log_width = 120
+        # VOZ pipe bar: mic → stt → translate → tts → play (Cable Out)
+        self._pipe_stage: str = "idle"
+        self._pipe_stage_t: float = 0.0
+        self._pipe_chunk: int | None = None
+        self._pipe_lc_active: bool = False
+        self._pipe_lc_busy: bool = False  # translating / partial text
+        self._pipe_last_markup: str = ""
+        self._pipe_stage_q: queue.Queue = queue.Queue()
+        # Live Captions panel state (updated from worker via call_from_thread)
+        self._caption_data: dict = {
+            "status": "idle",
+            "original": "",
+            "translated": "",
+            "original_live": "",
+            "error": None,
+            "paused": False,
+        }
+        self._caption_queue: queue.Queue = queue.Queue()
+        # Vim-style log search: /query · /n · /p (active tab)
+        self._search_query: str = ""
+        self._search_hits: list[int] = []
+        self._search_i: int = -1
+        self._search_panel: str = "main"
         # Compact UI: hide menu + safe host-window height shrink ([u] / F4).
         # Never touch console buffer APIs (that corrupted Textual before).
+        # Initial value from config TUI_MINIMAL (applied on_mount when widgets exist).
         self._compact_ui = False
+        try:
+            import config as _cfg
+
+            self._want_minimal_start = bool(
+                getattr(_cfg, "TUI_MINIMAL", False)
+            )
+        except Exception:
+            self._want_minimal_start = False
         self._saved_window_geom: dict | None = None
         # Command history (↑/↓) — list of past submissions; index -1 = draft line
         self._cmd_history: list[str] = []
         self._cmd_history_i: int = -1
         self._cmd_draft: str = ""
+        # Hold Backspace/Delete → accelerate to whole-word erase
+        self._cmd_erase_key: str | None = None
+        self._cmd_erase_streak: int = 0
+        self._cmd_erase_last_t: float = 0.0
 
     def get_system_commands(self, screen) -> Iterable[SystemCommand]:
         """
@@ -1614,10 +2252,37 @@ class LiveLingoApp(App):
         yield Header(show_clock=True)
         # Fixed top listen bar — single row only (robot + pair + audio + status)
         yield Static(_footer_i18n()["starting"], id="listen-header", markup=False)
-        # Two log panels: clean translation vs technical pipeline stages
+        # Live Captions strip (Windows LiveCaptions) — above log tabs
+        with Vertical(id="captions-panel"):
+            yield Static(
+                "Live Captions  ·  [lc] pause  ·  [lc show]/[lc hide]",
+                id="captions-title",
+                markup=False,
+            )
+            yield Static(
+                "SRC  (aguardando Windows LiveCaptions…)",
+                id="caption-src",
+                markup=False,
+            )
+            yield Static(
+                "TGT  —",
+                id="caption-tgt",
+                markup=False,
+            )
+            yield Static(
+                "status: idle",
+                id="caption-status",
+                markup=False,
+            )
+        # Four log panels: translation / pipeline / changelog / command list
         # min_width must be wide: inactive TabPane has ~0 layout width, and
         # RichLog bakes wrap at write time (min_width was 20 → column-of-chars).
         _log_min_w = _terminal_log_width(100)
+        _fi18n = _footer_i18n()
+        _news_label = _fi18n.get("tab_news", "What's New")
+        _cmds_label = _fi18n.get(
+            "tab_commands", command_help.tab_title(_source_lang_code())
+        )
         with TabbedContent(id="log-tabs", initial="tab-main"):
             with TabPane("Tradução", id="tab-main"):
                 yield SelectableRichLog(
@@ -1639,9 +2304,42 @@ class LiveLingoApp(App):
                     max_lines=8000,
                     min_width=_log_min_w,
                 )
+            with TabPane(_news_label, id="tab-news"):
+                yield SelectableRichLog(
+                    id="log-news",
+                    highlight=False,
+                    markup=True,
+                    wrap=True,
+                    auto_scroll=False,
+                    max_lines=20000,
+                    min_width=_log_min_w,
+                )
+            with TabPane(_cmds_label, id="tab-cmds"):
+                yield SelectableRichLog(
+                    id="log-cmds",
+                    highlight=False,
+                    markup=True,
+                    wrap=True,
+                    auto_scroll=False,
+                    max_lines=20000,
+                    min_width=_log_min_w,
+                )
         with Vertical(id="bottom"):
             yield Static("", id="hint", markup=True)
             with Horizontal(id="cmd-row"):
+                # VOZ pipeline stages (Mic → STT → Trad → TTS → Cable Out) + LC
+                yield Static(
+                    "[dim]○Mic › ○STT › ○Trad › ○TTS › ○Out[/]",
+                    id="pipe-bar",
+                    markup=True,
+                )
+                # Bypass mode toggle — green = your voice, white = translated
+                yield Static(
+                    _footer_i18n().get("bypass_off_label", "(Translated audio)"),
+                    id="cmd-bypass",
+                    classes="-off",
+                    markup=False,
+                )
                 # Border lives on #cmd-box so left/right sides never clip
                 with Vertical(id="cmd-box"):
                     yield Input(
@@ -1659,6 +2357,7 @@ class LiveLingoApp(App):
     def on_mount(self) -> None:
         ui_mod.set_log_sink(self._sink_from_worker)
         ui_mod.set_width_provider(self._log_content_width)
+        ui_mod.set_pipeline_stage_sink(self._pipeline_stage_from_worker)
         self._load_cmd_history()
         # One drain tick: logs + deferred UI actions (keep light for STT latency).
         self.set_interval(0.05, self._drain_pending)
@@ -1669,6 +2368,24 @@ class LiveLingoApp(App):
         self.set_interval(2.0, self._refresh_cmd_menu)
         self._refresh_log_width()
         self._refresh_cmd_menu()
+        self._bind_caption_service()
+        self._paint_captions_panel()
+        self._paint_pipe_bar(force=True)
+        try:
+            bar = self.query_one("#pipe-bar", Static)
+            tip = _footer_i18n().get(
+                "pipe_tip",
+                "VOZ: Mic → STT → Trad → TTS → Cable Out · LC = LiveCaptions",
+            )
+            bar.tooltip = tip
+        except Exception:
+            pass
+        # TUI_MINIMAL=true → open already compact (menu hidden; same as F4/[u])
+        if getattr(self, "_want_minimal_start", False):
+            try:
+                self.set_compact_ui(True)
+            except Exception:
+                pass
         log = self.query_one("#log", SelectableRichLog)
         log.write(
             "[bold cyan]LiveLingo TUI[/] — aba [bold]Tradução[/] (chunks + comandos)"
@@ -1681,14 +2398,41 @@ class LiveLingoApp(App):
             "[yellow]Audio OFF por padrao — [s] para ouvir ao vivo | "
             "[r]/[rN] um chunk | [l] lista frases | [g] swap idiomas[/]"
         )
+        # Phrase-cache inventory (pairs / words by language) under the audio tip
+        try:
+            import config as cfg
+
+            from .phrase_cache import format_cache_inventory_summary, get_phrase_cache
+
+            pc = getattr(getattr(self, "pipeline", None), "phrase_cache", None)
+            if pc is None:
+                try:
+                    pc = get_phrase_cache(cfg)
+                except Exception:
+                    pc = None
+            for line in format_cache_inventory_summary(cfg, pc):
+                log.write(line)
+        except Exception:
+            log.write(
+                "[dim]Cache de frases: (resumo indisponível) · use [pc] quando o pipeline iniciar[/]"
+            )
         log.write(
             "[bold green]Copiar:[/] clique e arraste no log → [bold]Ctrl+C[/]  ·  "
-            "log inteiro [bold]Ctrl+Shift+C[/] / F2  ·  "
-            "etapas/timestamps: aba [bold]Sistema[/] ou [bold]F3[/]"
+            "log inteiro [bold]Ctrl+Shift+C[/]  ·  "
+            "bypass [bold]F2[/]  ·  "
+            "busca: [bold]/texto[/] · [bold]/n[/]/[bold]/p[/] "
+            "(ou [bold]find texto[/])  ·  abas: F3 cicla"
         )
         log.write(
             "[dim]Dica: Windows Terminal recomendado. Sair: Ctrl+Q ou [q].[/]"
         )
+        log.write(
+            "[bold magenta]Live Captions[/] — faixa = ao vivo (parcial). "
+            "Aba Tradução = só frases [bold]estáveis[/] no layout "
+            "[bold][LC n] Caption / Translated[/] (como chunks de voz). "
+            "[bold]lc[/] pause · [bold]lc show[/]/[bold]lc hide[/]"
+        )
+        log.write("")  # blank line after startup tip
         try:
             app_log = self.query_one("#log-app", SelectableRichLog)
             app_log.write(
@@ -1700,9 +2444,17 @@ class LiveLingoApp(App):
                 "com @hora · +s desde escuta · Δµs. Role com a barra ou mouse.[/]"
             )
             app_log.write(
-                "[dim]F3 alterna entre Tradução e Sistema · "
-                "Ctrl+Shift+C / F2 copia o log da aba ativa.[/]"
+                "[dim]F3 cicla Tradução → Sistema → Novidades → Lista de comandos · "
+                "Ctrl+Shift+C copia o log da aba ativa · F2 = bypass de voz.[/]"
             )
+        except Exception:
+            pass
+        try:
+            self._fill_news_tab()
+        except Exception:
+            pass
+        try:
+            self._fill_commands_tab()
         except Exception:
             pass
         self.query_one("#cmd", Input).focus()
@@ -1711,15 +2463,193 @@ class LiveLingoApp(App):
             self._mic_muted = bool(self.pipeline.is_mic_muted())
         except Exception:
             pass
+        try:
+            if hasattr(self.pipeline, "is_passthrough_active"):
+                self._passthrough = bool(self.pipeline.is_passthrough_active())
+        except Exception:
+            pass
         self._cmd_tts_label = ""
         self._refresh_cmd_tts()
+        try:
+            self._refresh_bypass_badge()
+        except Exception:
+            pass
         self._tick_status()
 
     def on_unmount(self) -> None:
         ui_mod.set_log_sink(None)
         ui_mod.set_width_provider(None)
         try:
+            ui_mod.set_pipeline_stage_sink(None)
+        except Exception:
+            pass
+        try:
+            svc = self.caption_service
+            if svc is not None:
+                svc.set_display_callback(None)
+        except Exception:
+            pass
+        try:
             self._save_cmd_history()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Live Captions panel (Windows LiveCaptions → strip above log tabs)
+    # ------------------------------------------------------------------ #
+    def _bind_caption_service(self) -> None:
+        """Wire CaptionService → queue → UI thread paint."""
+        svc = self.caption_service
+        if svc is None:
+            try:
+                svc = getattr(self.pipeline, "caption_service", None)
+                self.caption_service = svc
+            except Exception:
+                svc = None
+        if svc is None:
+            err = "CaptionService não iniciado"
+            try:
+                import config as cfg
+                from .livecaptions import is_windows
+
+                if not getattr(cfg, "LIVE_CAPTIONS_ENABLED", True):
+                    err = "LIVE_CAPTIONS_ENABLED=false"
+                elif not is_windows():
+                    err = "Live Captions só no Windows 11"
+            except Exception:
+                pass
+            self._caption_data = {
+                "status": "disabled",
+                "original": "",
+                "translated": "",
+                "original_live": "",
+                "error": err,
+                "paused": False,
+            }
+            return
+
+        def _on_display(data: dict) -> None:
+            try:
+                self._caption_queue.put_nowait(dict(data or {}))
+            except Exception:
+                pass
+
+        try:
+            svc.set_display_callback(_on_display)
+            # Push current snapshot immediately
+            try:
+                snap = svc.snapshot()
+                self._caption_queue.put_nowait(dict(snap or {}))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def post_caption_update(self, data: dict) -> None:
+        """Thread-safe: enqueue caption panel update (or call from UI thread)."""
+        try:
+            self._caption_queue.put_nowait(dict(data or {}))
+        except Exception:
+            pass
+
+    def _drain_caption_queue(self) -> None:
+        latest = None
+        try:
+            while True:
+                latest = self._caption_queue.get_nowait()
+        except queue.Empty:
+            pass
+        if latest is not None:
+            self._caption_data.update(latest)
+            self._paint_captions_panel()
+
+    def _paint_captions_panel(self) -> None:
+        """Refresh #captions-panel widgets from self._caption_data."""
+        d = self._caption_data or {}
+        status = str(d.get("status") or "idle")
+        err = d.get("error")
+        paused = bool(d.get("paused"))
+        live = (d.get("original_live") or "").strip()
+        original = (d.get("original") or "").strip()
+        translated = (d.get("translated") or "").strip()
+        src_show = live or original or "—"
+        tgt_show = translated or "—"
+
+        # Caption pair (default inverted vs voice: EN→BR when voice is BR→EN)
+        src_l = (d.get("caption_source_lang") or "").upper()
+        tgt_l = (d.get("caption_target_lang") or "").upper()
+        if not src_l or not tgt_l:
+            try:
+                from .livecaptions import caption_lang_pair
+                import config as cfg
+
+                s, t = caption_lang_pair(cfg)
+                src_l, tgt_l = s.upper(), t.upper()
+            except Exception:
+                src_l, tgt_l = "SRC", "TGT"
+        if src_l == "PT":
+            src_l = "BR"
+        if tgt_l == "PT":
+            tgt_l = "BR"
+
+        # Truncate for fixed-height strip
+        def _clip(s: str, n: int = 220) -> str:
+            s = (s or "").replace("\n", " ").strip()
+            return s if len(s) <= n else s[: n - 1] + "…"
+
+        try:
+            panel = self.query_one("#captions-panel", Vertical)
+            panel.remove_class("-error")
+            panel.remove_class("-paused")
+            if status == "error" or err:
+                panel.add_class("-error")
+            elif paused or status == "paused":
+                panel.add_class("-paused")
+        except Exception:
+            pass
+
+        title_bits = ["Live Captions", f"{src_l}→{tgt_l}"]
+        if paused or status == "paused":
+            title_bits.append("PAUSED")
+        elif status == "translating":
+            title_bits.append("traduzindo…")
+        elif status == "running":
+            title_bits.append("LIVE")
+        elif status == "starting":
+            title_bits.append("iniciando…")
+        elif status == "disabled":
+            title_bits.append("OFF")
+        elif status == "error":
+            title_bits.append("ERRO")
+        title_bits.append("[lc] pause · [lc show]/[lc hide]")
+        try:
+            self.query_one("#captions-title", Static).update("  ·  ".join(title_bits))
+        except Exception:
+            pass
+        # Mirror LC activity onto the command-row pipe bar
+        try:
+            self._sync_lc_pipe_from_captions()
+            self._paint_pipe_bar()
+        except Exception:
+            pass
+        try:
+            self.query_one("#caption-src", Static).update(
+                f"{src_l}  {_clip(src_show)}"
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#caption-tgt", Static).update(
+                f"{tgt_l}  {_clip(tgt_show)}"
+            )
+        except Exception:
+            pass
+        disp_status = "paused" if paused else status
+        st_line = f"status: {disp_status}  ·  traduz {src_l}→{tgt_l}"
+        if err:
+            st_line += f"  ·  {str(err)[:80]}"
+        try:
+            self.query_one("#caption-status", Static).update(st_line)
         except Exception:
             pass
 
@@ -1815,7 +2745,7 @@ class LiveLingoApp(App):
         try:
             log = self._active_log_widget() or self.query_one("#log")
             # Keep min_width in sync with terminal so inactive-tab writes stay wide
-            for lid in ("#log", "#log-app"):
+            for lid in ("#log", "#log-app", "#log-news", "#log-cmds"):
                 try:
                     wlog = self.query_one(lid, SelectableRichLog)
                     wlog.min_width = floor
@@ -1857,8 +2787,16 @@ class LiveLingoApp(App):
             pass
 
     def _resolve_log_widget(self, panel: str = "main"):
-        """Return SelectableRichLog for panel main|app (fallback #log)."""
-        log_id = "#log-app" if str(panel or "main").lower() == "app" else "#log"
+        """Return SelectableRichLog for panel main|app|news|cmds (fallback #log)."""
+        p = str(panel or "main").lower()
+        if p in ("cmds", "commands", "cmd", "help", "comandos"):
+            log_id = "#log-cmds"
+        elif p in ("news", "changelog", "novidades", "whatsnew"):
+            log_id = "#log-news"
+        elif p in ("app", "sistema", "system"):
+            log_id = "#log-app"
+        else:
+            log_id = "#log"
         try:
             return self.query_one(log_id, SelectableRichLog)
         except Exception:
@@ -1876,10 +2814,14 @@ class LiveLingoApp(App):
                 return None
 
     def _active_log_panel(self) -> str:
-        """Which log tab is visible: main | app."""
+        """Which log tab is visible: main | app | news | cmds."""
         try:
             tabs = self.query_one("#log-tabs", TabbedContent)
             active = str(getattr(tabs, "active", "") or "")
+            if active in ("tab-cmds", "log-cmds") or active.endswith("cmds"):
+                return "cmds"
+            if active in ("tab-news", "log-news") or active.endswith("news"):
+                return "news"
             if active in ("tab-app", "log-app") or active.endswith("app"):
                 return "app"
         except Exception:
@@ -1889,11 +2831,50 @@ class LiveLingoApp(App):
     def _active_log_widget(self):
         return self._resolve_log_widget(self._active_log_panel())
 
+    def _follow_log_bottom(self, log) -> None:
+        """
+        Re-enable live follow and jump to the end of a log panel.
+
+        Search (/) and gg set auto_scroll=False; Tradução must still stick to
+        the bottom when new Heard/Translated lines arrive.
+        """
+        if log is None:
+            return
+        try:
+            log.auto_scroll = True
+        except Exception:
+            pass
+        for kwargs in (
+            {"animate": False, "immediate": True},
+            {"animate": False},
+            {},
+        ):
+            try:
+                log.scroll_end(**kwargs)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                break
+        try:
+            y = int(getattr(log, "max_scroll_y", 0) or 0)
+            log.scroll_to(0, y, animate=False)
+        except Exception:
+            pass
+
     def post_log(self, kind: str, text: str, panel: str = "main") -> None:
         """Must run on the UI thread (or via _drain_log_queue). panel=main|app."""
         log = self._resolve_log_widget(panel)
         if log is None:
             return
+        panel_key = str(panel or "main").lower()
+        is_main = panel_key in ("main", "traducao", "tradução", "translation")
+        # Tradução: always re-arm follow *before* write so RichLog auto_scroll works
+        if is_main:
+            try:
+                log.auto_scroll = True
+            except Exception:
+                pass
         # Preserve intentional blank separators (session list gaps).
         if text is None:
             return
@@ -1902,6 +2883,8 @@ class LiveLingoApp(App):
                 log.write("")
             except Exception:
                 pass
+            if is_main:
+                self._follow_log_bottom(log)
             return
         t = text.rstrip("\n")
         # Escape user/chunk text so "[chunk 3]" doesn't break Rich markup.
@@ -1935,6 +2918,9 @@ class LiveLingoApp(App):
                 log.write(t)  # last resort plain
             except Exception:
                 pass
+        # Belt-and-suspenders: after write, pin viewport to bottom on Tradução
+        if is_main:
+            self._follow_log_bottom(log)
 
     def _drain_log_queue(self) -> None:
         for _ in range(200):
@@ -1972,6 +2958,8 @@ class LiveLingoApp(App):
     def _drain_pending(self) -> None:
         """Single interval: prioritize log drain (translations) over UI actions."""
         self._drain_log_queue()
+        self._drain_caption_queue()
+        self._drain_pipe_stage_queue()
         self._drain_ui_actions()
 
     def _modal_open(self) -> bool:
@@ -1982,20 +2970,517 @@ class LiveLingoApp(App):
             return False
 
     # ------------------------------------------------------------------ #
+    # Pipeline activity bar (Mic → STT → Trad → TTS → Cable Out + LC)
+    # ------------------------------------------------------------------ #
+    _PIPE_ORDER = ("mic", "stt", "translate", "tts", "play")
+
+    def _pipeline_stage_from_worker(self, stage: str, meta: dict | None = None) -> None:
+        """Thread-safe: queue stage updates from ui.pipeline_stage / workers."""
+        try:
+            self._pipe_stage_q.put_nowait((str(stage or "idle"), dict(meta or {})))
+        except Exception:
+            pass
+
+    def _drain_pipe_stage_queue(self) -> None:
+        latest = None
+        try:
+            while True:
+                latest = self._pipe_stage_q.get_nowait()
+        except queue.Empty:
+            pass
+        if latest is not None:
+            stage, meta = latest
+            self._apply_pipeline_stage(stage, meta)
+
+    def _apply_pipeline_stage(self, stage: str, meta: dict | None = None) -> None:
+        """UI thread: set VOZ pipe stage (or LC via source=lc)."""
+        import time as _time
+
+        meta = meta or {}
+        stage = (stage or "idle").strip().lower()
+        source = str(meta.get("source") or "voz").lower()
+
+        if source == "lc" or stage in ("lc", "lc_idle", "lc_busy"):
+            if stage in ("lc", "lc_busy") or meta.get("busy"):
+                self._pipe_lc_busy = True
+                self._pipe_lc_active = True
+            elif stage in ("lc_idle", "idle"):
+                self._pipe_lc_busy = False
+            self._paint_pipe_bar()
+            return
+
+        # Normalize aliases
+        if stage in ("listen", "listening", "vad", "hearing"):
+            stage = "mic"
+        elif stage in ("trad", "tr", "translating"):
+            stage = "translate"
+        elif stage in ("cable", "out", "playback", "playing"):
+            stage = "play"
+        elif stage in ("done", "ready_text", "complete"):
+            stage = "idle"
+        elif stage == "ready":
+            # Audio will refine to play; treat as play for bar feedback
+            stage = "play"
+
+        if stage not in self._PIPE_ORDER and stage != "idle":
+            stage = "idle"
+
+        self._pipe_stage = stage
+        self._pipe_stage_t = _time.monotonic()
+        try:
+            ch = meta.get("chunk")
+            self._pipe_chunk = int(ch) if ch is not None else self._pipe_chunk
+        except (TypeError, ValueError):
+            pass
+        self._paint_pipe_bar()
+
+    def _sync_lc_pipe_from_captions(self) -> None:
+        """Derive LC badge from caption panel state."""
+        d = self._caption_data or {}
+        status = str(d.get("status") or "idle").lower()
+        paused = bool(d.get("paused"))
+        live = (d.get("original_live") or "").strip()
+        original = (d.get("original") or "").strip()
+        translated = (d.get("translated") or "").strip()
+        has_text = bool(live or original or translated)
+        busy = (
+            (not paused)
+            and status in ("translating", "running", "starting")
+            and has_text
+        ) or (status == "translating")
+        active = (
+            status not in ("disabled", "error", "idle", "")
+            or has_text
+        ) and status != "disabled"
+        # Show LC chip whenever captions service is live/usable
+        if status in ("disabled",):
+            active = False
+            busy = False
+        elif status in ("error",) and not has_text:
+            active = False
+            busy = False
+        elif status in ("running", "translating", "starting", "paused"):
+            active = True
+        elif has_text:
+            active = True
+        else:
+            active = False
+        self._pipe_lc_active = bool(active)
+        self._pipe_lc_busy = bool(busy and not paused)
+
+    def _paint_pipe_bar(self, *, force: bool = False) -> None:
+        """Render compact Mic→…→Out (+ LC) into #pipe-bar."""
+        try:
+            bar = self.query_one("#pipe-bar", Static)
+        except Exception:
+            return
+
+        t = _footer_i18n()
+        # Special modes
+        if self._passthrough:
+            markup = (
+                f"[bold #2d9a4e]● {t.get('pipe_bypass', 'BYPASS→Out')}[/]"
+            )
+            self._update_pipe_widget(bar, markup, busy=True, lc=False, force=force)
+            return
+        if self._mic_muted and self._pipe_stage in ("idle", "mic"):
+            markup = f"[dim]○ {t.get('pipe_muted', 'Mic muted')}[/]"
+            if self._pipe_lc_active:
+                lc_lab = (
+                    t.get("pipe_lc_active", "LC●")
+                    if self._pipe_lc_busy
+                    else t.get("pipe_lc", "LC")
+                )
+                color = "#e0a0ff" if self._pipe_lc_busy else "#8866aa"
+                markup += f" [dim]│[/] [{color}]{lc_lab}[/]"
+            self._update_pipe_widget(
+                bar, markup, busy=False, lc=self._pipe_lc_busy, force=force
+            )
+            return
+
+        stage = self._pipe_stage if self._pipe_stage in self._PIPE_ORDER else "idle"
+        # idle → highlight mic as "ready to listen" (soft)
+        active_idx = (
+            self._PIPE_ORDER.index(stage) if stage in self._PIPE_ORDER else -1
+        )
+        # Pulse glyph for the active step
+        pulse_on = (self._frame_i % 2) == 0
+        active_dot = "●" if pulse_on else "◉"
+        done_dot = "●"
+        todo_dot = "○"
+
+        labels_idle = {
+            "mic": t.get("pipe_mic", "Mic"),
+            "stt": t.get("pipe_stt", "STT"),
+            "translate": t.get("pipe_tr", "Trad"),
+            "tts": t.get("pipe_tts", "TTS"),
+            "play": t.get("pipe_out", "Out"),
+        }
+        labels_active = {
+            "mic": t.get("pipe_mic_active", "Ouvindo"),
+            "stt": t.get("pipe_stt_active", "STT…"),
+            "translate": t.get("pipe_tr_active", "Traduz…"),
+            "tts": t.get("pipe_tts_active", "TTS…"),
+            "play": t.get("pipe_out_active", "Cable"),
+        }
+        # Colors: done green, active amber/cyan, todo dim
+        parts: list[str] = []
+        for i, key in enumerate(self._PIPE_ORDER):
+            if active_idx < 0:
+                # Idle listening: soft mic only
+                if key == "mic":
+                    if self._speaking:
+                        lab = labels_active[key]
+                        parts.append(f"[bold #4fc3f7]{active_dot}{lab}[/]")
+                    else:
+                        lab = labels_idle[key]
+                        parts.append(f"[dim]{todo_dot}{lab}[/]")
+                else:
+                    parts.append(f"[dim]{todo_dot}{labels_idle[key]}[/]")
+            elif i < active_idx:
+                parts.append(f"[#5cbf6a]{done_dot}{labels_idle[key]}[/]")
+            elif i == active_idx:
+                lab = labels_active[key]
+                if key == "mic":
+                    color = "#4fc3f7"
+                elif key == "stt":
+                    color = "#ffd54f"
+                elif key == "translate":
+                    color = "#81d4fa"
+                elif key == "tts":
+                    color = "#ce93d8"
+                else:  # play / cable
+                    color = "#ffab40"
+                parts.append(f"[bold {color}]{active_dot}{lab}[/]")
+            else:
+                parts.append(f"[dim]{todo_dot}{labels_idle[key]}[/]")
+
+        sep = "[dim]›[/]"
+        markup = sep.join(parts)
+
+        if self._pipe_lc_active:
+            if self._pipe_lc_busy:
+                lc_pulse = "●" if pulse_on else "◉"
+                markup += (
+                    f" [dim]│[/] [bold #e040fb]{lc_pulse}"
+                    f"{t.get('pipe_lc', 'LC')}[/]"
+                )
+            else:
+                markup += f" [dim]│ {t.get('pipe_lc', 'LC')}[/]"
+
+        busy = active_idx >= 0 or self._speaking or self._pipe_lc_busy
+        self._update_pipe_widget(
+            bar, markup, busy=busy, lc=self._pipe_lc_busy, force=force
+        )
+
+    def _update_pipe_widget(
+        self,
+        bar: Static,
+        markup: str,
+        *,
+        busy: bool,
+        lc: bool,
+        force: bool = False,
+    ) -> None:
+        if not force and markup == self._pipe_last_markup:
+            # Still refresh classes
+            try:
+                bar.set_class(busy, "-busy")
+                bar.set_class(lc, "-lc")
+            except Exception:
+                pass
+            return
+        self._pipe_last_markup = markup
+        try:
+            bar.update(markup)
+        except Exception:
+            pass
+        try:
+            bar.set_class(busy, "-busy")
+            bar.set_class(lc, "-lc")
+        except Exception:
+            try:
+                if busy:
+                    bar.add_class("-busy")
+                else:
+                    bar.remove_class("-busy")
+                if lc:
+                    bar.add_class("-lc")
+                else:
+                    bar.remove_class("-lc")
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------ #
     # Fixed listen header (robot animation + source/target)
     # ------------------------------------------------------------------ #
     def set_speaking(self, speaking: bool) -> None:
-        self._speaking = bool(speaking)
+        """
+        Mic VAD: speech started/stopped.
+
+        When speech starts, force the Tradução tab so Heard/Translated are
+        visible even if the user was on Sistema / Novidades / Lista de comandos,
+        and re-enable auto-scroll so new lines stick to the bottom.
+        """
+        speaking = bool(speaking)
+        started = speaking and not self._speaking
+        stopped = (not speaking) and self._speaking
+        self._speaking = speaking
+        # Mirror VAD on the pipe bar (mic step); stt follows via listen_progress
+        if started:
+            self._apply_pipeline_stage("mic", {"source": "voz"})
+        elif stopped and self._pipe_stage == "mic":
+            # Speech ended — expect STT next (listen_progress also fires stt)
+            self._apply_pipeline_stage("stt", {"source": "voz"})
+        else:
+            try:
+                self._paint_pipe_bar()
+            except Exception:
+                pass
+        if not started:
+            return
+        # UI thread only (call_from_thread from on_listening).
+        try:
+            if self._active_log_panel() != "main":
+                self.focus_log_tab("main")
+        except Exception:
+            try:
+                self.focus_log_tab("main")
+            except Exception:
+                pass
+        try:
+            self._follow_log_bottom(self._resolve_log_widget("main"))
+        except Exception:
+            pass
 
     def set_sound_on(self, on: bool) -> None:
         self._sound_on = bool(on)
 
-    def set_mic_muted(self, muted: bool) -> None:
+    def set_mic_muted(self, muted: bool, mic_name: str = "") -> None:
+        """
+        Sync UI with mic mute state.
+
+        When muted: show a centered red modal (only [n] unmutes).
+        When unmuted: dismiss that modal if open.
+        Safe to call from a worker thread.
+        """
         self._mic_muted = bool(muted)
+        if mic_name:
+            self._mic_mute_name = str(mic_name)
+        try:
+            if muted:
+                self.call_from_thread(self._show_mic_mute_modal)
+            else:
+                self.call_from_thread(self._dismiss_mic_mute_modal)
+        except Exception:
+            try:
+                if muted:
+                    self._show_mic_mute_modal()
+                else:
+                    self._dismiss_mic_mute_modal()
+            except Exception:
+                pass
+
+    def _mic_mute_i18n(self) -> dict[str, str]:
+        """Title / body / hint for the mute modal (SOURCE_LANG)."""
+        lang = _source_lang_code()
+        if lang == "pt":
+            return {
+                "title": "MIC MUDO",
+                "message": "Microfone mutado — escuta e tradução pausadas.",
+                "message2": "",
+                "hint": "[n]  desmutar o microfone - Cmd n",
+            }
+        if lang == "es":
+            return {
+                "title": "MIC MUTEADO",
+                "message": "Micrófono silenciado — escucha y traducción en pausa.",
+                "message2": "",
+                "hint": "[n]  activar el micrófono - Cmd n",
+            }
+        return {
+            "title": "MIC MUTED",
+            "message": "Microphone muted — listening and translation paused.",
+            "message2": "",
+            "hint": "[n]  unmute microphone - Cmd n",
+        }
+
+    def _show_mic_mute_modal(self) -> None:
+        """UI thread: push centered red mute dialog if not already open."""
+        try:
+            if isinstance(self.screen, MicMutedModal):
+                return
+        except Exception:
+            pass
+        pack = self._mic_mute_i18n()
+        name = getattr(self, "_mic_mute_name", "") or ""
+        try:
+            if not name and hasattr(self.pipeline, "mic_endpoint_name"):
+                name = self.pipeline.mic_endpoint_name() or ""
+        except Exception:
+            name = name or ""
+        modal = MicMutedModal(
+            title=pack["title"],
+            mic_name=name,
+            message=pack.get("message", ""),
+            message2=pack.get("message2", ""),
+            hint=pack["hint"],
+        )
+        try:
+            self.push_screen(modal, self._on_mic_mute_modal_dismiss)
+        except Exception:
+            pass
+
+    def _dismiss_mic_mute_modal(self) -> None:
+        """UI thread: pop mute modal if it is the top screen."""
+        try:
+            if isinstance(self.screen, MicMutedModal):
+                self.pop_screen()
+        except Exception:
+            pass
+
+    def _on_mic_mute_modal_dismiss(self, result: str | None) -> None:
+        """
+        After [n] on the modal: force unmute + refresh header/log.
+
+        If the mic was already unmuted another way, just clean UI state.
+        """
+        try:
+            still_muted = bool(self.pipeline.is_mic_muted())
+        except Exception:
+            still_muted = True
+        if still_muted:
+            try:
+                muted_now, os_ok, mic_name = self.pipeline.set_mic_muted(False)
+            except Exception as exc:
+                try:
+                    self.post_log("error", f"[n] Unmute failed: {exc}")
+                except Exception:
+                    pass
+                self._mic_muted = False
+                return
+            self._mic_muted = bool(muted_now)
+            self._mic_mute_name = mic_name or ""
+            if not muted_now:
+                if os_ok:
+                    self.post_log(
+                        "success",
+                        f"Mic LIVE (Windows): '{mic_name}'. "
+                        f"Escuta ativa retomada. Pode falar.",
+                    )
+                else:
+                    self.post_log(
+                        "success",
+                        f"Mic LIVE (app gate): '{mic_name}'. "
+                        f"Escuta ativa retomada.",
+                    )
+                try:
+                    self.post_log("raw", "")
+                except Exception:
+                    pass
+        else:
+            self._mic_muted = False
+        try:
+            self._tick_status()
+        except Exception:
+            pass
+        try:
+            self._refocus_cmd_if_idle()
+        except Exception:
+            pass
 
     def set_passthrough(self, active: bool) -> None:
         """UI cue: direct voice bypass ([b]) is active."""
         self._passthrough = bool(active)
+        try:
+            self._refresh_bypass_badge()
+        except Exception:
+            pass
+
+    def _refresh_bypass_badge(self) -> None:
+        """Update left command-bar badge: green = bypass ON, white = OFF."""
+        try:
+            badge = self.query_one("#cmd-bypass", Static)
+        except Exception:
+            return
+        t = _footer_i18n()
+        on = bool(self._passthrough)
+        label = t.get(
+            "bypass_on_label" if on else "bypass_off_label",
+            "(Your voice)" if on else "(Translated audio)",
+        )
+        tip = t.get(
+            "bypass_tooltip_on" if on else "bypass_tooltip_off",
+            "",
+        )
+        try:
+            badge.update(label)
+        except Exception:
+            pass
+        try:
+            badge.set_class(on, "-on")
+            badge.set_class(not on, "-off")
+        except Exception:
+            try:
+                if on:
+                    badge.remove_class("-off")
+                    badge.add_class("-on")
+                else:
+                    badge.remove_class("-on")
+                    badge.add_class("-off")
+            except Exception:
+                pass
+        try:
+            if tip:
+                badge.tooltip = tip
+        except Exception:
+            pass
+        self._bypass_badge_label = label
+
+    def _toggle_bypass_from_ui(self) -> None:
+        """Click / F2 / [b] on #cmd-bypass — voice bypass toggle. UI thread."""
+        try:
+            active = bool(self.pipeline.toggle_voice_passthrough())
+        except Exception as exc:
+            try:
+                self.notify(f"[b]/F2 Bypass: {exc}", severity="error", timeout=4)
+            except Exception:
+                self.post_log("error", f"[b]/F2 Bypass: {exc}")
+            return
+        self.set_passthrough(active)
+        t = _footer_i18n()
+        if active:
+            self.post_log(
+                "warn",
+                "[b]/F2 BYPASS ON — "
+                + t.get("bypass_on_label", "F2 Sua Voz")
+                + " → saída direta (sem tradução).",
+            )
+        else:
+            self.post_log(
+                "success",
+                "[b]/F2 BYPASS OFF — "
+                + t.get("bypass_off_label", "F2 Audio Trad.")
+                + " retomado.",
+            )
+            self.post_log("raw", "")  # blank line after bypass off
+        try:
+            self._tick_status()
+        except Exception:
+            pass
+
+    def action_toggle_bypass(self) -> None:
+        """Footer/F2: toggle voice bypass (same as click on white badge / [b])."""
+        self._toggle_bypass_from_ui()
+
+    @on(events.Click, "#cmd-bypass")
+    def on_bypass_badge_click(self, event: events.Click) -> None:
+        """Toggle bypass when the green/white badge is clicked."""
+        try:
+            event.stop()
+        except Exception:
+            pass
+        self._toggle_bypass_from_ui()
 
     def refresh_source_ui(self) -> None:
         """Re-apply footer/placeholder for current SOURCE_LANG (after [g] swap)."""
@@ -2008,9 +3493,138 @@ class LiveLingoApp(App):
         except Exception:
             pass
         try:
+            self._refresh_bypass_badge()
+        except Exception:
+            pass
+        try:
+            self._refresh_tab_labels()
+        except Exception:
+            pass
+        try:
+            self._fill_news_tab()
+        except Exception:
+            pass
+        try:
+            self._fill_commands_tab()
+        except Exception:
+            pass
+        try:
             self._tick_status()
         except Exception:
             pass
+
+    def _set_tab_label(self, pane_id: str, label: str) -> None:
+        """Set a TabPane label (Textual version-tolerant)."""
+        try:
+            pane = self.query_one(pane_id, TabPane)
+            if hasattr(pane, "set_label"):
+                pane.set_label(label)
+            else:
+                pane.label = label
+        except Exception:
+            pass
+
+    def _refresh_tab_labels(self) -> None:
+        """Update Novidades + Command list tab titles for current SOURCE_LANG."""
+        i18n = _footer_i18n()
+        lang = _source_lang_code()
+        self._set_tab_label(
+            "#tab-news", i18n.get("tab_news", "What's New")
+        )
+        self._set_tab_label(
+            "#tab-cmds",
+            i18n.get("tab_commands", command_help.tab_title(lang)),
+        )
+
+    def _fill_news_tab(self) -> None:
+        """Load CHANGELOG.md into the Novidades tab (UI thread)."""
+        try:
+            log = self.query_one("#log-news", SelectableRichLog)
+        except Exception:
+            try:
+                log = self.query_one("#log-news", RichLog)
+            except Exception:
+                return
+        i18n = _footer_i18n()
+        title = i18n.get("tab_news", "What's New")
+        header = i18n.get("news_header", "Project changelog (CHANGELOG.md)")
+        try:
+            log.clear()
+        except Exception:
+            pass
+        try:
+            log.write(f"[bold cyan]{title}[/] — {header}")
+            log.write("")
+        except Exception:
+            pass
+        text, err = _load_changelog_text()
+        if err or not text:
+            try:
+                log.write(f"[yellow]{err or i18n.get('news_missing', 'CHANGELOG.md not found.')}[/]")
+            except Exception:
+                pass
+            return
+        # Prefer Rich Markdown (headers, lists, bold from CHANGELOG.md)
+        try:
+            from rich.markdown import Markdown
+
+            log.write(Markdown(text))
+        except Exception:
+            for line in text.splitlines():
+                try:
+                    # Escape Rich markup in raw changelog lines
+                    safe = line.replace("[", "\\[")
+                    log.write(safe)
+                except Exception:
+                    break
+        # Changelog is read top-down; keep viewport at the start
+        self._scroll_log_home(log)
+
+    def _fill_commands_tab(self) -> None:
+        """Fill the Command list tab with Markdown help (SOURCE_LANG)."""
+        try:
+            log = self.query_one("#log-cmds", SelectableRichLog)
+        except Exception:
+            try:
+                log = self.query_one("#log-cmds", RichLog)
+            except Exception:
+                return
+        lang = _source_lang_code()
+        try:
+            log.clear()
+        except Exception:
+            pass
+        md = command_help.build_commands_markdown(lang)
+        try:
+            from rich.markdown import Markdown
+
+            log.write(Markdown(md))
+        except Exception:
+            for line in md.splitlines():
+                try:
+                    log.write((line or "").replace("[", "\\["))
+                except Exception:
+                    break
+        self._scroll_log_home(log)
+
+    def _scroll_log_home(self, log) -> None:
+        """Scroll a RichLog to the top; disable auto-scroll if possible."""
+        try:
+            log.auto_scroll = False
+        except Exception:
+            pass
+        for kwargs in (
+            {"animate": False, "immediate": True},
+            {"animate": False},
+            {},
+        ):
+            try:
+                log.scroll_home(**kwargs)
+                break
+            except TypeError:
+                continue
+            except Exception:
+                break
 
     def clear_log(self) -> None:
         """Clear both log panels (command [cls]). Must run on UI thread."""
@@ -2031,10 +3645,235 @@ class LiveLingoApp(App):
                     log.clear()
                 except Exception:
                     pass
+        # Hits point at cleared buffers — drop search cursor + paint
+        self._search_hits = []
+        self._search_i = -1
+        self._clear_all_search_highlights()
 
     def _log_widget(self):
         """Return the active (visible) scrollable log widget, or #log."""
         return self._active_log_widget() or self._resolve_log_widget("main")
+
+    def _invalidate_search_if_stale(self, log) -> None:
+        """Drop hit list if the active log no longer has the same hit count shape."""
+        if not self._search_hits or not self._search_query:
+            return
+        try:
+            n_lines = len(getattr(log, "lines", None) or []) or len(
+                getattr(log, "_plain_lines", None) or []
+            )
+        except Exception:
+            n_lines = 0
+        if n_lines <= 0:
+            self._search_hits = []
+            self._search_i = -1
+            self._clear_all_search_highlights()
+            return
+        # Drop out-of-range hits (log truncated by max_lines / clear)
+        if any(y < 0 or y >= n_lines for y in self._search_hits):
+            self._search_hits = []
+            self._search_i = -1
+            self._clear_all_search_highlights()
+
+    def _clear_all_search_highlights(self) -> None:
+        """Remove /search paint from every log tab."""
+        for lid in ("#log", "#log-app", "#log-news", "#log-cmds"):
+            try:
+                w = self.query_one(lid, SelectableRichLog)
+                w.clear_search_highlight()
+            except Exception:
+                pass
+
+    def _apply_search_highlight(
+        self, log, query: str, hits: list[int], current_y: int | None
+    ) -> None:
+        """Paint hits on `log`; clear highlight on other tabs."""
+        for lid in ("#log", "#log-app", "#log-news", "#log-cmds"):
+            try:
+                w = self.query_one(lid, SelectableRichLog)
+            except Exception:
+                continue
+            if w is log and query and hits:
+                try:
+                    w.set_search_highlight(query, hits, current_y)
+                except Exception:
+                    pass
+            else:
+                try:
+                    w.clear_search_highlight()
+                except Exception:
+                    pass
+
+    def _run_search_on_active(self, query: str, *, start_i: int = 0) -> None:
+        """Find query on active tab, store hits, jump to start_i (wrapped)."""
+        t = _footer_i18n()
+        log = self._log_widget()
+        if log is None:
+            try:
+                self.notify(t.get("search_empty_log", "Empty log."), severity="warning")
+            except Exception:
+                pass
+            return
+        query = (query or "").strip()
+        if not query:
+            try:
+                self.notify(
+                    t.get("search_help", "Use /text · /n · /p"),
+                    severity="information",
+                )
+            except Exception:
+                self.post_log("info", t.get("search_help", "Use /text · /n · /p"))
+            return
+
+        hits: list[int] = []
+        if hasattr(log, "find_match_ys"):
+            try:
+                hits = list(log.find_match_ys(query) or [])
+            except Exception:
+                hits = []
+        if not hits:
+            # Fallback scan plain text if method missing
+            try:
+                plain = log.get_plain_text() if hasattr(log, "get_plain_text") else ""
+                q = query.casefold()
+                for y, line in enumerate((plain or "").splitlines()):
+                    if q in line.casefold():
+                        hits.append(y)
+            except Exception:
+                hits = []
+
+        self._search_query = query
+        self._search_hits = hits
+        self._search_panel = self._active_log_panel()
+        if not hits:
+            self._search_i = -1
+            self._apply_search_highlight(log, query, [], None)
+            msg = t.get("search_none", 'No matches: "{q}"').format(q=query)
+            try:
+                self.notify(msg, severity="warning", timeout=3)
+            except Exception:
+                self.post_log("warn", msg)
+            return
+
+        n = len(hits)
+        i = int(start_i) % n
+        self._search_i = i
+        y = hits[i]
+        self._apply_search_highlight(log, query, hits, y)
+        if hasattr(log, "scroll_to_content_y"):
+            log.scroll_to_content_y(y)
+        else:
+            try:
+                log.auto_scroll = False
+                log.scroll_to(0, max(0, y), animate=False)
+            except Exception:
+                pass
+        msg = t.get("search_hit", 'Search: "{q}" — {i}/{n}').format(
+            q=query, i=i + 1, n=n
+        )
+        try:
+            self.notify(msg, severity="information", timeout=2)
+        except Exception:
+            self.post_log("info", msg)
+
+    def _handle_log_search(self, value: str) -> None:
+        """
+        Vim-style log search on the active tab (UI thread).
+
+          /text   new search
+          /n      next match (wrap)
+          /p      previous match (wrap)
+          /       repeat last query on active tab
+        """
+        t = _footer_i18n()
+        raw = (value or "").strip()
+        if not raw.startswith("/"):
+            return
+        low = raw.lower()
+
+        if low == "/n":
+            action = "next"
+            query = self._search_query
+        elif low == "/p":
+            action = "prev"
+            query = self._search_query
+        elif raw == "/":
+            action = "repeat"
+            query = self._search_query
+        else:
+            action = "new"
+            query = raw[1:]  # after leading /
+
+        if action == "new":
+            if not (query or "").strip():
+                try:
+                    self.notify(
+                        t.get("search_help", "Use /text · /n · /p"),
+                        severity="information",
+                    )
+                except Exception:
+                    self.post_log("info", t.get("search_help", "Use /text · /n · /p"))
+                return
+            self._run_search_on_active(query, start_i=0)
+            return
+
+        # next / prev / repeat need an existing query
+        if not (query or "").strip():
+            try:
+                self.notify(
+                    t.get(
+                        "search_no_active",
+                        "No active search. Use /text first.",
+                    ),
+                    severity="warning",
+                    timeout=3,
+                )
+            except Exception:
+                self.post_log("warn", t.get("search_no_active", "No active search."))
+            return
+
+        panel_now = self._active_log_panel()
+        log = self._log_widget()
+        # Tab changed, empty hits, or explicit repeat → rebuild on current tab
+        need_refresh = (
+            action == "repeat"
+            or not self._search_hits
+            or panel_now != self._search_panel
+        )
+        if log is not None and not need_refresh:
+            self._invalidate_search_if_stale(log)
+            if not self._search_hits:
+                need_refresh = True
+
+        if need_refresh:
+            # prev after rebuild → last hit (-1 % n == n-1); else first
+            start_i = -1 if action == "prev" else 0
+            self._run_search_on_active(query, start_i=start_i)
+            return
+
+        n = len(self._search_hits)
+        if n <= 0:
+            self._run_search_on_active(query, start_i=0)
+            return
+        if action == "next":
+            i = (int(self._search_i) + 1) % n
+        elif action == "prev":
+            i = (int(self._search_i) - 1) % n
+        else:
+            i = max(0, int(self._search_i)) % n
+        self._search_i = i
+        y = self._search_hits[i]
+        if log is not None:
+            self._apply_search_highlight(log, query, self._search_hits, y)
+            if hasattr(log, "scroll_to_content_y"):
+                log.scroll_to_content_y(y)
+        msg = t.get("search_hit", 'Search: "{q}" — {i}/{n}').format(
+            q=query, i=i + 1, n=n
+        )
+        try:
+            self.notify(msg, severity="information", timeout=2)
+        except Exception:
+            self.post_log("info", msg)
 
     def scroll_log_top(self) -> None:
         """
@@ -2119,12 +3958,24 @@ class LiveLingoApp(App):
                 pass
 
     def action_toggle_log_tab(self) -> None:
-        """F3: switch between Tradução and Sistema log tabs."""
+        """F3: cycle Tradução → Sistema → Novidades → Lista de comandos → …"""
         try:
             tabs = self.query_one("#log-tabs", TabbedContent)
+            order = ("tab-main", "tab-app", "tab-news", "tab-cmds")
             cur = str(getattr(tabs, "active", "") or "tab-main")
-            nxt = "tab-app" if cur != "tab-app" else "tab-main"
-            tabs.active = nxt
+            try:
+                i = order.index(cur)
+            except ValueError:
+                # Normalize partial ids (e.g. ends with app/news/cmds)
+                if cur.endswith("cmds"):
+                    i = 3
+                elif cur.endswith("news"):
+                    i = 2
+                elif cur.endswith("app"):
+                    i = 1
+                else:
+                    i = 0
+            tabs.active = order[(i + 1) % len(order)]
             # Keep command input focused after tab flip
             try:
                 self.query_one("#cmd", Input).focus()
@@ -2137,10 +3988,18 @@ class LiveLingoApp(App):
                 pass
 
     def focus_log_tab(self, panel: str = "main") -> None:
-        """Show Tradução (main) or Sistema (app) log tab. UI thread only."""
+        """Show Tradução / Sistema / Novidades / Command list. UI thread only."""
         try:
             tabs = self.query_one("#log-tabs", TabbedContent)
-            want = "tab-app" if str(panel or "main").lower() == "app" else "tab-main"
+            p = str(panel or "main").lower()
+            if p in ("cmds", "commands", "cmd", "help", "comandos"):
+                want = "tab-cmds"
+            elif p in ("news", "changelog", "novidades", "whatsnew"):
+                want = "tab-news"
+            elif p in ("app", "sistema", "system"):
+                want = "tab-app"
+            else:
+                want = "tab-main"
             tabs.active = want
         except Exception:
             pass
@@ -2373,6 +4232,8 @@ class LiveLingoApp(App):
                 [
                     f"[r] {t['replay']}",
                     f"[rN] {t['replay_n']}",
+                    f"[rs] {t.get('replay_src', 'Replay Heard')}",
+                    f"[rsN] {t.get('replay_src_n', 'Heard N')}",
                     f"[s] {t['snd']} {sound}",
                     f"[n] {t['mic']} {mic}",
                     f"[b] {t.get('bypass', 'Bypass')}",
@@ -2490,6 +4351,27 @@ class LiveLingoApp(App):
         try:
             if hasattr(self.pipeline, "is_passthrough_active"):
                 self._passthrough = bool(self.pipeline.is_passthrough_active())
+        except Exception:
+            pass
+
+        # Pipe bar: stale-stage timeout + pulse animation
+        try:
+            import time as _time
+
+            now = _time.monotonic()
+            age = now - float(self._pipe_stage_t or 0.0)
+            # After play/idle-ish stages settle, return to listening Mic
+            if self._pipe_stage == "play" and age > 2.5:
+                if not self._speaking:
+                    self._pipe_stage = "idle"
+                    self._pipe_stage_t = now
+            elif self._pipe_stage in ("stt", "translate", "tts") and age > 12.0:
+                # Safety: stuck stage (failed chunk) → idle
+                if not self._speaking:
+                    self._pipe_stage = "idle"
+                    self._pipe_stage_t = now
+            self._sync_lc_pipe_from_captions()
+            self._paint_pipe_bar()
         except Exception:
             pass
 
@@ -2683,6 +4565,256 @@ class LiveLingoApp(App):
         except Exception:
             return False
 
+    @staticmethod
+    def _resolve_key_character(event: events.Key) -> str | None:
+        """
+        Printable char for a Key event, with fallbacks for terminals/layouts
+        that send key *names* without `character` (common for `/` on
+        Windows Terminal + ABNT2/WSL: name=slash, character=None).
+        """
+        ch = event.character
+        if ch is not None and ch != "":
+            return ch
+        name = (event.name or "").lower()
+        key = (getattr(event, "key", None) or "").lower()
+        token = name or key
+        # Strip modifiers if present (e.g. rare "shift+slash")
+        if "+" in token:
+            token = token.rsplit("+", 1)[-1]
+        # Textual / term key identifiers → character
+        fallback = {
+            "slash": "/",
+            "solidus": "/",
+            "numpad_divide": "/",
+            "divide": "/",
+            "backslash": "\\",
+            "bar": "|",
+            "pipe": "|",
+            "minus": "-",
+            "numpad_minus": "-",
+            "plus": "+",
+            "numpad_plus": "+",
+            "equals": "=",
+            "underscore": "_",
+            "period": ".",
+            "full_stop": ".",
+            "comma": ",",
+            "semicolon": ";",
+            "colon": ":",
+            "apostrophe": "'",
+            "quote": "'",
+            "quotation_mark": '"',
+            "grave_accent": "`",
+            "asciitilde": "~",
+            "left_square_bracket": "[",
+            "right_square_bracket": "]",
+            "left_curly_bracket": "{",
+            "right_curly_bracket": "}",
+            "left_parenthesis": "(",
+            "right_parenthesis": ")",
+            "asterisk": "*",
+            "numpad_multiply": "*",
+            "number_sign": "#",
+            "at": "@",
+            "percent_sign": "%",
+            "ampersand": "&",
+            "dollar_sign": "$",
+            "exclamation_mark": "!",
+            "question_mark": "?",
+        }
+        return fallback.get(token)
+
+    def _insert_cmd_char(self, ch: str) -> bool:
+        """Insert one character into #cmd at the cursor. Returns True on success."""
+        if not ch:
+            return False
+        if self._prompt_force_upper and ch.isalpha():
+            ch = ch.upper()
+        inp = self._focus_cmd()
+        if inp is None:
+            return False
+        # Typing resets erase-hold acceleration
+        self._cmd_erase_key = None
+        self._cmd_erase_streak = 0
+        try:
+            val = inp.value or ""
+            pos = int(getattr(inp, "cursor_position", len(val)) or len(val))
+            pos = max(0, min(pos, len(val)))
+            inp.value = val[:pos] + ch + val[pos:]
+            inp.cursor_position = pos + 1
+            return True
+        except Exception:
+            try:
+                inp.value = (inp.value or "") + ch
+                return True
+            except Exception:
+                return False
+
+    @staticmethod
+    def _word_boundary_left(text: str, pos: int) -> int:
+        """
+        Index of the start of the word (or whitespace run) left of cursor.
+
+        Skips trailing spaces first, then a run of word or non-word chars
+        (editor-style Ctrl+Backspace).
+        """
+        if pos <= 0 or not text:
+            return 0
+        i = min(pos, len(text)) - 1
+        # Consume spaces immediately left of cursor
+        while i >= 0 and text[i].isspace():
+            i -= 1
+        if i < 0:
+            return 0
+        if text[i].isalnum() or text[i] in ("_", "-"):
+            while i >= 0 and (text[i].isalnum() or text[i] in ("_", "-")):
+                i -= 1
+        else:
+            # punctuation / symbols as one "word"
+            while i >= 0 and not text[i].isspace() and not (
+                text[i].isalnum() or text[i] in ("_", "-")
+            ):
+                i -= 1
+        return i + 1
+
+    @staticmethod
+    def _word_boundary_right(text: str, pos: int) -> int:
+        """Index just past the word (or whitespace run) right of cursor."""
+        if not text or pos >= len(text):
+            return len(text or "")
+        i = max(0, pos)
+        n = len(text)
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            return n
+        if text[i].isalnum() or text[i] in ("_", "-"):
+            while i < n and (text[i].isalnum() or text[i] in ("_", "-")):
+                i += 1
+        else:
+            while i < n and not text[i].isspace() and not (
+                text[i].isalnum() or text[i] in ("_", "-")
+            ):
+                i += 1
+        return i
+
+    def _cmd_erase_use_word(self, key: str) -> bool:
+        """
+        True when the user is holding Backspace/Delete (key-repeat streak).
+
+        First few repeats delete one character; continued hold switches to
+        whole-word erase for faster editing.
+        """
+        now = time.monotonic()
+        gap = now - float(self._cmd_erase_last_t or 0.0)
+        # New press sequence if key changed or gap > key-repeat window
+        if key != self._cmd_erase_key or gap > 0.28:
+            self._cmd_erase_streak = 1
+        else:
+            self._cmd_erase_streak = int(self._cmd_erase_streak) + 1
+        self._cmd_erase_key = key
+        self._cmd_erase_last_t = now
+        # After 3 rapid char-deletes, each further repeat removes a word
+        return self._cmd_erase_streak >= 4
+
+    def _cmd_delete_left(self, *, word: bool = False) -> bool:
+        """Delete one char or one word to the left of the cursor in #cmd."""
+        inp = self._focus_cmd()
+        if inp is None:
+            return False
+        try:
+            val = inp.value or ""
+            pos = int(getattr(inp, "cursor_position", len(val)) or len(val))
+            pos = max(0, min(pos, len(val)))
+            if pos <= 0:
+                return True
+            if word:
+                new_pos = self._word_boundary_left(val, pos)
+            else:
+                new_pos = pos - 1
+            inp.value = val[:new_pos] + val[pos:]
+            inp.cursor_position = new_pos
+            return True
+        except Exception:
+            return False
+
+    def _cmd_delete_right(self, *, word: bool = False) -> bool:
+        """Delete one char or one word to the right of the cursor in #cmd."""
+        inp = self._focus_cmd()
+        if inp is None:
+            return False
+        try:
+            val = inp.value or ""
+            pos = int(getattr(inp, "cursor_position", 0) or 0)
+            pos = max(0, min(pos, len(val)))
+            if pos >= len(val):
+                return True
+            if word:
+                end = self._word_boundary_right(val, pos)
+            else:
+                end = pos + 1
+            inp.value = val[:pos] + val[end:]
+            inp.cursor_position = pos
+            return True
+        except Exception:
+            return False
+
+    def _handle_cmd_erase_keys(self, event: events.Key, key_name: str) -> bool:
+        """
+        Handle Backspace/Delete (+ modifiers) on #cmd.
+
+        - Backspace: char left; hold (key-repeat) → word left
+        - Delete: char right; hold → word right
+        - Ctrl+Backspace / Ctrl+W / Alt+Backspace: always word left
+        - Ctrl+Delete: always word right
+
+        Returns True if the event was handled.
+        """
+        kn = (key_name or "").lower()
+        # Always word-left shortcuts (Ctrl+Backspace / Ctrl+W / Alt+Backspace)
+        if kn in ("ctrl+backspace", "ctrl+w", "alt+backspace", "control+backspace") or (
+            kn.endswith("+backspace")
+            and ("ctrl" in kn or "alt" in kn or "control" in kn)
+        ):
+            self._cmd_erase_key = None
+            self._cmd_erase_streak = 0
+            self._cmd_delete_left(word=True)
+            return True
+        # Always word-right (Ctrl+Delete)
+        if kn in ("ctrl+delete", "control+delete") or (
+            kn.endswith("+delete") and ("ctrl" in kn or "control" in kn)
+        ):
+            self._cmd_erase_key = None
+            self._cmd_erase_streak = 0
+            self._cmd_delete_right(word=True)
+            return True
+        if kn == "backspace":
+            # Tap = 1 char left; hold (key-repeat) → whole words to the left
+            use_word = self._cmd_erase_use_word("backspace")
+            self._cmd_delete_left(word=use_word)
+            return True
+        if kn == "delete":
+            # Tap = 1 char; hold → words.
+            # At end of line (common): delete to the *left* (user request).
+            # Mid-line: Delete still erases to the right.
+            use_word = self._cmd_erase_use_word("delete")
+            try:
+                inp = self._cmd_input()
+                val = (inp.value if inp else "") or ""
+                pos = (
+                    int(getattr(inp, "cursor_position", len(val)) or len(val))
+                    if inp
+                    else 0
+                )
+            except Exception:
+                val, pos = "", 0
+            if pos >= len(val):
+                self._cmd_delete_left(word=use_word)
+            else:
+                self._cmd_delete_right(word=use_word)
+            return True
+        return False
+
     def on_key(self, event: events.Key) -> None:
         """
         Classic-style command entry: type from any panel (log/header/menu).
@@ -2692,6 +4824,9 @@ class LiveLingoApp(App):
         focus is elsewhere (e.g. after clicking the log to select/copy).
 
         With #cmd focused: ↑/↓ walk command history (like bash / Grok).
+
+        Note: some host terminals omit `event.character` for `/` (slash) and
+        similar keys — we resolve from key name so ABNT2/WSL can still type them.
         """
         # Any ModalScreen (help panel etc.) owns the keyboard.
         if self._modal_open():
@@ -2724,42 +4859,59 @@ class LiveLingoApp(App):
                 self._history_down()
             return
 
+        # Word/char erase on #cmd (intercept before Input eats key-repeat).
+        # Prefer the longer id (e.g. ctrl+backspace over backspace).
+        erase_id = key_name if len(key_name) >= len(key_raw) else key_raw
+        if not erase_id:
+            erase_id = key_name or key_raw
+        if "backspace" in erase_id or "delete" in erase_id or erase_id in (
+            "ctrl+w",
+        ):
+            if self._handle_cmd_erase_keys(event, erase_id):
+                event.prevent_default()
+                event.stop()
+                return
+
+        ch = self._resolve_key_character(event)
+        char_missing = event.character is None or event.character == ""
+
+        # When #cmd is focused: Input normally types. If the terminal sent a
+        # key *name* without a character (slash on some WT/WSL layouts), Input
+        # inserts nothing — inject ourselves.
+        if self._is_cmd_focused():
+            if (
+                char_missing
+                and ch
+                and ch.isprintable()
+                and ch not in ("\r", "\n", "\t")
+            ):
+                if self._insert_cmd_char(ch):
+                    event.prevent_default()
+                    event.stop()
+            return
+
         # Let other bindings (Ctrl+C selection, Ctrl+Q, F1…) handle non-printables.
-        if event.character is None and key_name not in (
-            "enter",
-            "return",
-            "backspace",
-            "delete",
+        if (
+            ch is None
+            and event.character is None
+            and key_name not in (
+                "enter",
+                "return",
+                "backspace",
+                "delete",
+            )
+            and "backspace" not in key_name
+            and "delete" not in key_name
         ):
             return
-        if self._is_cmd_focused():
-            return  # Input handles typing / submit normally
 
         key = key_name
-        ch = event.character
 
         # Printable → append to command field (incl. digits for r22 / eN)
         if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
-            inp = self._focus_cmd()
-            if inp is None:
-                return
-            # [t] target-lang prompt: force UPPERCASE keystrokes only
-            if self._prompt_force_upper and ch.isalpha():
-                ch = ch.upper()
-            # Append at cursor end
-            try:
-                val = inp.value or ""
-                pos = int(getattr(inp, "cursor_position", len(val)) or len(val))
-                pos = max(0, min(pos, len(val)))
-                inp.value = val[:pos] + ch + val[pos:]
-                inp.cursor_position = pos + 1
-            except Exception:
-                try:
-                    inp.value = (inp.value or "") + ch
-                except Exception:
-                    pass
-            event.prevent_default()
-            event.stop()
+            if self._insert_cmd_char(ch):
+                event.prevent_default()
+                event.stop()
             return
 
         if key in ("enter", "return"):
@@ -2772,29 +4924,6 @@ class LiveLingoApp(App):
             event.stop()
             self._submit_command_line(value)
             return
-
-        if key in ("backspace", "delete"):
-            inp = self._focus_cmd()
-            if inp is None:
-                return
-            try:
-                val = inp.value or ""
-                if key == "backspace" and val:
-                    pos = int(getattr(inp, "cursor_position", len(val)) or len(val))
-                    if pos > 0:
-                        inp.value = val[: pos - 1] + val[pos:]
-                        inp.cursor_position = pos - 1
-                elif key == "delete" and val:
-                    pos = int(getattr(inp, "cursor_position", 0) or 0)
-                    if pos < len(val):
-                        inp.value = val[:pos] + val[pos + 1 :]
-            except Exception:
-                try:
-                    inp.value = (inp.value or "")[:-1]
-                except Exception:
-                    pass
-            event.prevent_default()
-            event.stop()
 
     def _submit_command_line(self, value: str) -> None:
         """Shared submit path for Input.Submitted and global Enter."""
@@ -2810,6 +4939,7 @@ class LiveLingoApp(App):
 
         # Log navigation on the UI thread (no worker / call_from_thread race).
         # gg/gt → top; GG/gf → bottom (GG is case-sensitive, like vim G).
+        # /text · /n · /p → vim-style search on active log tab.
         low = value.lower()
         if value == "GG" or low == "gf":
             self._push_cmd_history(value)
@@ -2818,6 +4948,32 @@ class LiveLingoApp(App):
         if low in ("gg", "gt"):
             self._push_cmd_history(value)
             self.scroll_log_top()
+            return
+        # Vim-style search: /query  ·  aliases without slash (keyboard layouts
+        # that cannot type / into the TUI): find:query  ·  find query  ·  s?query
+        if value.startswith("/"):
+            self._push_cmd_history(value)
+            self._handle_log_search(value)
+            return
+        low_full = value.lower()
+        if low_full in ("find", "find:", "search", "search:"):
+            self._push_cmd_history(value)
+            self._handle_log_search("/")
+            return
+        if low_full.startswith("find:") or low_full.startswith("search:"):
+            q = value.split(":", 1)[1]
+            self._push_cmd_history(value)
+            self._handle_log_search("/" + q)
+            return
+        if low_full.startswith("find ") or low_full.startswith("search "):
+            q = value.split(None, 1)[1] if " " in value else ""
+            self._push_cmd_history(value)
+            self._handle_log_search("/" + q)
+            return
+        # s?text — reverse-search mnemonic without requiring /
+        if len(value) >= 2 and value[0] in ("s", "S") and value[1] == "?":
+            self._push_cmd_history(value)
+            self._handle_log_search("/" + value[2:])
             return
 
         if self._cmd_busy:
@@ -3044,8 +5200,8 @@ class LiveLingoApp(App):
         )
         self.post_log(
             "info",
-            "Copiar: clique+arraste → Ctrl+C | log inteiro Ctrl+Shift+C / F2 | "
-            "sair Ctrl+Q | F1=ajuda",
+            "Copiar: clique+arraste → Ctrl+C | log inteiro Ctrl+Shift+C | "
+            "bypass F2 | sair Ctrl+Q | F1=ajuda",
             panel="app",
         )
         try:
@@ -3100,7 +5256,7 @@ class LiveLingoApp(App):
 
     def action_copy_log(self) -> None:
         """
-        Ctrl+Shift+C / F2: copy entire scrollback of the active log tab.
+        Ctrl+Shift+C: copy entire scrollback of the active log tab.
         Pulls plain text from SelectableRichLog buffer and writes the clipboard.
         """
         text = ""
@@ -3142,6 +5298,14 @@ class LiveLingoApp(App):
 
     def action_quit_app(self) -> None:
         try:
+            svc = self.caption_service or getattr(
+                self.pipeline, "caption_service", None
+            )
+            if svc is not None:
+                svc.stop()
+        except Exception:
+            pass
+        try:
             self.pipeline.stop()
         except Exception:
             pass
@@ -3154,6 +5318,7 @@ def run_tui(
     dispatch_command,
     listen_msgs_fn,
     help_fn=None,
+    caption_service=None,
 ) -> None:
     """Block until the TUI exits."""
     app = LiveLingoApp(
@@ -3162,5 +5327,6 @@ def run_tui(
         dispatch_command=dispatch_command,
         listen_msgs_fn=listen_msgs_fn,
         help_fn=help_fn,
+        caption_service=caption_service,
     )
     app.run()

@@ -68,6 +68,26 @@ class Pipeline:
         self.translator = translator
         self.synthesizer = synthesizer
 
+        # Phrase translation memory (exact full-sentence cache)
+        try:
+            from .phrase_cache import init_phrase_cache
+
+            self.phrase_cache = init_phrase_cache(config)
+            n_warm = int(getattr(self.phrase_cache, "_warmup_count", 0) or 0)
+            if getattr(config, "PHRASE_CACHE", False) and (
+                getattr(config, "VERBOSE", False)
+                or getattr(config, "PHRASE_CACHE_LOG", True)
+            ):
+                ui.info(
+                    f"Phrase cache ON · mem warm-up {n_warm} pair(s) · "
+                    f"[pc off] desliga · [pc force] re-traduz próxima",
+                    indent=0,
+                )
+        except Exception as exc:
+            self.phrase_cache = None
+            if getattr(config, "VERBOSE", False):
+                ui.dim(f"Phrase cache indisponível: {exc}")
+
         self.chunk_queue = queue.Queue()
         self.playback_queue = queue.Queue()
         self.stop_event = threading.Event()
@@ -181,7 +201,7 @@ class Pipeline:
             self.sound_enabled = enabled
         if not enabled:
             self._playback_suppressed = True
-            self._interrupt_playback()
+            self._interrupt_playback(force=True)
             # Sound-ON path never advances ordered release — catch up now.
             self._sync_ordered_release_cursor()
             if getattr(self.cfg, "SOUND_OFF_PARALLEL", True):
@@ -247,6 +267,21 @@ class Pipeline:
         elif not self._is_capture_held_for_playback():
             self.recorder.set_capture_enabled(True)
         return muted, os_ok, name
+
+    def set_mic_muted(self, muted: bool):
+        """
+        Force mic mute/unmute (OS when possible + app gate).
+
+        Used by the TUI mute modal ([n] to leave). Returns (muted, os_ok, name).
+        """
+        if muted and self.is_passthrough_active():
+            self.set_voice_passthrough(False)
+        muted_now, os_ok, name = self.mic.set_muted(bool(muted))
+        if muted_now:
+            self.recorder.set_capture_enabled(False)
+        elif not self._is_capture_held_for_playback():
+            self.recorder.set_capture_enabled(True)
+        return muted_now, os_ok, name
 
     # ------------------------------------------------------------------ #
     # Direct voice bypass ([b]) — mic → OUTPUT (CABLE) without translation
@@ -968,13 +1003,18 @@ class Pipeline:
             return False
         with self._playback_suppress_lock:
             self._playback_suppressed = True
-        self._interrupt_playback()
+        # force=True: user [x] always stops even if PLAYBACK_INTERRUPT=false
+        self._interrupt_playback(force=True)
         return True
 
     def _resume_chunk_playback(self):
         """Allow TTS for the next (or current) chunk after stop or interrupt."""
         with self._playback_suppress_lock:
             self._playback_suppressed = False
+        with self._player_lock:
+            player = self._player
+        if player is not None:
+            player.clear_interrupt()
 
     def _enqueue_background_tts(self, chunk_num, fn):
         """Serialize muted-mode TTS jobs (one at a time, avoids edge/Piper races)."""
@@ -991,19 +1031,20 @@ class Pipeline:
             except Exception as exc:
                 ui.error(f"[chunk {chunk_num}] TTS failed: {exc}")
 
-    def _interrupt_playback(self):
-        if not getattr(self.cfg, "PLAYBACK_INTERRUPT", True):
+    def _interrupt_playback(self, force=False):
+        if not force and not getattr(self.cfg, "PLAYBACK_INTERRUPT", True):
             return
+        # Do NOT hold _player_lock across play(); interrupt must be set while
+        # the playback thread is inside Player.play() or stop waits until end.
         with self._player_lock:
-            if self._player is not None:
-                self._player.interrupt()
+            player = self._player
+        if player is not None:
+            player.interrupt()
         while True:
             try:
-                item = self.playback_queue.get_nowait()
+                self.playback_queue.get_nowait()
             except queue.Empty:
                 break
-            if item is not INTERRUPT:
-                continue
 
     def _use_streaming_llm(self):
         return (
@@ -1096,10 +1137,14 @@ class Pipeline:
     ):
         if note:
             ui.dim(note)
+        # Visual badge on Tradução: CACHE vs LIVE (when phrase cache was involved)
+        from_cache = None
+        if isinstance(timing, dict) and "translate_cache" in timing:
+            from_cache = bool(timing.get("translate_cache"))
         if self._use_streaming_llm_for_chunk():
-            ui.chunk_stream_done(n, heard, translated)
+            ui.chunk_stream_done(n, heard, translated, from_cache=from_cache)
         else:
-            ui.chunk_text_preview(n, heard, translated)
+            ui.chunk_text_preview(n, heard, translated, from_cache=from_cache)
         created_at = self._timestamp_now()
         # Path set but file may still be flushing (sound OFF + background TTS)
         pending = bool(audio_path and str(audio_path).strip())
@@ -1427,15 +1472,22 @@ class Pipeline:
 
         return tts_audio, sample_rate, path
 
-    def replay_last(self):
+    def replay_last(self, *, use_heard=False):
         with self.history_lock:
             if not self.history:
                 ui.warn("Nenhuma tradução no histórico para repetir.")
                 return
             n, heard, translated, audio_path = self.history[-1]
-        self.replay_chunk(n)
+        self.replay_chunk(n, use_heard=use_heard)
 
-    def replay_chunk(self, chunk_num):
+    def replay_chunk(self, chunk_num, *, use_heard=False):
+        """
+        Replay chunk N.
+
+        use_heard=False (r / rN): play translated TTS (target language).
+        use_heard=True  (rs / rsN): synthesize and play **Heard** (source text)
+        with a SOURCE-language voice; separate cache (does not overwrite r WAV).
+        """
         target_chunk = None
         with self.history_lock:
             for n, heard, translated, audio_path in self.history:
@@ -1451,24 +1503,198 @@ class Pipeline:
             return
 
         n, heard, translated, audio_path = target_chunk
-        # Replay implies listening — re-enable sound if muted (no prompt).
+        # r / rN / rs / rsN always need live playback — force sound ON.
         if not self.is_sound_enabled():
             self.set_sound_enabled(True)
+            ui.dim("Som ligado automaticamente ([s]) para o replay.")
 
-        cached = bool(audio_path and os.path.isfile(audio_path))
-        if cached:
+        if use_heard:
+            ui.info(f"Repetindo áudio Heard (source) do chunk {n}...")
+            self._print_replay_texts(heard, translated, emphasize="heard")
+            result = self._ensure_heard_audio(n, heard)
+            label = "Heard"
+        else:
+            cached = bool(audio_path and os.path.isfile(audio_path))
             ui.info(f"Repetindo áudio do chunk {n}...")
-        result = self._ensure_chunk_audio(n, heard, translated, audio_path)
+            self._print_replay_texts(heard, translated, emphasize="translated")
+            result = self._ensure_chunk_audio(n, heard, translated, audio_path)
+            label = "target"
+            if result is not None and not cached:
+                ui.success(f"Áudio do chunk {n} gerado e pronto para tocar.")
+
         if result is None:
             return
         audio, rate, path = result
-        if not cached:
-            ui.success(f"Áudio do chunk {n} gerado e pronto para tocar.")
+        # Always show folder+file (cache hit never prints "Gerando áudio…")
+        self._print_audio_path_line(path)
         try:
             self._resume_chunk_playback()
             self._enqueue_playback(audio, rate)
         except Exception as exc:
-            ui.error(f"Erro ao enfileirar áudio do chunk {n}: {exc}")
+            ui.error(f"Erro ao enfileirar áudio {label} do chunk {n}: {exc}")
+            return
+        # Blank after replay block (after "…gerado e pronto para tocar." when present)
+        ui.raw("")
+
+    def _ensure_heard_audio(self, n, heard):
+        """
+        Return (audio, sample_rate, path) synthesizing the **Heard** text.
+
+        Uses a separate cache file chunk_{n}_heard.wav so it never overwrites
+        the normal translated chunk_{n}.wav used by [r]/[rN].
+        Temporarily switches TTS voice to a SOURCE_LANG default when possible.
+        """
+        text = (heard or "").strip()
+        if not text:
+            ui.warn(f"Chunk {n} sem texto Heard — não dá para gerar áudio source.")
+            return None
+
+        path = os.path.join(self.cache_dir, f"chunk_{n}_heard.wav")
+        if path and os.path.isfile(path) and os.path.getsize(path) > 0:
+            try:
+                audio, rate = sf.read(path, dtype="float32")
+                if audio is not None and len(audio) > 0:
+                    return audio, rate, path
+            except Exception as exc:
+                ui.warn(f"[chunk {n}] cache Heard inválido, regenerando: {exc}")
+
+        ui.info(f"Gerando áudio Heard do chunk {n} (TTS source)...")
+        try:
+            from .synthesize import default_edge_voice_for_lang
+
+            src_lang = getattr(self.cfg, "SOURCE_LANG", "en") or "en"
+            src_voice = default_edge_voice_for_lang(src_lang)
+        except Exception:
+            src_voice = None
+
+        tts_audio, sample_rate = self._synthesize_with_optional_voice(text, src_voice)
+        if tts_audio is None or len(tts_audio) == 0:
+            ui.warn(f"[chunk {n}] TTS Heard retornou áudio vazio.")
+            return None
+
+        try:
+            sf.write(path, tts_audio, sample_rate)
+        except Exception as exc:
+            ui.error(f"[chunk {n}] erro ao salvar WAV Heard: {exc}")
+            # Still allow playback from memory
+            return tts_audio, sample_rate, path
+
+        ui.success(f"Áudio Heard do chunk {n} gerado e pronto para tocar.")
+        return tts_audio, sample_rate, path
+
+    @staticmethod
+    def _print_audio_path_line(path):
+        """Print full host path (folder+file) for r/rN/rs/rsN replay."""
+        if not path:
+            return
+        try:
+            display = ui.resolve_share_path(path) or str(path)
+        except Exception:
+            display = str(path)
+        display = (display or "").strip()
+        if display:
+            ui.dim(f"audio: {display}")
+
+    def _synthesize_with_optional_voice(self, text, voice_id=None):
+        """
+        Synthesize `text`, optionally using `voice_id` then restoring prior voice.
+
+        Prefers mutating the edge engine `.voice` only (hybrid-safe — avoids
+        Piper rebind via HybridTTS.set_voice). Returns (audio, rate) or (None, None).
+        """
+        synth = self.synthesizer
+        # Resolve the object that actually holds Edge voice id
+        edge = None
+        try:
+            if hasattr(synth, "edge") and hasattr(synth.edge, "voice"):
+                edge = synth.edge
+            elif hasattr(synth, "voice"):
+                edge = synth
+        except Exception:
+            edge = None
+
+        old_voice = None
+        if voice_id and edge is not None:
+            try:
+                old_voice = getattr(edge, "voice", None)
+                edge.voice = voice_id
+            except Exception as exc:
+                ui.dim(f"[debug] voz Heard '{voice_id}' não aplicada: {exc}")
+                old_voice = None
+
+        try:
+            if hasattr(synth, "begin_utterance"):
+                try:
+                    synth.begin_utterance()
+                except Exception:
+                    pass
+            return synth.synthesize(text)
+        except Exception as exc:
+            ui.error(f"TTS falhou (Heard): {exc}")
+            return None, None
+        finally:
+            if old_voice is not None and edge is not None:
+                try:
+                    edge.voice = old_voice
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _print_replay_texts(heard, translated, emphasize="translated"):
+        """
+        After "Repetindo áudio…", print:
+          "source / heard text"
+          "target / translated text"   ← green by default
+
+        emphasize="heard": highlight Heard (source replay [rs]).
+        """
+        heard_s = (heard or "").strip()
+        translated_s = (translated or "").strip()
+        if not heard_s and not translated_s:
+            return
+        try:
+            from colorama import Fore, Style
+        except Exception:
+            Fore = Style = None  # type: ignore
+        # Prefer TUI rich path when a log sink is active.
+        if getattr(ui, "get_log_sink", lambda: None)() is not None:
+            try:
+                e = getattr(ui, "_rich_escape", None)
+                if e is None:
+                    def e(s):  # type: ignore
+                        return (s or "").replace("[", "\\[")
+                if heard_s:
+                    if emphasize == "heard":
+                        ui.rich(f'[bold yellow]"{e(heard_s)}"[/]  [dim](Heard → TTS)[/]')
+                    else:
+                        ui.rich(f'"{e(heard_s)}"')
+                if translated_s:
+                    if emphasize == "heard":
+                        ui.rich(f'[dim]"{e(translated_s)}"[/]')
+                    else:
+                        ui.rich(f'[bold green]"{e(translated_s)}"[/]')
+                return
+            except Exception:
+                pass
+        # Classic terminal
+        if heard_s:
+            if emphasize == "heard" and Fore is not None and Style is not None:
+                print(
+                    Fore.YELLOW
+                    + Style.BRIGHT
+                    + f'"{heard_s}"'
+                    + Style.RESET_ALL
+                    + "  (Heard → TTS)"
+                )
+            else:
+                print(f'"{heard_s}"')
+        if translated_s:
+            if emphasize == "heard":
+                print(f'"{translated_s}"')
+            elif Fore is not None and Style is not None:
+                print(Fore.GREEN + Style.BRIGHT + f'"{translated_s}"' + Style.RESET_ALL)
+            else:
+                print(f'"{translated_s}"')
 
     # ------------------------------------------------------------------ #
     def start(self):
@@ -1755,9 +1981,43 @@ class Pipeline:
                         t_tts_start = time.perf_counter()
                     segment_queue.put(segment)
 
+        # --- Translate (phrase cache → live LLM/Google) ---
+        cache = getattr(self, "phrase_cache", None)
+        src_lang = (getattr(self.cfg, "SOURCE_LANG", "") or "").lower()
+        tgt_lang = (getattr(self.cfg, "TARGET_LANG", "") or "").lower()
+        force_live = False
+        if cache is not None and cache.enabled:
+            force_live = cache.consume_force_next()
+
+        translated = None
+        cache_hit = False
+        if cache is not None and cache.enabled and not force_live:
+            try:
+                cached = cache.lookup(src_lang, tgt_lang, heard)
+            except Exception:
+                cached = None
+            if cached:
+                translated = cached
+                cache_hit = True
+                if getattr(self.cfg, "PHRASE_CACHE_LOG", True) or self.cfg.VERBOSE:
+                    ui.dim(
+                        f'[chunk {n}] cache HIT · {src_lang}→{tgt_lang} · '
+                        f'"{(heard or "")[:48]}" → "{(translated or "")[:48]}"',
+                        panel="app",
+                    )
+                    ui.dim(
+                        "[pc last] revisar · [pc good]/[pc bad] · [pc force] re-traduzir",
+                        panel="app",
+                    )
+
         try:
             ui.chunk_progress(n, "translate")
-            if self._use_streaming_llm_for_chunk():
+            if cache_hit:
+                # Still show stream-less preview path as a normal translate
+                if self._use_streaming_llm_for_chunk():
+                    # No token stream on HIT — jump straight to full text UI later
+                    pass
+            elif self._use_streaming_llm_for_chunk():
                 ui.chunk_stream_start(n, heard)
 
                 def on_token(partial):
@@ -1777,8 +2037,44 @@ class Pipeline:
             _abort()
             return
         t2 = time.perf_counter()
+
+        # Store MISS / forced live result into TM
+        if (
+            cache is not None
+            and cache.enabled
+            and translated
+            and (not cache_hit or force_live)
+        ):
+            try:
+                cache.store(
+                    src_lang,
+                    tgt_lang,
+                    heard,
+                    translated,
+                    from_force=force_live,
+                )
+            except Exception:
+                pass
+            if (
+                getattr(self.cfg, "PHRASE_CACHE_LOG", True) or self.cfg.VERBOSE
+            ) and not cache_hit:
+                ui.dim(
+                    f"[chunk {n}] cache MISS · stored live translation",
+                    panel="app",
+                )
+            elif force_live and (
+                getattr(self.cfg, "PHRASE_CACHE_LOG", True) or self.cfg.VERBOSE
+            ):
+                ui.dim(
+                    f"[chunk {n}] cache FORCE · live translate overwrote pair",
+                    panel="app",
+                )
+
         if self.cfg.VERBOSE:
-            ui.dim(f"[chunk {n}] [debug] Tradução concluída com sucesso.")
+            ui.dim(
+                f"[chunk {n}] [debug] Tradução concluída "
+                f"({'cache' if cache_hit else 'live'})."
+            )
 
         if not translated:
             if segment_queue is not None:
@@ -1795,15 +2091,21 @@ class Pipeline:
 
         ui.chunk_progress(n, "translated", detail=translated)
 
+        # Badge on Tradução when cache system is enabled (or this was a HIT)
+        cache_badge = None
+        if cache is not None and (cache.enabled or cache_hit or force_live):
+            cache_badge = bool(cache_hit)
+
         # Shared stamp for DB + list history (updated when timings finalize).
         record_created_at = self._timestamp_now()
         if sound_on:
             if strip_note:
                 ui.dim(strip_note)
-            if self._use_streaming_llm_for_chunk():
-                ui.chunk_stream_done(n, heard, translated)
+            if self._use_streaming_llm_for_chunk() and not cache_hit:
+                ui.chunk_stream_done(n, heard, translated, from_cache=cache_badge)
             else:
-                ui.chunk_text_preview(n, heard, translated)
+                # HIT has no token stream — always use preview with badge
+                ui.chunk_text_preview(n, heard, translated, from_cache=cache_badge)
             with self.history_lock:
                 self.history.append((n, heard, translated, audio_path))
             self._record_transcript(
@@ -1848,6 +2150,7 @@ class Pipeline:
                 "stt": t1 - t0,
                 "translate": t2 - t1,
                 "total": (t3 - t0) if t3 is not None else (t2 - t0),
+                "translate_cache": bool(cache_hit),
             }
             if include_tts and t3 is not None:
                 tts_start = t_tts_start if t_tts_start is not None else t2
@@ -2092,8 +2395,9 @@ class Pipeline:
 
                 if item is INTERRUPT:
                     with self._player_lock:
-                        if self._player is not None:
-                            self._player.interrupt()
+                        player = self._player
+                    if player is not None:
+                        player.interrupt()
                     continue
 
                 if len(item) == 3:
@@ -2102,6 +2406,13 @@ class Pipeline:
                     audio, sample_rate = item
                     interruptible = False
 
+                # Drop leftovers after [x] / sound-off suppress (queue race).
+                with self._playback_suppress_lock:
+                    if self._playback_suppressed:
+                        continue
+
+                # Create/get player under lock, but NEVER hold lock during play()
+                # so interrupt() can fire mid-write.
                 with self._player_lock:
                     if self._player is None:
                         try:
@@ -2118,15 +2429,37 @@ class Pipeline:
                             )
                             self.stop_event.set()
                             break
-                    self._hold_capture_for_playback()
+                    player = self._player
+
+                # clear + re-check suppress so a concurrent [x] is not undone
+                # by play()'s default clear.
+                player.clear_interrupt()
+                with self._playback_suppress_lock:
+                    if self._playback_suppressed:
+                        player.interrupt()
+                        continue
+
+                self._hold_capture_for_playback()
+                try:
                     try:
-                        self._player.play(
-                            audio, sample_rate, interruptible=interruptible
-                        )
-                    except Exception as exc:
-                        ui.error(f"playback failed: {exc}")
-                    finally:
-                        self._release_capture_after_playback()
+                        ui.pipeline_stage("play", source="voz")
+                    except Exception:
+                        pass
+                    player.play(
+                        audio,
+                        sample_rate,
+                        interruptible=interruptible,
+                        clear=False,
+                    )
+                except Exception as exc:
+                    ui.error(f"playback failed: {exc}")
+                finally:
+                    try:
+                        # Back to listening after Cable Out
+                        ui.pipeline_stage("idle", source="voz")
+                    except Exception:
+                        pass
+                    self._release_capture_after_playback()
         finally:
             self._force_release_capture_hold()
             with self._player_lock:
