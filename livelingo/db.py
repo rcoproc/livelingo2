@@ -120,6 +120,50 @@ def init_db():
         """
     )
 
+    # Full-sentence translation memory (cross-session phrase cache).
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS translation_pairs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_lang TEXT NOT NULL,
+        target_lang TEXT NOT NULL,
+        source_norm TEXT NOT NULL,
+        source_text TEXT NOT NULL,
+        target_text TEXT NOT NULL,
+        hit_count INTEGER NOT NULL DEFAULT 1,
+        quality TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        UNIQUE(source_lang, target_lang, source_norm)
+    )
+    """)
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_translation_pairs_lang
+        ON translation_pairs(source_lang, target_lang, hit_count DESC)
+        """
+    )
+    # Previous target texts when a pair is overwritten (undo / review).
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS translation_pairs_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair_id INTEGER,
+        source_lang TEXT NOT NULL,
+        target_lang TEXT NOT NULL,
+        source_norm TEXT NOT NULL,
+        source_text TEXT NOT NULL,
+        old_target_text TEXT NOT NULL,
+        new_target_text TEXT NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL
+    )
+    """)
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_translation_pairs_history_norm
+        ON translation_pairs_history(source_lang, target_lang, source_norm, id DESC)
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -137,12 +181,23 @@ def create_session(session_id, title):
 
 
 def list_sessions(limit=5):
+    """
+    Return list of (id, title, created_at) ordered by created_at DESC.
+
+    limit: max rows (default 5). None or <= 0 → all sessions.
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, title, created_at FROM sessions ORDER BY created_at DESC LIMIT ?",
-        (limit,),
-    )
+    if limit is None or int(limit) <= 0:
+        cursor.execute(
+            "SELECT id, title, created_at FROM sessions ORDER BY created_at DESC"
+        )
+    else:
+        cursor.execute(
+            "SELECT id, title, created_at FROM sessions "
+            "ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        )
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -579,3 +634,473 @@ def delete_session_atomic(session_id):
                 pass
 
     return success
+
+
+# --------------------------------------------------------------------------- #
+# Translation phrase cache (cross-session TM)
+# --------------------------------------------------------------------------- #
+
+
+def upsert_translation_pair(
+    source_lang,
+    target_lang,
+    source_norm,
+    source_text,
+    target_text,
+    *,
+    bump_hit=False,
+    quality=None,
+):
+    """
+    Insert or update a phrase pair.
+
+    If target_text changes, archives old value into translation_pairs_history.
+    Returns (pair_id, previous_target_or_None).
+    """
+    now = _now()
+    source_lang = (source_lang or "").lower().strip()
+    target_lang = (target_lang or "").lower().strip()
+    source_norm = (source_norm or "").strip()
+    source_text = (source_text or "").strip()
+    target_text = (target_text or "").strip()
+    if not source_lang or not target_lang or not source_norm or not target_text:
+        return None, None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, target_text FROM translation_pairs
+        WHERE source_lang = ? AND target_lang = ? AND source_norm = ?
+        """,
+        (source_lang, target_lang, source_norm),
+    )
+    row = cursor.fetchone()
+    prev_target = None
+    pair_id = None
+    if row:
+        pair_id = int(row[0])
+        prev_target = (row[1] or "").strip() or None
+        if prev_target and prev_target != target_text:
+            cursor.execute(
+                """
+                INSERT INTO translation_pairs_history
+                (pair_id, source_lang, target_lang, source_norm, source_text,
+                 old_target_text, new_target_text, reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pair_id,
+                    source_lang,
+                    target_lang,
+                    source_norm,
+                    source_text,
+                    prev_target,
+                    target_text,
+                    "overwrite",
+                    now,
+                ),
+            )
+        changed = prev_target is not None and prev_target != target_text
+        if bump_hit and quality is not None:
+            cursor.execute(
+                """
+                UPDATE translation_pairs SET
+                    source_text = ?, target_text = ?,
+                    hit_count = hit_count + 1,
+                    quality = ?, last_used_at = ?
+                WHERE id = ?
+                """,
+                (source_text, target_text, quality, now, pair_id),
+            )
+        elif bump_hit and changed:
+            cursor.execute(
+                """
+                UPDATE translation_pairs SET
+                    source_text = ?, target_text = ?,
+                    hit_count = hit_count + 1,
+                    quality = NULL, last_used_at = ?
+                WHERE id = ?
+                """,
+                (source_text, target_text, now, pair_id),
+            )
+        elif bump_hit:
+            cursor.execute(
+                """
+                UPDATE translation_pairs SET
+                    source_text = ?, target_text = ?,
+                    hit_count = hit_count + 1, last_used_at = ?
+                WHERE id = ?
+                """,
+                (source_text, target_text, now, pair_id),
+            )
+        elif quality is not None:
+            cursor.execute(
+                """
+                UPDATE translation_pairs SET
+                    source_text = ?, target_text = ?,
+                    quality = ?, last_used_at = ?
+                WHERE id = ?
+                """,
+                (source_text, target_text, quality, now, pair_id),
+            )
+        elif changed:
+            cursor.execute(
+                """
+                UPDATE translation_pairs SET
+                    source_text = ?, target_text = ?,
+                    quality = NULL, last_used_at = ?
+                WHERE id = ?
+                """,
+                (source_text, target_text, now, pair_id),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE translation_pairs SET
+                    source_text = ?, target_text = ?, last_used_at = ?
+                WHERE id = ?
+                """,
+                (source_text, target_text, now, pair_id),
+            )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO translation_pairs
+            (source_lang, target_lang, source_norm, source_text, target_text,
+             hit_count, quality, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                source_lang,
+                target_lang,
+                source_norm,
+                source_text,
+                target_text,
+                quality,
+                now,
+                now,
+            ),
+        )
+        pair_id = int(cursor.lastrowid)
+        prev_target = None
+    conn.commit()
+    conn.close()
+    return pair_id, (
+        prev_target if (prev_target and prev_target != target_text) else None
+    )
+
+
+def get_translation_pair(source_lang, target_lang, source_norm):
+    """Return dict or None: id, source_text, target_text, hit_count, quality, ..."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, source_text, target_text, hit_count, quality,
+               created_at, last_used_at
+        FROM translation_pairs
+        WHERE source_lang = ? AND target_lang = ? AND source_norm = ?
+        """,
+        (
+            (source_lang or "").lower().strip(),
+            (target_lang or "").lower().strip(),
+            (source_norm or "").strip(),
+        ),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "source_text": row[1] or "",
+        "target_text": row[2] or "",
+        "hit_count": int(row[3] or 0),
+        "quality": row[4],
+        "created_at": row[5] or "",
+        "last_used_at": row[6] or "",
+    }
+
+
+def touch_translation_pair_hit(source_lang, target_lang, source_norm):
+    """Increment hit_count + last_used for a cache HIT."""
+    now = _now()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE translation_pairs SET
+            hit_count = hit_count + 1,
+            last_used_at = ?
+        WHERE source_lang = ? AND target_lang = ? AND source_norm = ?
+        """,
+        (
+            now,
+            (source_lang or "").lower().strip(),
+            (target_lang or "").lower().strip(),
+            (source_norm or "").strip(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_translation_pair_quality(source_lang, target_lang, source_norm, quality):
+    """quality: 'good' | 'bad' | None."""
+    now = _now()
+    q = (quality or "").strip().lower() or None
+    if q not in (None, "good", "bad"):
+        q = None
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE translation_pairs SET quality = ?, last_used_at = ?
+        WHERE source_lang = ? AND target_lang = ? AND source_norm = ?
+        """,
+        (
+            q,
+            now,
+            (source_lang or "").lower().strip(),
+            (target_lang or "").lower().strip(),
+            (source_norm or "").strip(),
+        ),
+    )
+    n = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return n > 0
+
+
+def undo_translation_pair(source_lang, target_lang, source_norm):
+    """
+    Restore the most recent history.old_target_text for this pair.
+    Returns restored target text or None.
+    """
+    src_l = (source_lang or "").lower().strip()
+    tgt_l = (target_lang or "").lower().strip()
+    norm = (source_norm or "").strip()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, old_target_text, new_target_text, source_text
+        FROM translation_pairs_history
+        WHERE source_lang = ? AND target_lang = ? AND source_norm = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (src_l, tgt_l, norm),
+    )
+    hist = cursor.fetchone()
+    if not hist:
+        conn.close()
+        return None
+    hist_id, old_tgt, new_tgt, src_txt = hist
+    old_tgt = (old_tgt or "").strip()
+    if not old_tgt:
+        conn.close()
+        return None
+    now = _now()
+    cursor.execute(
+        """
+        SELECT id, target_text FROM translation_pairs
+        WHERE source_lang = ? AND target_lang = ? AND source_norm = ?
+        """,
+        (src_l, tgt_l, norm),
+    )
+    pair = cursor.fetchone()
+    if not pair:
+        conn.close()
+        return None
+    pair_id, cur_tgt = int(pair[0]), (pair[1] or "").strip()
+    # Archive the undo as well
+    cursor.execute(
+        """
+        INSERT INTO translation_pairs_history
+        (pair_id, source_lang, target_lang, source_norm, source_text,
+         old_target_text, new_target_text, reason, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            pair_id,
+            src_l,
+            tgt_l,
+            norm,
+            src_txt or "",
+            cur_tgt,
+            old_tgt,
+            "undo",
+            now,
+        ),
+    )
+    cursor.execute(
+        """
+        UPDATE translation_pairs SET
+            target_text = ?, quality = NULL, last_used_at = ?
+        WHERE id = ?
+        """,
+        (old_tgt, now, pair_id),
+    )
+    conn.commit()
+    conn.close()
+    return old_tgt
+
+
+def list_translation_pairs(source_lang=None, target_lang=None, limit=5000):
+    """Return list of pair dicts ordered by hit_count DESC."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    lim = max(1, int(limit or 5000))
+    if source_lang and target_lang:
+        cursor.execute(
+            """
+            SELECT id, source_lang, target_lang, source_norm, source_text,
+                   target_text, hit_count, quality, created_at, last_used_at
+            FROM translation_pairs
+            WHERE source_lang = ? AND target_lang = ?
+            ORDER BY hit_count DESC, last_used_at DESC
+            LIMIT ?
+            """,
+            (
+                source_lang.lower().strip(),
+                target_lang.lower().strip(),
+                lim,
+            ),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT id, source_lang, target_lang, source_norm, source_text,
+                   target_text, hit_count, quality, created_at, last_used_at
+            FROM translation_pairs
+            ORDER BY hit_count DESC, last_used_at DESC
+            LIMIT ?
+            """,
+            (lim,),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "id": int(r[0]),
+                "source_lang": r[1] or "",
+                "target_lang": r[2] or "",
+                "source_norm": r[3] or "",
+                "source_text": r[4] or "",
+                "target_text": r[5] or "",
+                "hit_count": int(r[6] or 0),
+                "quality": r[7],
+                "created_at": r[8] or "",
+                "last_used_at": r[9] or "",
+            }
+        )
+    return out
+
+
+def next_session_chunk_num(session_id) -> int:
+    """Next free chunk_num for session (MAX+1, or 1)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COALESCE(MAX(chunk_num), 0) FROM chunks
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0] or 0) + 1
+
+
+def load_chunks_for_warmup(limit=5000, origin=None):
+    """
+    Chunks (newest first) for phrase-cache warm-up.
+    Returns list of (heard_text, translated_text).
+
+    origin:
+      None            — all chunks (legacy)
+      "livecaptions"  — only timing_json source=livecaptions
+      "voice"         — exclude livecaptions (mic pipeline)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT heard_text, translated_text, timing_json FROM chunks
+        WHERE heard_text IS NOT NULL AND translated_text IS NOT NULL
+          AND TRIM(heard_text) != '' AND TRIM(translated_text) != ''
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit or 5000) * 3 if origin else int(limit or 5000)),),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    want = (origin or "").strip().lower() or None
+    out = []
+    for heard, translated, timing_json in rows:
+        src_tag = _chunk_origin_from_timing(timing_json)
+        if want == "livecaptions" and src_tag != "livecaptions":
+            continue
+        if want == "voice" and src_tag == "livecaptions":
+            continue
+        out.append((heard or "", translated or ""))
+        if len(out) >= max(1, int(limit or 5000)):
+            break
+    return out
+
+
+def _chunk_origin_from_timing(timing_json) -> str:
+    """Return 'livecaptions' or 'voice' from chunks.timing_json."""
+    if not timing_json:
+        return "voice"
+    data = timing_from_json(timing_json)
+    if not isinstance(data, dict):
+        return "voice"
+    src = (data.get("source") or data.get("origin") or "").strip().lower()
+    if src in ("livecaptions", "lc", "captions"):
+        return "livecaptions"
+    return "voice"
+
+
+def translation_pairs_inventory(limit=50000):
+    """
+    Inventory of phrase-cache pairs for UI summary.
+
+    Returns list of dicts:
+      source_lang, target_lang, source_text, target_text, hit_count, quality
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT source_lang, target_lang, source_text, target_text,
+                   hit_count, quality
+            FROM translation_pairs
+            ORDER BY hit_count DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit or 50000)),),
+        )
+        rows = cursor.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "source_lang": (r[0] or "").lower().strip(),
+                "target_lang": (r[1] or "").lower().strip(),
+                "source_text": r[2] or "",
+                "target_text": r[3] or "",
+                "hit_count": int(r[4] or 0),
+                "quality": r[5],
+            }
+        )
+    return out
