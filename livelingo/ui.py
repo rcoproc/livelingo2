@@ -19,7 +19,7 @@ init(autoreset=True)
 _print_lock = threading.RLock()
 
 # Optional TUI sink: callable(kind, text, panel="main") — when set, prints go there.
-# panel: "main" (tradução / comandos) | "app" (etapas técnicas, timestamps, debug).
+# panel: "main" (VOZ + comandos) | "lc" (LiveCaptions) | "app" (Sistema / debug).
 _log_sink = None
 # Optional width provider: callable() -> int (usable columns inside the log panel).
 _width_provider = None
@@ -79,6 +79,16 @@ def get_width_provider():
     return _width_provider
 
 
+def _normalize_panel(panel: str = "main") -> str:
+    """Map panel aliases → main | lc | app."""
+    p = str(panel or "main").lower()
+    if p in ("app", "sistema", "system"):
+        return "app"
+    if p in ("lc", "main-lc", "livecaptions", "captions", "caption"):
+        return "lc"
+    return "main"
+
+
 class log_panel:
     """
     Context manager: force all ui.* emissions to a TUI panel.
@@ -89,7 +99,7 @@ class log_panel:
     """
 
     def __init__(self, panel: str = "app"):
-        self.panel = "app" if str(panel or "main").lower() == "app" else "main"
+        self.panel = _normalize_panel(panel)
 
     def __enter__(self):
         with _print_lock:
@@ -108,11 +118,11 @@ def _effective_panel(panel: str = "main") -> str:
     with _print_lock:
         if _panel_override_stack:
             return _panel_override_stack[-1]
-    return "app" if str(panel or "main").lower() == "app" else "main"
+    return _normalize_panel(panel)
 
 
 def _emit(kind, text, panel="main"):
-    """kind: info|success|warn|error|dim|raw|rich|list; panel: main|app"""
+    """kind: info|success|warn|error|dim|raw|rich|list; panel: main|lc|app"""
     sink = _log_sink
     if sink is not None:
         panel = _effective_panel(panel)
@@ -296,14 +306,19 @@ _VOZ_RAIL_LEFT_NUDGE = 15
 
 def _rail_geometry(margin=3):
     """
-    Dual-rail geometry matching list `l`: LC left · VOZ right.
+    Dual-rail geometry for classic terminal: LC left · VOZ right (space pad).
+
+    In TUI, Tradução is two real widgets — no space-padding; full content width
+    for both rails (caller emits to panel main vs lc).
 
     Returns (pad, content_w, left_w, right_w, left_shift, right_shift).
-    VOZ starts mid-screen minus `_VOZ_RAIL_LEFT_NUDGE` columns.
     """
     m = max(0, int(margin or 0))
     pad = " " * m
     content_w = content_width(margin=m)
+    if _log_sink is not None:
+        # Real split panels — no fake mid-screen shift
+        return pad, content_w, content_w, content_w, "", ""
     gutter = 1
     left_w = max(28, (content_w - gutter) // 2)
     # Shift VOZ ~15 cols left; reclaim that width for wrapping budget
@@ -1016,7 +1031,7 @@ def chunk_text_preview(n, heard, translated, from_cache=None):
 
 def live_caption_block(n, original, translated, from_cache=None):
     """
-    Final Live Captions pair on Tradução — same layout as voice chunks.
+    Final Live Captions pair on Tradução **LC pane** (TUI) or left rail (classic).
 
         [LC 3]  Caption:    English caption from Windows…
                 Translated: Tradução em português…
@@ -1039,6 +1054,7 @@ def live_caption_block(n, original, translated, from_cache=None):
             _emit(
                 "rich",
                 f"[bold magenta]{e(prefix)}[/][white]{e(hlab)}[/][green]{e(original)}[/]",
+                panel="lc",
             )
             if from_cache is True:
                 lab = f"{indent}[bold magenta]{e(tlab)}[/]"
@@ -1046,8 +1062,8 @@ def live_caption_block(n, original, translated, from_cache=None):
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
             else:
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
-            _emit("rich", f"{lab}[bold white]{e(translated)}[/]")
-            _emit_chunk_blank()
+            _emit("rich", f"{lab}[bold white]{e(translated)}[/]", panel="lc")
+            _emit_chunk_blank(panel="lc")
             return
         print(
             "\r\033[K"
@@ -1178,16 +1194,17 @@ _AUDIO_I18N = {
 }
 
 
-def _target_lang_code():
+def _ui_lang_code():
+    """SOURCE_LANG code for UI chrome (labels, audio status) — not TARGET."""
     try:
         import config as cfg
 
-        code = (getattr(cfg, "TARGET_LANG", "en") or "en").lower().strip()
+        code = (getattr(cfg, "SOURCE_LANG", "en") or "en").lower().strip()
     except Exception:
         code = "en"
     if "-" in code:
         code = code.split("-", 1)[0]
-    if code in ("por", "pt-br", "pt_br"):
+    if code in ("por", "pt-br", "pt_br", "br", "bra"):
         code = "pt"
     if code in ("cn", "zh-cn", "zh-tw", "cmn"):
         code = "zh"
@@ -1200,9 +1217,14 @@ def _target_lang_code():
     return code if code in _AUDIO_I18N else "en"
 
 
+# Back-compat alias (older call sites / docs referred to target for audio msgs)
+def _target_lang_code():
+    return _ui_lang_code()
+
+
 def _audio_msg(key):
-    """Localized audio status snippet for current TARGET_LANG."""
-    pack = _AUDIO_I18N.get(_target_lang_code()) or _AUDIO_I18N["en"]
+    """Localized audio status snippet for current SOURCE_LANG (UI language)."""
+    pack = _AUDIO_I18N.get(_ui_lang_code()) or _AUDIO_I18N["en"]
     return pack.get(key) or _AUDIO_I18N["en"].get(key, "")
 
 
@@ -1240,26 +1262,25 @@ def format_audio_lines(path, missing_hint=None, pending_write=False, max_width=N
     """
     Return list of plain display lines for a chunk audio reference.
 
-    Empty path → not-generated hint (TARGET_LANG).
+    Empty path → **no lines** (do not print “not generated yet — use r / rN”).
     pending_write=True → path only (WAV still flushing in background; audio
     may already have been played from memory — do NOT show "missing").
-    Missing on disk (and not pending) → path + missing note on next line,
-    aligned under the path after ``audio: ``.
+    Missing on disk (and not pending) → path only (no extra “use r / rN” note).
 
     Paths are always the **full** host path (no middle ``…`` ellipsis).
     ``max_width`` is accepted for API compat but does **not** truncate the
     path — the right-rail emitter wraps long lines with hang-indent instead.
     """
     del max_width  # never truncate folder/file names (user needs full path)
+    del missing_hint  # kept for call-site compat; no longer shown when empty
     label = "audio: "
-    if missing_hint is None:
-        missing_hint = _audio_msg("not_generated")
 
     def _one(path_disp: str) -> str:
         return f"{label}{str(path_disp or '')}"
 
     if not path or not str(path).strip():
-        return [f"{label}{missing_hint}"]
+        # Sound OFF / TTS skipped: omit the whole audio: line (less noise).
+        return []
 
     share = resolve_share_path(path)
     display = share or path
@@ -1271,9 +1292,9 @@ def format_audio_lines(path, missing_hint=None, pending_write=False, max_width=N
     if _audio_path_exists(path) or _audio_path_exists(share):
         return [_one(display)]
 
-    # Truly missing on disk (e.g. deleted, or list history without WAV)
-    pad = " " * len(label)
-    return [_one(display), f"{pad}{_audio_msg('missing')}"]
+    # Path known but file not on disk yet / deleted — still show the path only.
+    # (No second-line “file missing — use r / rN” clutter.)
+    return [_one(display)]
 
 
 def _voz_audio_line_width(n=None) -> int:
@@ -1326,8 +1347,13 @@ def _emit_audio_path_one_line(n, path, *, pending_write=False, panel="main"):
 
 
 def print_audio_ref(n, path, indent=None, pending_write=False):
-    """Print full audio path under a VOZ chunk — one line, right-aligned."""
+    """Print full audio path under a VOZ chunk — one line, right-aligned.
+
+    No path → silent (no “not generated yet” line).
+    """
     del indent  # geometry owns indent
+    if not path or not str(path).strip():
+        return
     _emit_audio_path_one_line(n, path, pending_write=pending_write, panel="main")
     _emit_chunk_blank()
 
@@ -1415,15 +1441,18 @@ def chunk_timings(
         else:
             _emit_voz_meta_lines(n, meta, style="dim", panel="main")
 
-    if audio_path is not None:
+    if audio_path is not None and str(audio_path).strip():
         _emit_audio_path_one_line(
             n,
             audio_path,
             pending_write=bool(audio_pending),
             panel="main",
         )
-    # Blank after audio on Tradução
-    _emit_chunk_blank()
+        # Blank after audio on Tradução (only when a path was printed)
+        _emit_chunk_blank()
+    else:
+        # No audio line — still separate chunks with a blank on Tradução
+        _emit_chunk_blank()
 
 
 def chunk_stream_start(n, heard):

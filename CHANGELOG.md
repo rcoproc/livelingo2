@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+### Changed
+
+- **Tradução split vertical (LC | VOZ)** — real dual log panes under the Tradução tab (replaces space-padded dual-rail **inside one widget** for TUI):
+  - **Left:** stable LiveCaptions pairs only (`panel=lc` / `#log-lc`)
+  - **Right:** VOZ chunks + all command output (`panel=main` / `#log`)
+  - **Independent scroll** per pane (one channel no longer pushes the other out of view)
+  - **Mouse-draggable sash** (║) to resize LC|VOZ width; double-click restores 50/50
+  - **Captions bottom edge** (`═ ↕ captions ═`) — drag up/down between **Live Captions strip (top)** and **middle log tabs**; double-click restores default height
+  - **Expandir / Restaurar** on the **right VOZ header** only (top-right of the VOZ log window)
+  - Click a pane to focus it for `/` search, `gg`/`GG`, and **Ctrl+Shift+C** (copies the focused pane, not both)
+  - `[cls]` clears LC + VOZ + Sistema; `[cls1]` / `[cls2]` clear left LC / right VOZ only
+  - History list `[l]` reprints **into the matching pane** (LC → left, VOZ → right)
+  - Classic terminal keeps the old space-padded dual-rail layout (`ui._rail_geometry` no-op pad when a TUI sink is set)
+- **Log sink panels** — `ui` now routes `main` | `lc` | `app` (`_normalize_panel`; aliases: `captions`/`livecaptions` → `lc`, `sistema`/`system` → `app`).
+- **LiveCaptions final pairs** — `live_caption_block` / LC commit fallback emit to `panel="lc"` (no longer pollute VOZ).
+- **Audio path lines** — empty / missing WAV no longer prints “not generated yet — use r / rN” or a second missing line; omit the line when path is empty (sound OFF / TTS skipped); known path still prints full `audio:` even if file not on disk yet.
+- **Bypass badge (TUI)** — compact **F2** chip on its own row between Live Captions strip and log tabs (not beside the command box). Click / **F2** / `[b]` still toggle voice bypass. Full-log copy remains **Ctrl+Shift+C** only.
+- **UI language codes** — `SOURCE_LANG` aliases `br` / `bra` map to `pt` for TUI chrome / audio i18n labels.
+
+### Added
+
+- **`cls1` / `cls2`** — clear one Tradução column: `cls1` = left LiveCaptions (LC), `cls2` = right VOZ; `cls` still clears LC + VOZ + Sistema. Documented in menu, command-help tab (EN/pt), and READMEs.
+- **GitHub Actions CI** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml): on push to `main`/`master` and on PRs, runs dependency security (`check_deps_security.py --project-only --fail-on vuln`) + `pytest` on Python **3.10** and **3.12**. README badges (EN/pt-BR): live CI status, Python, tests, security, MIT license.
+
 ### Security
 
 - Bumped `python-dotenv` to **≥1.2.2** (CVE-2026-28684 symlink rewrite).

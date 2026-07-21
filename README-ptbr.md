@@ -1,5 +1,11 @@
 # 🎙️ LiveLingo2 — Tradução de Voz em Tempo Real para Windows
 
+[![CI](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml/badge.svg)](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-pytest-brightgreen.svg)](tests/)
+[![Security](https://img.shields.io/badge/security-pip--audit%20%7C%20OWASP%20A06-blue.svg)](scripts/check_deps_security.py)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > **English:** full docs in [`README.md`](README.md).  
 > **Mais capturas de tela:** [`screenshots.md`](screenshots.md).
 
@@ -145,8 +151,9 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `lo` / `lt` | Listar só source (ouvido) / só target (traduzido) |
 | `co` / `coN` / `coN texto` | Comentar o último chunk ou o chunk N (SQLite; aparece no `l`) |
 | `codN` | Apagar comentário pela PK `#N` (sem confirmação) |
-| `cls` | Limpar **as duas** abas de log (TUI) / limpar terminal (classic) |
-| `gg` / `GG` (ou `gt` / `gf`) | **Go top** / **Go bottom** — início ou fim da aba de log **ativa** |
+| `cls` | Limpar **LC + VOZ + Sistema** (TUI) / limpar terminal (classic) |
+| `cls1` / `cls2` | Limpar só **LC** (esquerda) / só **VOZ** (direita) |
+| `gg` / `GG` (ou `gt` / `gf`) | **Go top** / **Go bottom** — início ou fim do painel de log **focado** |
 | `u` / `F4` | **UI compacta** — oculta menu de comandos; linha de comando permanece |
 | `ld` | Listar dispositivos de áudio (`python list_devices.py`) no log |
 | `lav` | Listar todas as vozes edge-tts (`edge-tts --list-voices`) no log |
@@ -156,10 +163,9 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` Tradução ↔ Sistema; `F4` UI compacta; `Ctrl+C` copia seleção; `Ctrl+Shift+C` / `F2` copia log da aba ativa; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
 
-**Abas de log:** **Tradução** = Heard/Translated + saída de comandos; **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1.
-
+**Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = ajuda agrupada.
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
 
 Com **som OFF** (`s`): o texto traduzido aparece na hora; com `TTS_SKIP_WHEN_MUTED=true` o TTS é omitido (replay `r` sintetiza depois). Nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
@@ -393,6 +399,19 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+#### Integração contínua (GitHub Actions)
+
+Em todo push em `main` / `master` e em todo pull request, o workflow
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda em **Python 3.10 e 3.12**:
+
+1. **Segurança** — `python scripts/check_deps_security.py --project-only --fail-on vuln`
+2. **Testes** — `python -m pytest tests/ -q`
+
+O badge **CI** no topo deste README reflete o último run na branch padrão:
+[Actions → CI](https://github.com/rcoproc/livelingo2/actions/workflows/ci.yml).
+
+Localmente o mesmo critério: `bash scripts/run_checks.sh` (inclui format opcional).
+
 #### Checks em um comando (WSL / Linux) — recomendado
 
 [`scripts/run_checks.sh`](scripts/run_checks.sh) executa, nesta ordem:
@@ -577,10 +596,11 @@ Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 
 Por padrão (`UI_MODE=tui`) o LiveLingo sobe em **TUI Textual**:
 
-- **Cabeçalho de escuta fixo** — robô + `g(swap) SRC→TGT t(alvo)` + status de áudio / bypass
-- **Duas abas de log** — **Tradução** (frases) e **Sistema** (etapas, timings, F1)
+- **Cabeçalho de escuta fixo** — robô + `g(swap) SRC→TGT t(alvo)` + status de áudio
+- **Faixa Live Captions** (topo) redimensionável + chip **F2** bypass entre a faixa e as abas
+- **Quatro abas de log** — **Tradução** (split **LC | VOZ**, sash ║, Expandir no VOZ), **Sistema** (etapas, timings, F1), **Novidades** (`CHANGELOG.md`), **Lista de comandos**
 - **Menu de comandos** em largura total (pack; `u`/`F4` oculta o menu)
-- **Campo de comando** com borda própria, histórico `↑`/`↓` e badge TTS
+- **Campo de comando** com borda própria, histórico `↑`/`↓` e barra de pipeline (Mic → STT → Trad → TTS → Out)
 - **Screenshot** (Ctrl+P → Screenshot): SVG + PNG em `.cache/screenshots/` e **imagem** na área de transferência (Windows/WSL)
 
 ```powershell
@@ -713,6 +733,8 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 ├── list_devices.py        # lista dispositivos de áudio + índices
 ├── requirements.txt       # deps de runtime (pisos de segurança acima)
 ├── requirements-dev.txt   # pytest + pip-audit + ruff (CI / pré-deploy)
+├── .github/workflows/
+│   └── ci.yml                  # GitHub Actions: segurança + pytest (badge)
 ├── scripts/
 │   ├── run_checks.sh           # WSL: format → segurança → testes
 │   └── check_deps_security.py  # auditoria OWASP A06 (CVE + outdated)
