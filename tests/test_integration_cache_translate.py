@@ -28,17 +28,13 @@ def test_pipeline_like_hit_miss_with_mock_translator(tmp_db, mock_cfg):
     translator.translate.return_value = "Olá equipe"
 
     # First: MISS → live
-    out1, src1 = _translate_with_cache(
-        cache, translator, "en", "pt", "Hello team"
-    )
+    out1, src1 = _translate_with_cache(cache, translator, "en", "pt", "Hello team")
     assert out1 == "Olá equipe"
     assert src1 == "live"
     translator.translate.assert_called_once_with("Hello team")
 
     # Second: HIT → no second live call
-    out2, src2 = _translate_with_cache(
-        cache, translator, "en", "pt", "Hello team!"
-    )
+    out2, src2 = _translate_with_cache(cache, translator, "en", "pt", "Hello team!")
     assert out2 == "Olá equipe"
     assert src2 == "cache"
     translator.translate.assert_called_once()  # still one call
@@ -72,6 +68,7 @@ def test_synthesis_error_type():
 
 def test_chunk_skip_placeholder():
     """_ChunkSkip is a tiny ordered placeholder in pipeline (avoid importing PortAudio)."""
+
     # Mirror the class contract without loading pipeline (capture→sounddevice).
     class _ChunkSkip:
         __slots__ = ("message", "kind")
@@ -89,9 +86,5 @@ def test_chunk_skip_placeholder():
 
     src = Path(__file__).resolve().parents[1] / "livelingo" / "pipeline.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))
-    names = {
-        n.name
-        for n in tree.body
-        if isinstance(n, ast.ClassDef)
-    }
+    names = {n.name for n in tree.body if isinstance(n, ast.ClassDef)}
     assert "_ChunkSkip" in names

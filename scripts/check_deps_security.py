@@ -607,9 +607,7 @@ def print_owasp_summary(
     elif outdated:
         print(c(BOLD, "  Ação opcional (não bloqueia produção):"))
         print("    • Avalie upgrades de deps diretas (coluna [req]) quando tiver tempo")
-        print(
-            "    • Teste áudio/STT após bump (sounddevice, soundfile, edge-tts, …)"
-        )
+        print("    • Teste áudio/STT após bump (sounddevice, soundfile, edge-tts, …)")
         print(
             c(
                 DIM,
@@ -618,6 +616,7 @@ def print_owasp_summary(
         )
     else:
         print(c(GREEN, "  Nenhuma ação de segurança pendente nas dependências."))
+
 
 def build_report(
     vulns: list[Vuln],

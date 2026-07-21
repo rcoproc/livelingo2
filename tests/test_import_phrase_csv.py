@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from livelingo.import_phrase_csv import format_import_stats, import_phrase_csv, lang_code
+from livelingo.import_phrase_csv import (
+    format_import_stats,
+    import_phrase_csv,
+    lang_code,
+)
 from livelingo.phrase_cache import PhraseCache
 
 

@@ -2730,24 +2730,18 @@ class LiveLingoApp(App):
             )
             yield Static("", id="bypass-pad-r", markup=False)
         with TabbedContent(id="log-tabs", initial="tab-main"):
-            with TabPane(
-                _fi18n.get("tab_traducao", "Translation"), id="tab-main"
-            ):
+            with TabPane(_fi18n.get("tab_traducao", "Translation"), id="tab-main"):
                 with Vertical(id="trad-pane"):
                     with Horizontal(id="trad-headers"):
                         with Horizontal(id="trad-hdr-lc"):
                             yield Static(
-                                _fi18n.get(
-                                    "trad_lbl_lc", "LC in (LiveCaptions)"
-                                ),
+                                _fi18n.get("trad_lbl_lc", "LC in (LiveCaptions)"),
                                 id="trad-lbl-lc",
                                 markup=False,
                             )
                         with Horizontal(id="trad-hdr-voz"):
                             yield Static(
-                                _fi18n.get(
-                                    "trad_lbl_voz", "VOICE mic + commands"
-                                ),
+                                _fi18n.get("trad_lbl_voz", "VOICE mic + commands"),
                                 id="trad-lbl-voz",
                                 markup=False,
                             )
@@ -2782,9 +2776,7 @@ class LiveLingoApp(App):
                                 min_width=max(40, _log_min_w // 2),
                                 pane_role="voz",
                             )
-            with TabPane(
-                _fi18n.get("tab_sistema", "System"), id="tab-app"
-            ):
+            with TabPane(_fi18n.get("tab_sistema", "System"), id="tab-app"):
                 yield SelectableRichLog(
                     id="log-app",
                     highlight=False,
@@ -4209,9 +4201,7 @@ class LiveLingoApp(App):
         """Update all tab titles for current SOURCE_LANG."""
         i18n = _footer_i18n()
         lang = _source_lang_code()
-        self._set_tab_label(
-            "#tab-main", i18n.get("tab_traducao", "Translation")
-        )
+        self._set_tab_label("#tab-main", i18n.get("tab_traducao", "Translation"))
         self._set_tab_label("#tab-app", i18n.get("tab_sistema", "System"))
         self._set_tab_label("#tab-news", i18n.get("tab_news", "What's New"))
         self._set_tab_label(
