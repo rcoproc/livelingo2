@@ -1,6 +1,6 @@
-# 🎙️ LiveLingo — Real-Time Voice Translation for Windows
+# 🎙️ LiveLingo2 — Real-Time Voice Translation for Windows
 
-**LiveLingo** turns your speech into another language **live**, on a virtual
+**LiveLingo2** turns your speech into another language **live**, on a virtual
 microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears the
 translation as if it were your mic. Speak **French**, others hear **English**
 (both languages configurable).
@@ -25,7 +25,7 @@ recommended) **or** fully locally with faster-whisper (offline).
 |-------------|-------|
 | **Windows 10/11** | The tool uses Windows audio APIs (MME via PortAudio). |
 | **Python 3.10+** | 3.10 – 3.12 recommended. Check with `python --version`. |
-| **VB-CABLE** | Free virtual audio cable. Download: **https://vb-audio.com/Cable/** |
+| **VB-CABLE** | Free virtual audio cable. Download: **<https://vb-audio.com/Cable/>** |
 | **Internet** | Needed for translation + TTS (and the first Whisper model download). |
 
 ### Install VB-CABLE
@@ -59,6 +59,53 @@ pip install -r requirements.txt
 > When using the **local** STT engine, the first run downloads the Whisper model
 > (`small` ≈ 0.5 GB, `medium` ≈ 1.5 GB) into `~/.cache/huggingface` — automatic,
 > just wait once. With the **Groq** engine (recommended), no download is needed.
+
+### Dependency security (production)
+
+LiveLingo tracks **OWASP Top 10 A06** (*Vulnerable and Outdated Components*) for
+Python deps declared in [`requirements.txt`](requirements.txt).
+
+**Security floors** (do not downgrade):
+
+| Package | Minimum | Why |
+|---------|---------|-----|
+| `python-dotenv` | **≥ 1.2.2** | CVE-2026-28684 (symlink follow in `set_key` / `unset_key`) |
+| `requests` | **≥ 2.33.0** | CVE-2026-25645 (predictable temp path in zip extract helper) |
+| `urllib3` | **≥ 2.7.0** | Transitive floor for known decompress / DoS advisories |
+
+`deep-translator==1.11.4` is the latest legitimate release. Advisory
+**PYSEC-2022-252** is a *historical* PyPI account-takeover report with **no
+fixed version**; the malicious releases were removed. The audit script
+allowlists it (see `KNOWN_FALSE_POSITIVES` in the checker).
+
+**Audit + tests before deploy:**
+
+```powershell
+# runtime deps
+pip install -r requirements.txt
+
+# optional: pytest + pip-audit
+pip install -r requirements-dev.txt
+
+# unit tests (security floors, translate/LLM/STT mocks, import smoke)
+python -m pytest tests/ -v
+
+# CVE / outdated scan (project deps; EXIT 0 = no actionable vulns)
+python scripts/check_deps_security.py --project-only
+```
+
+Useful flags for the security script:
+
+| Flag | Meaning |
+|------|---------|
+| `--project-only` | Report only packages from `requirements.txt` (+ security-floor packages) |
+| `--fail-on any` | Non-zero exit if **any** vuln **or** outdated package |
+| `--json report.json` | Write a full machine-readable report |
+| `--ignore-vuln ID` | Extra advisory ignore (CVE / PYSEC / GHSA) |
+| `--no-default-ignores` | Disable the built-in historical allowlist |
+
+Audio modules that need PortAudio may be **skipped** in headless/WSL CI; that
+does not block the security floor or mocked pipeline tests.
 
 ---
 
@@ -204,12 +251,14 @@ By default the tool uses Google Translate. For **far more natural** results
 (the "Typeless" effect — an LLM cleans up the raw speech-to-text *and*
 translates it in one step), plug in a **free Groq API key**:
 
-1. Go to **https://console.groq.com/keys** → sign up (no credit card).
+1. Go to **<https://console.groq.com/keys>** → sign up (no credit card).
 2. Create a key (starts with `gsk_…`) and copy it.
 3. Put it in your `.env`:
+
    ```
    GROQ_API_KEY=gsk_your_key_here
    ```
+
 4. Run `python main.py` — you'll see `LLM translation ready (Groq / …)` plus a
    quick self-test. With `TRANSLATION_ENGINE=auto`, the LLM is used whenever a
    key is present, otherwise it falls back to Google.
@@ -391,7 +440,11 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
 ├── main.py             # entry point — wires everything together
 ├── config.py           # all tunable settings (env / .env overridable)
 ├── list_devices.py     # prints audio devices + their indices
-├── requirements.txt    # pinned dependencies
+├── requirements.txt    # runtime deps (security floors documented above)
+├── requirements-dev.txt # pytest + pip-audit (CI / pre-deploy)
+├── scripts/
+│   └── check_deps_security.py  # OWASP A06 audit (CVE + outdated)
+├── tests/              # unit tests (floors, mocks, import smoke)
 ├── .env.example        # copy to .env to override settings
 ├── README.md
 └── livelingo/          # modular pipeline package

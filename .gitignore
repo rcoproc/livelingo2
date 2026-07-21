@@ -24,6 +24,7 @@ env/
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
 
 # Whisper / HF model cache sometimes ends up local
 .cache/
