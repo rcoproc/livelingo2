@@ -5,6 +5,10 @@ Textual TUI for LiveLingo: fixed listen header (robot + source/target) +
 four scrollable log tabs (Tradução / Sistema / Novidades / Command list)
 + command input.
 
+Tradução is a vertical split: left = LiveCaptions (LC) only, right = VOZ
+chunks + command output. The sash is mouse-draggable; each side can expand
+or restore. Scroll is independent per pane.
+
 Pipeline (mic/STT/TTS) keeps running in background threads; this module only
 owns the screen. Logs arrive via ui.set_log_sink(kind, text, panel); commands
 reuse main dispatch in a worker thread with stdin/stdout proxies.
@@ -31,6 +35,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.selection import Selection
 from textual.widgets import (
+    Button,
     Footer,
     Header,
     Input,
@@ -589,6 +594,186 @@ def _safe_resize_host_window(
     return ok
 
 
+class TradSash(Static):
+    """
+    Vertical drag handle between LC (left) and VOZ (right) log columns.
+
+    Mouse-down + drag updates LiveLingoApp._trad_ratio; double-click restores
+    50/50. Cursor style hints resize.
+    """
+
+    DEFAULT_CSS = """
+    TradSash {
+        width: 1;
+        min-width: 1;
+        max-width: 1;
+        height: 1fr;
+        background: $accent;
+        color: $text;
+        content-align: center middle;
+        dock: none;
+    }
+    TradSash:hover {
+        background: $accent-lighten-2;
+    }
+    TradSash.-dragging {
+        background: $warning;
+    }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__("║", **kwargs)
+        self._dragging = False
+        self._start_x = 0
+        self._start_ratio = 0.5
+
+    def on_click(self, event: events.Click) -> None:
+        """Double-click sash → restore 50/50 split."""
+        try:
+            if int(getattr(event, "chain", 1) or 1) >= 2:
+                event.stop()
+                if hasattr(self.app, "trad_restore_split"):
+                    self.app.trad_restore_split(ratio=0.5)
+        except Exception:
+            pass
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        event.stop()
+        self._dragging = True
+        self.add_class("-dragging")
+        try:
+            self._start_x = int(event.screen_x)
+        except Exception:
+            self._start_x = int(getattr(event, "x", 0) or 0)
+        try:
+            self._start_ratio = float(getattr(self.app, "_trad_ratio", 0.5) or 0.5)
+        except Exception:
+            self._start_ratio = 0.5
+        try:
+            self.capture_mouse()
+        except Exception:
+            pass
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        self._dragging = False
+        self.remove_class("-dragging")
+        try:
+            self.release_mouse()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.app, "_refresh_log_width"):
+                self.app._refresh_log_width()
+        except Exception:
+            pass
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        app = self.app
+        if not hasattr(app, "trad_set_ratio_from_drag"):
+            return
+        try:
+            x = int(event.screen_x)
+        except Exception:
+            x = int(getattr(event, "x", 0) or 0)
+        try:
+            app.trad_set_ratio_from_drag(self._start_x, self._start_ratio, x)
+        except Exception:
+            pass
+
+
+class CaptionsHSash(Static):
+    """
+    Horizontal drag handle on the **bottom edge** of the Live Captions strip.
+
+    Divides upper LC captions vs middle log tabs. Drag ↕ to resize;
+    double-click restores default height (8 rows).
+    """
+
+    DEFAULT_CSS = """
+    CaptionsHSash {
+        width: 1fr;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        background: #7aa2f7 45%;
+        color: #c0caf5;
+        content-align: center middle;
+        text-style: bold;
+    }
+    CaptionsHSash:hover {
+        background: #7aa2f7 80%;
+        color: #ffffff;
+    }
+    CaptionsHSash.-dragging {
+        background: $warning;
+        color: #1a1b26;
+    }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__("═ ↕ captions ═", **kwargs)
+        self._dragging = False
+
+    def on_click(self, event: events.Click) -> None:
+        try:
+            if int(getattr(event, "chain", 1) or 1) >= 2:
+                event.stop()
+                if hasattr(self.app, "captions_set_height"):
+                    self.app.captions_set_height(8)
+        except Exception:
+            pass
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        event.stop()
+        self._dragging = True
+        self.add_class("-dragging")
+        try:
+            self.capture_mouse()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.app, "captions_set_height_from_screen_y"):
+                self.app.captions_set_height_from_screen_y(int(event.screen_y))
+        except Exception:
+            pass
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        self._dragging = False
+        self.remove_class("-dragging")
+        try:
+            self.release_mouse()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.app, "_refresh_log_width"):
+                self.app._refresh_log_width()
+        except Exception:
+            pass
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        try:
+            if hasattr(self.app, "captions_set_height_from_screen_y"):
+                self.app.captions_set_height_from_screen_y(int(event.screen_y))
+        except Exception:
+            pass
+
+
 class SelectableRichLog(RichLog):
     """
     RichLog with character-level mouse selection + plain-text export.
@@ -603,12 +788,15 @@ class SelectableRichLog(RichLog):
 
     We mirror the built-in Log widget: apply_offsets + get_selection + highlight,
     and force a sane render width when the pane is hidden / not laid out.
+
+    Optional ``pane_role``: \"lc\" | \"voz\" so click sets Tradução sub-focus.
     """
 
     def __init__(self, **kwargs):
         # Default min_width is 78 upstream; we used 20 and that became the
         # baked wrap width for inactive tabs. Keep a wide floor.
         kwargs.setdefault("min_width", 100)
+        self.pane_role: str | None = kwargs.pop("pane_role", None)
         super().__init__(**kwargs)
         self._plain_lines: list[str] = []
         # Last measured content width while the pane was visible (≥40).
@@ -617,6 +805,16 @@ class SelectableRichLog(RichLog):
         self._search_query: str = ""
         self._search_hit_ys: set[int] = set()
         self._search_current_y: int | None = None
+
+    def on_click(self, event: events.Click) -> None:
+        """Mark this Tradução sub-pane as focused for search/gg/copy."""
+        role = getattr(self, "pane_role", None)
+        if role in ("lc", "voz"):
+            try:
+                if hasattr(self.app, "set_trad_focus"):
+                    self.app.set_trad_focus(role)
+            except Exception:
+                pass
 
     def _safe_render_width(self) -> int:
         """
@@ -1071,7 +1269,9 @@ _FOOTER_I18N = {
         "list_tgt": "Tgt only",
         "comment": "Comment",
         "comment_n": "Comm N",
-        "cls": "Clear",
+        "cls": "Clear all",
+        "cls1": "Clr LC",
+        "cls2": "Clr VOZ",
         "go_top": "Go top",
         "go_footer": "Go foot",
         "export": "Export",
@@ -1120,8 +1320,8 @@ _FOOTER_I18N = {
             "aliases: find text  ·  find:text  ·  s?text"
         ),
         "search_empty_log": "Active log tab is empty — nothing to search.",
-        "bypass_on_label": "F2 Sua Voz",
-        "bypass_off_label": "F2 Audio Trad.",
+        "bypass_on_label": "F2 Your voice",
+        "bypass_off_label": "F2 Transl. audio",
         "bypass_tooltip_on": "BYPASS ON — your raw voice → output (no translation). F2 / click / [b] to turn off.",
         "bypass_tooltip_off": "BYPASS OFF — translated audio path. F2 / click / [b] to send your voice directly.",
         # Pipeline activity bar (left of command box)
@@ -1130,16 +1330,75 @@ _FOOTER_I18N = {
         "pipe_tr": "Trad",
         "pipe_tts": "TTS",
         "pipe_out": "Out",
-        "pipe_mic_active": "Ouvindo",
+        "pipe_mic_active": "Listening",
         "pipe_stt_active": "STT…",
-        "pipe_tr_active": "Traduz…",
+        "pipe_tr_active": "Trans…",
         "pipe_tts_active": "TTS…",
         "pipe_out_active": "Cable",
         "pipe_lc": "LC",
         "pipe_lc_active": "LC●",
         "pipe_bypass": "BYPASS→Out",
         "pipe_muted": "Mic muted",
-        "pipe_tip": "VOZ: Mic → STT → Trad → TTS → Cable Out · LC = LiveCaptions",
+        "pipe_tip": "VOICE: Mic → STT → Trad → TTS → Cable Out · LC = LiveCaptions",
+        # Tradução split chrome (SOURCE_LANG)
+        "tab_traducao": "Translation",
+        "tab_sistema": "System",
+        "trad_lbl_lc": "LC in (LiveCaptions)",
+        "trad_lbl_voz": "VOICE mic + commands",
+        "expand": "Expand",
+        "restore": "Restore",
+        "expand_tip": "Maximize VOZ panel (right)",
+        "restore_tip": "Restore LC | VOZ split",
+        "cls_note_lc": "[dim]LC cleared — stable [LC n] pairs will show here again[/]",
+        "cls_note_voz": "[dim]VOZ cleared — [l] history · [lo]/[lt] · F3 System[/]",
+        "cls_note_app": "[dim]System cleared — STT/translate/TTS stages will show here again[/]",
+        "cls1_note": "[dim]LC (left) cleared — [LC n] Caption/Translated will show here again[/]",
+        "cls2_note": "[dim]VOZ (right) cleared — Heard/Translated and commands will show here again[/]",
+        "boot_lc_1": (
+            "[bold magenta]LC in[/] — [bold]stable[/] pairs "
+            "[bold][LC n] Caption / Translated[/]"
+        ),
+        "boot_lc_2": (
+            "[dim]Top strip = live (partial). Final commits only here. "
+            "[lc] pause · show/hide[/]"
+        ),
+        "boot_lc_3": (
+            "[dim]Live Captions strip (top): ═ ↕ resize vs middle logs · "
+            "║ LC|VOZ width · click to focus.[/]"
+        ),
+        "boot_voz_1": (
+            "[bold cyan]LiveLingo TUI[/] — [bold]VOZ[/] (mic chunks + command output)"
+        ),
+        "boot_voz_2": (
+            "[dim]Speak into the mic — Heard/Translated (VOZ) appear here. "
+            "Commands: type + Enter | ↑↓ = history.[/]"
+        ),
+        "boot_voz_3": (
+            "[yellow]Audio OFF by default — [s] live | "
+            "[r]/[rN] chunk | [l] list | [g] swap[/]"
+        ),
+        "boot_voz_4": (
+            "[bold green]Copy:[/] selection [bold]Ctrl+C[/]  ·  "
+            "focused log [bold]Ctrl+Shift+C[/]  ·  "
+            "bypass [bold]F2[/]  ·  "
+            "search [bold]/text[/] on focused pane  ·  F3 tabs"
+        ),
+        "boot_voz_5": (
+            "[dim]Split LC|VOZ: drag ║ · Expand top-right of this pane · "
+            "captions ↕ at top · sash 50/50 double-click. Quit: Ctrl+Q / [q].[/]"
+        ),
+        "boot_app_1": (
+            "[bold cyan]System[/] — pipeline stages, VAD listen, timestamps "
+            "and timing (keeps Translation tab clean)"
+        ),
+        "boot_app_2": (
+            "[dim]Here: Transcribing / Translating / TTS / Listening… "
+            "with @time · +s since listen · Δµs. Scroll with bar or mouse.[/]"
+        ),
+        "boot_app_3": (
+            "[dim]F3 cycles Translation → System → What's New → Command list · "
+            "Ctrl+Shift+C copies the active log · F2 = voice bypass.[/]"
+        ),
     },
     "pt": {
         "sentence": "Frase",
@@ -1158,7 +1417,9 @@ _FOOTER_I18N = {
         "list_tgt": "So tgt",
         "comment": "Coment",
         "comment_n": "Com N",
-        "cls": "Limpar",
+        "cls": "Limpar tudo",
+        "cls1": "Limpa LC",
+        "cls2": "Limpa VOZ",
         "go_top": "Topo",
         "go_footer": "Rodape",
         "export": "Export",
@@ -1207,8 +1468,8 @@ _FOOTER_I18N = {
             "aliases: find texto  ·  find:texto  ·  s?texto"
         ),
         "search_empty_log": "Aba de log ativa vazia — nada para buscar.",
-        "bypass_on_label": "F2 Sua Voz",
-        "bypass_off_label": "F2 Audio Trad.",
+        "bypass_on_label": "F2 Sua voz",
+        "bypass_off_label": "F2 Áudio trad.",
         "bypass_tooltip_on": "BYPASS ON — sua voz vai direto à saída (sem tradução). F2 / clique / [b] para desligar.",
         "bypass_tooltip_off": "BYPASS OFF — caminho de áudio traduzido. F2 / clique / [b] para enviar sua voz direta.",
         "pipe_mic": "Mic",
@@ -1226,6 +1487,65 @@ _FOOTER_I18N = {
         "pipe_bypass": "BYPASS→Out",
         "pipe_muted": "Mic mudo",
         "pipe_tip": "VOZ: Mic → STT → Trad → TTS → Cable Out · LC = LiveCaptions",
+        "tab_traducao": "Tradução",
+        "tab_sistema": "Sistema",
+        "trad_lbl_lc": "LC entrada (LiveCaptions)",
+        "trad_lbl_voz": "VOZ mic + comandos",
+        "expand": "Expandir",
+        "restore": "Restaurar",
+        "expand_tip": "Maximizar painel VOZ (direita)",
+        "restore_tip": "Restaurar split LC | VOZ",
+        "cls_note_lc": "[dim]LC limpo — pares estáveis [LC n] voltam a aparecer aqui[/]",
+        "cls_note_voz": "[dim]VOZ limpo — [l] histórico · [lo]/[lt] · F3 Sistema[/]",
+        "cls_note_app": "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
+        "cls1_note": "[dim]LC (esquerda) limpo — [LC n] Caption/Translated voltam aqui[/]",
+        "cls2_note": "[dim]VOZ (direita) limpo — Heard/Translated e comandos voltam aqui[/]",
+        "boot_lc_1": (
+            "[bold magenta]LC entrada[/] — pares [bold]estáveis[/] "
+            "[bold][LC n] Caption / Translated[/]"
+        ),
+        "boot_lc_2": (
+            "[dim]Faixa superior = ao vivo (parcial). "
+            "Aqui só commits finais. [lc] pause · show/hide[/]"
+        ),
+        "boot_lc_3": (
+            "[dim]Faixa Live Captions (topo): ═ ↕ captions ═ redimensiona vs "
+            "logs do meio · ║ largura LC|VOZ · clique p/ foco.[/]"
+        ),
+        "boot_voz_1": (
+            "[bold cyan]LiveLingo TUI[/] — [bold]VOZ[/] (chunks mic + saída de comandos)"
+        ),
+        "boot_voz_2": (
+            "[dim]Fale no microfone — Heard/Translated (VOZ) aparecem aqui. "
+            "Comandos: digite + Enter | setas ↑↓ = histórico.[/]"
+        ),
+        "boot_voz_3": (
+            "[yellow]Áudio OFF por padrão — [s] ao vivo | "
+            "[r]/[rN] chunk | [l] lista | [g] swap[/]"
+        ),
+        "boot_voz_4": (
+            "[bold green]Copiar:[/] seleção [bold]Ctrl+C[/]  ·  "
+            "log do painel focado [bold]Ctrl+Shift+C[/]  ·  "
+            "bypass [bold]F2[/]  ·  "
+            "busca [bold]/texto[/] no painel focado  ·  F3 abas"
+        ),
+        "boot_voz_5": (
+            "[dim]Split LC|VOZ: arraste ║ · Expandir no canto superior direito "
+            "desta janela · captions ↕ no topo · sash 50/50 duplo-clique. "
+            "Sair: Ctrl+Q / [q].[/]"
+        ),
+        "boot_app_1": (
+            "[bold cyan]Sistema[/] — etapas do pipeline, escuta VAD, "
+            "timestamps e timing (não polui a aba Tradução)"
+        ),
+        "boot_app_2": (
+            "[dim]Aqui: Transcrevendo / Traduzindo / TTS / Escutando… "
+            "com @hora · +s desde escuta · Δµs. Role com a barra ou mouse.[/]"
+        ),
+        "boot_app_3": (
+            "[dim]F3 cicla Tradução → Sistema → Novidades → Lista de comandos · "
+            "Ctrl+Shift+C copia o log da aba ativa · F2 = bypass de voz.[/]"
+        ),
     },
     "es": {
         "sentence": "Frase",
@@ -1583,7 +1903,7 @@ def _source_lang_code() -> str:
         code = "de"
     if code in ("ita",):
         code = "it"
-    if code in ("por", "pt-br", "pt_br"):
+    if code in ("por", "pt-br", "pt_br", "br", "bra"):
         code = "pt"
     return code if code in _FOOTER_I18N else "en"
 
@@ -1835,18 +2155,17 @@ class LiveLingoApp(App):
         height: 1;
     }
     /*
-     * Live Captions strip (above log tabs) — fixed height so #log-tabs (1fr)
-     * shrinks. Original + translated lines for Windows LiveCaptions PoC.
+     * Live Captions strip (above log tabs) — resizable bottom edge
+     * (CaptionsHSash) so #log-tabs (middle logs) grows/shrinks.
      */
     #captions-panel {
-        /* 8 rows: border 2 + title 1 + src 2 + tgt 2 + status 1 */
         height: 8;
-        min-height: 8;
-        max-height: 8;
+        min-height: 5;
+        max-height: 28;
         layout: vertical;
         width: 1fr;
         margin: 0;
-        padding: 0 1;
+        padding: 0 1 0 1;
         background: #1a1b26;
         border: solid #7aa2f7;
         overflow: hidden;
@@ -1868,9 +2187,8 @@ class LiveLingoApp(App):
         overflow: hidden;
     }
     #caption-src {
-        height: 2;
-        min-height: 2;
-        max-height: 2;
+        height: 1fr;
+        min-height: 1;
         width: 1fr;
         color: #c0caf5;
         content-align: left top;
@@ -1878,9 +2196,8 @@ class LiveLingoApp(App):
         padding: 0;
     }
     #caption-tgt {
-        height: 2;
-        min-height: 2;
-        max-height: 2;
+        height: 1fr;
+        min-height: 1;
         width: 1fr;
         color: #9ece6a;
         text-style: bold;
@@ -1896,6 +2213,13 @@ class LiveLingoApp(App):
         color: #565f89;
         content-align: left middle;
         overflow: hidden;
+    }
+    #captions-hsash {
+        width: 1fr;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        margin: 0 -1;
     }
     /* Log tabs: Tradução + Sistema + Novidades + Command list (shrink under captions) */
     #log-tabs {
@@ -1914,7 +2238,82 @@ class LiveLingoApp(App):
         height: 1fr;
         padding: 0;
     }
-    #log, #log-app, #log-news, #log-cmds {
+    /* Tradução: LC | sash | VOZ (resizable + expand/restore) */
+    #trad-pane {
+        height: 1fr;
+        width: 1fr;
+        layout: vertical;
+    }
+    #trad-headers {
+        height: 1;
+        width: 1fr;
+        layout: horizontal;
+        background: $panel;
+        align: left middle;
+    }
+    #trad-hdr-lc, #trad-hdr-voz {
+        height: 1;
+        width: 1fr;
+        layout: horizontal;
+        padding: 0 1;
+        align: left middle;
+    }
+    #trad-lbl-lc {
+        width: 1fr;
+        color: #e040fb;
+        text-style: bold;
+        content-align: left middle;
+    }
+    #trad-lbl-voz {
+        width: 1fr;
+        color: #e0af68;
+        text-style: bold;
+        content-align: left middle;
+    }
+    /* Expandir inside right (VOZ) log window — top-right corner */
+    #trad-btn-voz {
+        width: auto;
+        min-width: 10;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        padding: 0 1;
+        border: none;
+        background: $accent;
+        color: $text;
+        text-style: bold;
+        dock: none;
+    }
+    #trad-btn-voz:hover {
+        background: $accent-lighten-2;
+    }
+    #trad-split {
+        height: 1fr;
+        width: 1fr;
+        layout: horizontal;
+    }
+    #trad-lc-col, #trad-voz-col {
+        height: 1fr;
+        width: 1fr;
+        min-width: 12;
+        layout: vertical;
+    }
+    #trad-lc-col.-hidden, #trad-voz-col.-hidden {
+        display: none;
+    }
+    /* Focus is shown via header label colors + sash — no inner box border
+       (orange/pink frames around LC/VOZ looked like a nested unnecessary frame). */
+    #trad-lc-col.-focused,
+    #trad-voz-col.-focused {
+        border: none;
+    }
+    #trad-sash {
+        width: 1;
+        min-width: 1;
+        max-width: 1;
+        height: 1fr;
+    }
+    #log, #log-lc, #log-app, #log-news, #log-cmds {
         height: 1fr;
         margin: 0;
         padding: 0 1;
@@ -1922,7 +2321,7 @@ class LiveLingoApp(App):
         border: none;
         scrollbar-size: 1 1;
         width: 1fr;
-        min-width: 40;
+        min-width: 12;
         overflow-y: auto;
         overflow-x: auto;
     }
@@ -1971,20 +2370,28 @@ class LiveLingoApp(App):
         width: 1fr;
         layout: horizontal;
         background: $panel;
-        padding: 0;
+        padding: 0 1;
+        align: left middle;
+    }
+    /* Fixed gutters between pipe | command | TTS (not 1fr — that stole cmd width). */
+    #cmd-flex-l, #cmd-flex-r {
+        width: 2;
+        min-width: 2;
+        max-width: 2;
+        height: 3;
     }
     /*
-     * Pipeline activity bar — left of command box.
+     * Pipeline activity bar — left edge of command row.
      * Shows Mic → STT → Trad → TTS → Out (+ LC when LiveCaptions is busy).
      */
     #pipe-bar {
         width: auto;
-        min-width: 32;
-        max-width: 48;
+        min-width: 28;
+        max-width: 44;
         height: 3;
         min-height: 3;
         max-height: 3;
-        margin-right: 1;
+        margin: 0;
         padding: 0 1;
         background: $surface;
         color: $text;
@@ -2000,49 +2407,64 @@ class LiveLingoApp(App):
         border: round #c44dff;
     }
     /*
-     * Side badges (#cmd-bypass left, #cmd-tts right) — same chrome:
-     * height 3, padding 0 1, bold, content-align center, border: round.
+     * F2 bypass — compact 1-row chip on #bypass-row (between Live Captions
+     * and the tab strip). Centered with equal flex pads ≈ above LC|VOZ sash.
+     * Do NOT mount into Tabs / TabbedContent (breaks log panes).
      */
-    #cmd-bypass, #cmd-tts {
+    #bypass-row {
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        width: 1fr;
+        layout: horizontal;
+        background: $panel;
+        padding: 0;
+        margin: 0;
+    }
+    #bypass-pad-l, #bypass-pad-r {
+        width: 1fr;
+        min-width: 0;
+        height: 1;
+    }
+    #cmd-bypass {
         width: auto;
-        height: 3;
-        min-height: 3;
-        max-height: 3;
+        min-width: 12;
+        max-width: 20;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        margin: 0;
         padding: 0 1;
         text-style: bold;
         content-align: center middle;
         overflow: hidden;
-    }
-    /* Bypass OFF: white fill + dark rounded border. */
-    #cmd-bypass {
-        min-width: 14;
-        max-width: 28;
-        margin-right: 1;
+        border: none;
         background: #ffffff;
         color: #1a1b26;
-        border: round #1a1b26;
     }
     #cmd-bypass.-off {
         background: #ffffff;
         color: #1a1b26;
-        border: round #1a1b26;
     }
-    /* Bypass ON: green fill + dark round border. */
     #cmd-bypass.-on {
         background: #2d9a4e;
         color: #ffffff;
-        border: round #1a1b26;
     }
     #cmd-bypass:hover {
         text-style: bold underline;
+        background: #e8e8e8;
+    }
+    #cmd-bypass.-on:hover {
+        background: #38b05a;
     }
     /*
-     * Border on outer #cmd-box (height 3 = top + text + bottom).
-     * Use "round" for clear L-shaped corners on Windows Terminal; solid often
-     * only shows the top/bottom horizontals depending on glyph support.
+     * Command box — takes most of the footer row (1fr); pipe + TTS stay auto.
+     * Gutters via #cmd-flex-l/r (2 cols each).
      */
     #cmd-box {
         width: 1fr;
+        min-width: 48;
+        max-width: 1fr;
         height: 3;
         min-height: 3;
         max-height: 3;
@@ -2069,13 +2491,20 @@ class LiveLingoApp(App):
     }
     /* TTS badge: black fill, blue border (same as #cmd-box), white text. */
     #cmd-tts {
+        width: auto;
         min-width: 12;
-        max-width: 42;
-        margin-left: 1;
+        max-width: 40;
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        margin: 0;
+        padding: 0 1;
         background: #0d0d0d;
         color: #ffffff;
         border: round $accent;
         text-style: bold;
+        content-align: center middle;
+        overflow: hidden;
     }
 
     /* ---- Command palette (Ctrl+P): continuous box lines, not hkey/???? ---- */
@@ -2107,7 +2536,7 @@ class LiveLingoApp(App):
     """
 
     # Ctrl+C = selection (or full log if none); Ctrl+Shift+C = full log.
-    # F2 = voice bypass (white/green badge left of command box).
+    # F2 = voice bypass (compact badge in Tradução header, above LC|VOZ sash).
     # F3 = cycle Tradução → Sistema → Novidades → …
     BINDINGS = [
         Binding("ctrl+c", "copy_selection", "Copy", show=True, priority=True),
@@ -2163,6 +2592,13 @@ class LiveLingoApp(App):
         self._passthrough = False
         self._log_queue: queue.Queue = queue.Queue()
         self._cached_log_width = 120
+        self._cached_log_width_lc = 60
+        # Tradução split: ratio left (LC), expand None|"lc"|"voz", focus lc|voz
+        self._trad_ratio: float = 0.5
+        self._trad_expand: str | None = None  # None = split, "lc"|"voz" = maximized
+        self._trad_focus: str = "voz"  # which sub-pane search/gg/copy use
+        # Live Captions strip height in rows (drag bottom edge vs middle logs)
+        self._captions_height: int = 8
         # VOZ pipe bar: mic → stt → translate → tts → play (Cable Out)
         self._pipe_stage: str = "idle"
         self._pipe_stage_t: float = 0.0
@@ -2272,6 +2708,8 @@ class LiveLingoApp(App):
                 id="caption-status",
                 markup=False,
             )
+            # Bottom edge: drag ↕ to split captions (top) vs log tabs (middle)
+            yield CaptionsHSash(id="captions-hsash")
         # Four log panels: translation / pipeline / changelog / command list
         # min_width must be wide: inactive TabPane has ~0 layout width, and
         # RichLog bakes wrap at write time (min_width was 20 → column-of-chars).
@@ -2281,18 +2719,72 @@ class LiveLingoApp(App):
         _cmds_label = _fi18n.get(
             "tab_commands", command_help.tab_title(_source_lang_code())
         )
+        # F2 chip: own row under captions / above tabs (never injected into Tabs)
+        with Horizontal(id="bypass-row"):
+            yield Static("", id="bypass-pad-l", markup=False)
+            yield Static(
+                _fi18n.get("bypass_off_label", "F2 Transl. audio"),
+                id="cmd-bypass",
+                classes="-off",
+                markup=False,
+            )
+            yield Static("", id="bypass-pad-r", markup=False)
         with TabbedContent(id="log-tabs", initial="tab-main"):
-            with TabPane("Tradução", id="tab-main"):
-                yield SelectableRichLog(
-                    id="log",
-                    highlight=False,  # avoid markup glitches on Windows legacy console
-                    markup=True,
-                    wrap=True,
-                    auto_scroll=True,
-                    max_lines=5000,
-                    min_width=_log_min_w,
-                )
-            with TabPane("Sistema", id="tab-app"):
+            with TabPane(
+                _fi18n.get("tab_traducao", "Translation"), id="tab-main"
+            ):
+                with Vertical(id="trad-pane"):
+                    with Horizontal(id="trad-headers"):
+                        with Horizontal(id="trad-hdr-lc"):
+                            yield Static(
+                                _fi18n.get(
+                                    "trad_lbl_lc", "LC in (LiveCaptions)"
+                                ),
+                                id="trad-lbl-lc",
+                                markup=False,
+                            )
+                        with Horizontal(id="trad-hdr-voz"):
+                            yield Static(
+                                _fi18n.get(
+                                    "trad_lbl_voz", "VOICE mic + commands"
+                                ),
+                                id="trad-lbl-voz",
+                                markup=False,
+                            )
+                            # Expand: top-right of right (VOZ) log window
+                            yield Button(
+                                _fi18n.get("expand", "Expand"),
+                                id="trad-btn-voz",
+                                flat=True,
+                                compact=True,
+                            )
+                    with Horizontal(id="trad-split"):
+                        with Vertical(id="trad-lc-col"):
+                            yield SelectableRichLog(
+                                id="log-lc",
+                                highlight=False,
+                                markup=True,
+                                wrap=True,
+                                auto_scroll=True,
+                                max_lines=5000,
+                                min_width=max(40, _log_min_w // 2),
+                                pane_role="lc",
+                            )
+                        yield TradSash(id="trad-sash")
+                        with Vertical(id="trad-voz-col", classes="-focused"):
+                            yield SelectableRichLog(
+                                id="log",
+                                highlight=False,
+                                markup=True,
+                                wrap=True,
+                                auto_scroll=True,
+                                max_lines=5000,
+                                min_width=max(40, _log_min_w // 2),
+                                pane_role="voz",
+                            )
+            with TabPane(
+                _fi18n.get("tab_sistema", "System"), id="tab-app"
+            ):
                 yield SelectableRichLog(
                     id="log-app",
                     highlight=False,
@@ -2325,25 +2817,20 @@ class LiveLingoApp(App):
         with Vertical(id="bottom"):
             yield Static("", id="hint", markup=True)
             with Horizontal(id="cmd-row"):
-                # VOZ pipeline stages (Mic → STT → Trad → TTS → Cable Out) + LC
+                # Left: pipeline stages · center: command · right: TTS voice
                 yield Static(
                     "[dim]○Mic › ○STT › ○Trad › ○TTS › ○Out[/]",
                     id="pipe-bar",
                     markup=True,
                 )
-                # Bypass mode toggle — green = your voice, white = translated
-                yield Static(
-                    _footer_i18n().get("bypass_off_label", "(Translated audio)"),
-                    id="cmd-bypass",
-                    classes="-off",
-                    markup=False,
-                )
+                yield Static("", id="cmd-flex-l", markup=False)
                 # Border lives on #cmd-box so left/right sides never clip
                 with Vertical(id="cmd-box"):
                     yield Input(
                         placeholder=_footer_i18n()["placeholder"],
                         id="cmd",
                     )
+                yield Static("", id="cmd-flex-r", markup=False)
                 # Current TTS_VOICE badge (display only; change with [ctts nome])
                 yield Static(
                     "TTS ?",
@@ -2370,6 +2857,14 @@ class LiveLingoApp(App):
         self._paint_captions_panel()
         self._paint_pipe_bar(force=True)
         try:
+            self._refresh_bypass_badge()
+        except Exception:
+            pass
+        try:
+            self.captions_set_height(int(getattr(self, "_captions_height", 8) or 8))
+        except Exception:
+            pass
+        try:
             bar = self.query_one("#pipe-bar", Static)
             tip = _footer_i18n().get(
                 "pipe_tip",
@@ -2384,18 +2879,21 @@ class LiveLingoApp(App):
                 self.set_compact_ui(True)
             except Exception:
                 pass
+        t = _footer_i18n()
+        try:
+            lc_log = self.query_one("#log-lc", SelectableRichLog)
+            for key in ("boot_lc_1", "boot_lc_2", "boot_lc_3"):
+                line = t.get(key)
+                if line:
+                    lc_log.write(line)
+            lc_log.write("")
+        except Exception:
+            pass
         log = self.query_one("#log", SelectableRichLog)
-        log.write(
-            "[bold cyan]LiveLingo TUI[/] — aba [bold]Tradução[/] (chunks + comandos)"
-        )
-        log.write(
-            "[dim]Fale no microfone — Heard/Translated aparecem aqui. "
-            "Comandos: digite + Enter | setas ↑↓ = historico de comandos.[/]"
-        )
-        log.write(
-            "[yellow]Audio OFF por padrao — [s] para ouvir ao vivo | "
-            "[r]/[rN] um chunk | [l] lista frases | [g] swap idiomas[/]"
-        )
+        for key in ("boot_voz_1", "boot_voz_2", "boot_voz_3"):
+            line = t.get(key)
+            if line:
+                log.write(line)
         # Phrase-cache inventory (pairs / words by language) under the audio tip
         try:
             import config as cfg
@@ -2412,37 +2910,24 @@ class LiveLingoApp(App):
                 log.write(line)
         except Exception:
             log.write(
-                "[dim]Cache de frases: (resumo indisponível) · use [pc] quando o pipeline iniciar[/]"
+                "[dim]Phrase cache: (summary unavailable) · use [pc] when pipeline starts[/]"
             )
-        log.write(
-            "[bold green]Copiar:[/] clique e arraste no log → [bold]Ctrl+C[/]  ·  "
-            "log inteiro [bold]Ctrl+Shift+C[/]  ·  "
-            "bypass [bold]F2[/]  ·  "
-            "busca: [bold]/texto[/] · [bold]/n[/]/[bold]/p[/] "
-            "(ou [bold]find texto[/])  ·  abas: F3 cicla"
-        )
-        log.write("[dim]Dica: Windows Terminal recomendado. Sair: Ctrl+Q ou [q].[/]")
-        log.write(
-            "[bold magenta]Live Captions[/] — faixa = ao vivo (parcial). "
-            "Aba Tradução = só frases [bold]estáveis[/] no layout "
-            "[bold][LC n] Caption / Translated[/] (como chunks de voz). "
-            "[bold]lc[/] pause · [bold]lc show[/]/[bold]lc hide[/]"
-        )
+        for key in ("boot_voz_4", "boot_voz_5"):
+            line = t.get(key)
+            if line:
+                log.write(line)
         log.write("")  # blank line after startup tip
         try:
+            self._apply_trad_split_layout()
+            self.set_trad_focus("voz")
+        except Exception:
+            pass
+        try:
             app_log = self.query_one("#log-app", SelectableRichLog)
-            app_log.write(
-                "[bold cyan]Sistema[/] — etapas do pipeline, escuta VAD, "
-                "timestamps e timing (não polui a aba Tradução)"
-            )
-            app_log.write(
-                "[dim]Aqui: Transcrevendo / Traduzindo / TTS / Escutando… "
-                "com @hora · +s desde escuta · Δµs. Role com a barra ou mouse.[/]"
-            )
-            app_log.write(
-                "[dim]F3 cicla Tradução → Sistema → Novidades → Lista de comandos · "
-                "Ctrl+Shift+C copia o log da aba ativa · F2 = bypass de voz.[/]"
-            )
+            for key in ("boot_app_1", "boot_app_2", "boot_app_3"):
+                line = t.get(key)
+                if line:
+                    app_log.write(line)
         except Exception:
             pass
         try:
@@ -2732,42 +3217,240 @@ class LiveLingoApp(App):
             self._cmd_draft = ""
 
     def _refresh_log_width(self) -> None:
-        """Cache log content width on the UI thread (safe for worker reads)."""
+        """Cache VOZ + LC log content widths on the UI thread."""
         floor = _terminal_log_width(100)
-        try:
-            log = self._active_log_widget() or self.query_one("#log")
-            # Keep min_width in sync with terminal so inactive-tab writes stay wide
-            for lid in ("#log", "#log-app", "#log-news", "#log-cmds"):
-                try:
-                    wlog = self.query_one(lid, SelectableRichLog)
-                    wlog.min_width = floor
-                except Exception:
-                    pass
+        half = max(24, floor // 2)
+        # Keep min_width in sync so inactive-tab writes stay wide enough
+        for lid in ("#log", "#log-lc", "#log-app", "#log-news", "#log-cmds"):
             try:
-                safe = int(log._safe_render_width())  # type: ignore[attr-defined]
-                if safe >= 40:
-                    self._cached_log_width = safe
-                    return
+                wlog = self.query_one(lid, SelectableRichLog)
+                if lid in ("#log", "#log-lc"):
+                    wlog.min_width = half
+                else:
+                    wlog.min_width = floor
             except Exception:
                 pass
-            cs = getattr(log, "content_size", None)
-            if cs is not None:
-                cw = int(getattr(cs, "width", 0) or 0)
-                if cw >= 40:
-                    self._cached_log_width = max(40, cw - 2)
-                    return
-            w = int(getattr(log.size, "width", 0) or 0)
-            if w >= 40:
-                self._cached_log_width = max(40, w - 4)
-                return
-        except Exception:
-            pass
-        self._cached_log_width = floor
+
+        def _safe_w(lid: str, fallback: int) -> int:
+            try:
+                wlog = self.query_one(lid, SelectableRichLog)
+                safe = int(wlog._safe_render_width())  # type: ignore[attr-defined]
+                if safe >= 12:
+                    return safe
+            except Exception:
+                pass
+            try:
+                wlog = self.query_one(lid, SelectableRichLog)
+                w = int(getattr(wlog.size, "width", 0) or 0)
+                if w >= 12:
+                    return max(12, w - 2)
+            except Exception:
+                pass
+            return fallback
+
+        self._cached_log_width = _safe_w("#log", half)
+        self._cached_log_width_lc = _safe_w("#log-lc", half)
 
     def _log_content_width(self) -> int:
-        """Usable columns inside #log (thread-safe via cached value)."""
+        """Usable columns inside VOZ #log (thread-safe via cached value)."""
         w = int(getattr(self, "_cached_log_width", 0) or 0)
-        return w if w >= 24 else 120
+        return w if w >= 12 else 60
+
+    def _log_content_width_lc(self) -> int:
+        """Usable columns inside #log-lc."""
+        w = int(getattr(self, "_cached_log_width_lc", 0) or 0)
+        return w if w >= 12 else 60
+
+    # ------------------------------------------------------------------ #
+    # Tradução split (ratio / expand / focus)
+    # ------------------------------------------------------------------ #
+    def set_trad_focus(self, role: str) -> None:
+        """Mark LC or VOZ sub-pane as target for search / gg / copy."""
+        role = "lc" if str(role or "").lower() == "lc" else "voz"
+        self._trad_focus = role
+        try:
+            lc_col = self.query_one("#trad-lc-col")
+            voz_col = self.query_one("#trad-voz-col")
+            if role == "lc":
+                lc_col.add_class("-focused")
+                voz_col.remove_class("-focused")
+            else:
+                voz_col.add_class("-focused")
+                lc_col.remove_class("-focused")
+        except Exception:
+            pass
+        try:
+            self._update_trad_voz_expand_label()
+        except Exception:
+            pass
+
+    def trad_set_ratio_from_drag(
+        self, start_screen_x: int, start_ratio: float, screen_x: int
+    ) -> None:
+        """Update split ratio while dragging the sash (screen coordinates)."""
+        del start_screen_x, start_ratio  # absolute x → ratio (more stable)
+        try:
+            split = self.query_one("#trad-split")
+            region = split.content_region
+            total = int(region.width or 0)
+            origin = int(region.x or 0)
+        except Exception:
+            total = 0
+            origin = 0
+        if total < 20:
+            try:
+                total = max(20, int(self.size.width or 80) - 4)
+                origin = 0
+            except Exception:
+                total = 80
+                origin = 0
+        usable = max(16, total - 1)
+        left = int(screen_x) - origin
+        min_c = 12
+        left = max(min_c, min(usable - min_c, left))
+        ratio = max(0.12, min(0.88, left / float(usable)))
+        self._trad_ratio = ratio
+        if self._trad_expand is not None:
+            self._trad_expand = None
+        self._apply_trad_split_layout()
+
+    def trad_restore_split(self, ratio: float | None = None) -> None:
+        """Leave expand mode; optional ratio (default keep last / 0.5)."""
+        if ratio is not None:
+            self._trad_ratio = max(0.12, min(0.88, float(ratio)))
+        self._trad_expand = None
+        self._apply_trad_split_layout()
+        self._refresh_log_width()
+
+    def captions_set_height(self, rows: int) -> None:
+        """Set Live Captions strip height in terminal rows (5–28)."""
+        rows = max(5, min(28, int(rows)))
+        self._captions_height = rows
+        try:
+            panel = self.query_one("#captions-panel", Vertical)
+            panel.styles.height = rows
+            panel.styles.min_height = rows
+            panel.styles.max_height = rows
+        except Exception:
+            try:
+                panel = self.query_one("#captions-panel")
+                panel.styles.height = rows
+                panel.styles.min_height = rows
+                panel.styles.max_height = rows
+            except Exception:
+                pass
+        try:
+            hsash = self.query_one("#captions-hsash", CaptionsHSash)
+            if rows == 8:
+                hsash.update("═ ↕ captions ═")
+            else:
+                hsash.update(f"═ ↕ captions {rows} ═")
+        except Exception:
+            pass
+
+    def captions_set_height_from_screen_y(self, screen_y: int) -> None:
+        """
+        Resize captions strip from bottom-edge drag.
+
+        Pointer Y vs strip top → row height; middle log tabs fill the rest (1fr).
+        """
+        try:
+            panel = self.query_one("#captions-panel")
+            top = int(panel.region.y or 0)
+        except Exception:
+            return
+        # Include the sash row under the pointer
+        rows = int(screen_y) - top + 1
+        self.captions_set_height(rows)
+
+    def _update_trad_voz_expand_label(self) -> None:
+        """Sync Expand/Restore on the VOZ header button (SOURCE_LANG)."""
+        try:
+            btn = self.query_one("#trad-btn-voz", Button)
+        except Exception:
+            return
+        t = _footer_i18n()
+        exp = self._trad_expand
+        if exp == "voz":
+            btn.label = t.get("restore", "Restore")
+            try:
+                btn.tooltip = t.get("restore_tip", "Restore LC | VOZ split")
+            except Exception:
+                pass
+        else:
+            btn.label = t.get("expand", "Expand")
+            try:
+                btn.tooltip = t.get("expand_tip", "Maximize VOZ panel (right)")
+            except Exception:
+                pass
+
+    def trad_toggle_expand(self, side: str | None = None) -> None:
+        """
+        Expand LC or VOZ to full width; second press restores.
+
+        Default side=None from VOZ button → toggle VOZ expand.
+        """
+        if side is None:
+            side = "voz"
+        side = "lc" if str(side or "").lower() == "lc" else "voz"
+        if self._trad_expand == side:
+            self._trad_expand = None
+        else:
+            self._trad_expand = side
+            self.set_trad_focus(side)
+        self._apply_trad_split_layout()
+        self._refresh_log_width()
+
+    def _apply_trad_split_layout(self) -> None:
+        """Apply ratio or expand state to LC/VOZ columns + sash visibility."""
+        try:
+            lc_col = self.query_one("#trad-lc-col")
+            voz_col = self.query_one("#trad-voz-col")
+            sash = self.query_one("#trad-sash")
+        except Exception:
+            return
+        exp = self._trad_expand
+
+        if exp == "lc":
+            lc_col.remove_class("-hidden")
+            voz_col.add_class("-hidden")
+            try:
+                sash.display = False
+            except Exception:
+                pass
+            lc_col.styles.width = "1fr"
+            self._update_trad_voz_expand_label()
+            return
+        if exp == "voz":
+            voz_col.remove_class("-hidden")
+            lc_col.add_class("-hidden")
+            try:
+                sash.display = False
+            except Exception:
+                pass
+            voz_col.styles.width = "1fr"
+            self._update_trad_voz_expand_label()
+            return
+
+        lc_col.remove_class("-hidden")
+        voz_col.remove_class("-hidden")
+        try:
+            sash.display = True
+        except Exception:
+            pass
+        ratio = max(0.12, min(0.88, float(getattr(self, "_trad_ratio", 0.5) or 0.5)))
+        # fr weights so sash (1 cell) does not fight % of full width
+        left_w = max(12, min(88, int(round(ratio * 100))))
+        right_w = max(12, 100 - left_w)
+        lc_col.styles.width = f"{left_w}fr"
+        voz_col.styles.width = f"{right_w}fr"
+        self._update_trad_voz_expand_label()
+
+    @on(Button.Pressed, "#trad-btn-voz")
+    def _on_trad_btn_voz(self, event: Button.Pressed) -> None:
+        """Expandir/Restaurar no canto superior direito do painel VOZ."""
+        event.stop()
+        self.trad_toggle_expand("voz")
 
     # ------------------------------------------------------------------ #
     # Logging (thread-safe via queue → UI timer)
@@ -2779,7 +3462,7 @@ class LiveLingoApp(App):
             pass
 
     def _resolve_log_widget(self, panel: str = "main"):
-        """Return SelectableRichLog for panel main|app|news|cmds (fallback #log)."""
+        """Return SelectableRichLog for panel main|lc|app|news|cmds (fallback #log)."""
         p = str(panel or "main").lower()
         if p in ("cmds", "commands", "cmd", "help", "comandos"):
             log_id = "#log-cmds"
@@ -2787,6 +3470,8 @@ class LiveLingoApp(App):
             log_id = "#log-news"
         elif p in ("app", "sistema", "system"):
             log_id = "#log-app"
+        elif p in ("lc", "main-lc", "livecaptions", "captions", "caption"):
+            log_id = "#log-lc"
         else:
             log_id = "#log"
         try:
@@ -2806,7 +3491,7 @@ class LiveLingoApp(App):
                 return None
 
     def _active_log_panel(self) -> str:
-        """Which log tab is visible: main | app | news | cmds."""
+        """Active log for search/gg/copy: lc | main | app | news | cmds."""
         try:
             tabs = self.query_one("#log-tabs", TabbedContent)
             active = str(getattr(tabs, "active", "") or "")
@@ -2816,6 +3501,8 @@ class LiveLingoApp(App):
                 return "news"
             if active in ("tab-app", "log-app") or active.endswith("app"):
                 return "app"
+            if getattr(self, "_trad_focus", "voz") == "lc":
+                return "lc"
         except Exception:
             pass
         return "main"
@@ -2827,8 +3514,8 @@ class LiveLingoApp(App):
         """
         Re-enable live follow and jump to the end of a log panel.
 
-        Search (/) and gg set auto_scroll=False; Tradução must still stick to
-        the bottom when new Heard/Translated lines arrive.
+        Search (/) and gg set auto_scroll=False; Tradução panes still stick
+        to the bottom when new LC/VOZ lines arrive.
         """
         if log is None:
             return
@@ -2855,19 +3542,28 @@ class LiveLingoApp(App):
             pass
 
     def post_log(self, kind: str, text: str, panel: str = "main") -> None:
-        """Must run on the UI thread (or via _drain_log_queue). panel=main|app."""
+        """Must run on the UI thread (or via _drain_log_queue). panel=main|lc|app."""
         log = self._resolve_log_widget(panel)
         if log is None:
             return
         panel_key = str(panel or "main").lower()
-        is_main = panel_key in ("main", "traducao", "tradução", "translation")
-        # Tradução: always re-arm follow *before* write so RichLog auto_scroll works
-        if is_main:
+        is_trad = panel_key in (
+            "main",
+            "traducao",
+            "tradução",
+            "translation",
+            "voz",
+            "lc",
+            "main-lc",
+            "livecaptions",
+            "captions",
+            "caption",
+        )
+        if is_trad:
             try:
                 log.auto_scroll = True
             except Exception:
                 pass
-        # Preserve intentional blank separators (session list gaps).
         if text is None:
             return
         if text == "" or text.strip() == "":
@@ -2875,11 +3571,10 @@ class LiveLingoApp(App):
                 log.write("")
             except Exception:
                 pass
-            if is_main:
+            if is_trad:
                 self._follow_log_bottom(log)
             return
         t = text.rstrip("\n")
-        # Escape user/chunk text so "[chunk 3]" doesn't break Rich markup.
         try:
             from rich.markup import escape
 
@@ -2888,7 +3583,6 @@ class LiveLingoApp(App):
             safe = t.replace("[", "\\[")
         try:
             if kind == "rich":
-                # Pre-built Rich markup (caller already escaped user text)
                 log.write(t)
             elif kind == "success":
                 log.write(f"[green][ok][/] {safe}")
@@ -2903,15 +3597,13 @@ class LiveLingoApp(App):
             elif kind == "list":
                 log.write(f"[bold]{safe}[/]")
             else:
-                # raw / plain
                 log.write(safe)
         except Exception:
             try:
-                log.write(t)  # last resort plain
+                log.write(t)
             except Exception:
                 pass
-        # Belt-and-suspenders: after write, pin viewport to bottom on Tradução
-        if is_main:
+        if is_trad:
             self._follow_log_bottom(log)
 
     def _drain_log_queue(self) -> None:
@@ -3383,7 +4075,7 @@ class LiveLingoApp(App):
             pass
 
     def _refresh_bypass_badge(self) -> None:
-        """Update left command-bar badge: green = bypass ON, white = OFF."""
+        """Update F2 badge: green = bypass ON, white = OFF (tab bar or footer)."""
         try:
             badge = self.query_one("#cmd-bypass", Static)
         except Exception:
@@ -3486,6 +4178,10 @@ class LiveLingoApp(App):
         except Exception:
             pass
         try:
+            self._refresh_trad_chrome()
+        except Exception:
+            pass
+        try:
             self._fill_news_tab()
         except Exception:
             pass
@@ -3510,14 +4206,38 @@ class LiveLingoApp(App):
             pass
 
     def _refresh_tab_labels(self) -> None:
-        """Update Novidades + Command list tab titles for current SOURCE_LANG."""
+        """Update all tab titles for current SOURCE_LANG."""
         i18n = _footer_i18n()
         lang = _source_lang_code()
+        self._set_tab_label(
+            "#tab-main", i18n.get("tab_traducao", "Translation")
+        )
+        self._set_tab_label("#tab-app", i18n.get("tab_sistema", "System"))
         self._set_tab_label("#tab-news", i18n.get("tab_news", "What's New"))
         self._set_tab_label(
             "#tab-cmds",
             i18n.get("tab_commands", command_help.tab_title(lang)),
         )
+
+    def _refresh_trad_chrome(self) -> None:
+        """Update LC/VOZ header labels + Expand button for SOURCE_LANG."""
+        t = _footer_i18n()
+        try:
+            self.query_one("#trad-lbl-lc", Static).update(
+                t.get("trad_lbl_lc", "LC in (LiveCaptions)")
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#trad-lbl-voz", Static).update(
+                t.get("trad_lbl_voz", "VOICE mic + commands")
+            )
+        except Exception:
+            pass
+        try:
+            self._update_trad_voz_expand_label()
+        except Exception:
+            pass
 
     def _fill_news_tab(self) -> None:
         """Load CHANGELOG.md into the Novidades tab (UI thread)."""
@@ -3611,32 +4331,79 @@ class LiveLingoApp(App):
             except Exception:
                 break
 
+    def _clear_one_log(self, log_id: str, note: str) -> bool:
+        """Clear a single RichLog by CSS id; write optional dim note. UI thread."""
+        try:
+            log = self.query_one(log_id, SelectableRichLog)
+            log.clear()
+            if note:
+                log.write(note)
+            return True
+        except Exception:
+            try:
+                log = self.query_one(log_id, RichLog)
+                log.clear()
+                if note:
+                    try:
+                        log.write(note)
+                    except Exception:
+                        pass
+                return True
+            except Exception:
+                return False
+
     def clear_log(self) -> None:
-        """Clear both log panels (command [cls]). Must run on UI thread."""
-        for log_id, note in (
+        """Clear LC + VOZ + Sistema logs (command [cls]). Must run on UI thread."""
+        t = _footer_i18n()
+        for log_id, key, fallback in (
+            (
+                "#log-lc",
+                "cls_note_lc",
+                "[dim]LC cleared[/]",
+            ),
             (
                 "#log",
-                "[dim]Log limpo — [l] histórico · [lo] source · [lt] target · F3 Sistema[/]",
+                "cls_note_voz",
+                "[dim]VOZ cleared[/]",
             ),
             (
                 "#log-app",
-                "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
+                "cls_note_app",
+                "[dim]System cleared[/]",
             ),
         ):
-            try:
-                log = self.query_one(log_id, SelectableRichLog)
-                log.clear()
-                log.write(note)
-            except Exception:
-                try:
-                    log = self.query_one(log_id, RichLog)
-                    log.clear()
-                except Exception:
-                    pass
+            self._clear_one_log(log_id, t.get(key, fallback))
         # Hits point at cleared buffers — drop search cursor + paint
         self._search_hits = []
         self._search_i = -1
         self._clear_all_search_highlights()
+
+    def clear_log_side(self, side: int) -> bool:
+        """
+        Clear one Tradução column (command [cls1]/[cls2]). UI thread only.
+
+        side 1 → left  = LiveCaptions (#log-lc)
+        side 2 → right = VOZ mic + commands (#log)
+        """
+        t = _footer_i18n()
+        if side == 1:
+            ok = self._clear_one_log(
+                "#log-lc",
+                t.get("cls1_note", "[dim]LC (left) cleared[/]"),
+            )
+        elif side == 2:
+            ok = self._clear_one_log(
+                "#log",
+                t.get("cls2_note", "[dim]VOZ (right) cleared[/]"),
+            )
+        else:
+            return False
+        if ok:
+            # Search hits may reference the cleared pane — drop highlights
+            self._search_hits = []
+            self._search_i = -1
+            self._clear_all_search_highlights()
+        return ok
 
     def _log_widget(self):
         """Return the active (visible) scrollable log widget, or #log."""
@@ -3664,8 +4431,8 @@ class LiveLingoApp(App):
             self._clear_all_search_highlights()
 
     def _clear_all_search_highlights(self) -> None:
-        """Remove /search paint from every log tab."""
-        for lid in ("#log", "#log-app", "#log-news", "#log-cmds"):
+        """Remove /search paint from every log tab / Tradução pane."""
+        for lid in ("#log", "#log-lc", "#log-app", "#log-news", "#log-cmds"):
             try:
                 w = self.query_one(lid, SelectableRichLog)
                 w.clear_search_highlight()
@@ -3676,7 +4443,7 @@ class LiveLingoApp(App):
         self, log, query: str, hits: list[int], current_y: int | None
     ) -> None:
         """Paint hits on `log`; clear highlight on other tabs."""
-        for lid in ("#log", "#log-app", "#log-news", "#log-cmds"):
+        for lid in ("#log", "#log-lc", "#log-app", "#log-news", "#log-cmds"):
             try:
                 w = self.query_one(lid, SelectableRichLog)
             except Exception:
@@ -4212,6 +4979,8 @@ class LiveLingoApp(App):
                     f"[coN] {t.get('comment_n', 'Comm N')}",
                     f"[codN] Del #N",
                     f"[cls] {t['cls']}",
+                    f"[cls1] {t.get('cls1', 'Clr LC')}",
+                    f"[cls2] {t.get('cls2', 'Clr VOZ')}",
                     f"[gg/gt] {t.get('go_top', 'Go top')}",
                     f"[GG/gf] {t.get('go_footer', 'Go foot')}",
                     f"[c] {t['export']}",
@@ -5257,7 +6026,16 @@ class LiveLingoApp(App):
         """
         text = ""
         panel = self._active_log_panel()
-        label = "Sistema" if panel == "app" else "Tradução"
+        if panel == "app":
+            label = "Sistema"
+        elif panel == "lc":
+            label = "Tradução LC"
+        elif panel == "news":
+            label = "Novidades"
+        elif panel == "cmds":
+            label = "Comandos"
+        else:
+            label = "Tradução VOZ"
         try:
             log = self._active_log_widget() or self.query_one("#log", SelectableRichLog)
             text = log.get_plain_text() or ""
@@ -5288,7 +6066,7 @@ class LiveLingoApp(App):
                 self.notify(msg, severity="information", timeout=3)
             except Exception:
                 self.post_log("success", msg)
-            # Also echo in main log so user sees confirmation even if toast is missed
+            # Echo on VOZ (command output pane)
             self.post_log("success", msg, panel="main")
         else:
             try:

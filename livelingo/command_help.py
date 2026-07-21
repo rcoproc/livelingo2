@@ -65,6 +65,8 @@ _COMMANDS: list[dict[str, str]] = [
     # --- Sentence ---
     {"id": "c", "group": "sentence", "token": "c", "sort": "c"},
     {"id": "cls", "group": "sentence", "token": "cls", "sort": "cls"},
+    {"id": "cls1", "group": "sentence", "token": "cls1", "sort": "cls1"},
+    {"id": "cls2", "group": "sentence", "token": "cls2", "sort": "cls2"},
     {"id": "co", "group": "sentence", "token": "co", "sort": "co"},
     {"id": "coN", "group": "sentence", "token": "coN", "sort": "con"},
     {"id": "codN", "group": "sentence", "token": "codN", "sort": "codn"},
@@ -199,7 +201,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_ctrl_q": "Quit",
         "desc_ctrl_q": "Quit the application (same idea as command `q`).",
         "title_ctrl_shift_c": "Copy full log",
-        "desc_ctrl_shift_c": "Always copies the **entire** content of the active log tab to the clipboard.",
+        "desc_ctrl_shift_c": "Always copies the **entire** content of the focused log pane (Tradução LC or VOZ, Sistema, …) to the clipboard.",
         "title_f1": "Help (F1)",
         "desc_f1": (
             "Prints startup help (banner, devices, engines, tips) into the **Sistema** tab and focuses that tab. "
@@ -218,10 +220,10 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f4": "Toggle compact UI (hide the command menu strip; command line stays). Same as `u`.",
         "title_search": "Search in log (vim-style)",
         "desc_search": (
-            "Type `/text` and Enter to search the **active** log tab (case-insensitive). "
-            "Works on Tradução, Sistema, Novidades, and Command list. "
+            "Type `/text` and Enter to search the **focused** log pane (case-insensitive). "
+            "On Tradução, click **LC** or **VOZ** first (default VOZ). Also Sistema, Novidades, Command list. "
             "Scrolls to the first match and shows a counter (e.g. `1/7`). "
-            "Use `/` alone to re-run the last query on the current tab. "
+            "Use `/` alone to re-run the last query on the current pane. "
             "If `/` cannot be typed in your terminal, use aliases: `find text`, `find:text`, or `s?text`."
         ),
         "title_search_n": "Next search match",
@@ -247,7 +249,11 @@ _I18N: dict[str, dict[str, str]] = {
             "(auto-chunks long transcripts via `SUMMARY_MAX_INPUT_TOKENS`)."
         ),
         "title_cls": "Clear log",
-        "desc_cls": "Clears the **Tradução** and **Sistema** log panels (not Novidades / Command list). Classic mode clears the terminal.",
+        "desc_cls": "Clears **Tradução LC**, **Tradução VOZ**, and **Sistema** (not Novidades / Command list). Classic mode clears the terminal.",
+        "title_cls1": "Clear LC (left)",
+        "desc_cls1": "Clears only the **left** Tradução column — LiveCaptions (`#log-lc`). Use `cls2` for VOZ, `cls` for both + Sistema.",
+        "title_cls2": "Clear VOZ (right)",
+        "desc_cls2": "Clears only the **right** Tradução column — VOZ mic + commands (`#log`). Use `cls1` for LC, `cls` for both + Sistema.",
         "title_co": "Comment last",
         "desc_co": "Attach a free-text comment to the **last** chunk (stored in SQLite; shown on list `l` with `#id`).",
         "title_coN": "Comment chunk N",
@@ -276,9 +282,9 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_GG": "Jump to the **end** of the active log tab and re-enable auto-scroll. Aliases: `GG` (case-sensitive), `gf`.",
         "title_l": "List messages",
         "desc_l": (
-            "List all session phrases (chronological). **Dual rail:** "
-            "LiveCaptions (entrada) on the **left** (magenta), "
-            "LiveLingo VOZ (mic+audio) on the **right** (yellow). "
+            "List all session phrases (chronological). **Split panes:** "
+            "LiveCaptions → **left** log (magenta), LiveLingo VOZ → **right** log (yellow). "
+            "Drag the sash to resize; Expandir/Restaurar maximizes a side. "
             "Header shows LC vs VOZ counts. Timing, stamp, audio path, comments (`#id`)."
         ),
         "title_lc": "Live Captions pause/resume",
@@ -446,7 +452,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_ctrl_q": "Sair",
         "desc_ctrl_q": "Encerra a aplicação (mesmo espírito do comando `q`).",
         "title_ctrl_shift_c": "Copiar log inteiro",
-        "desc_ctrl_shift_c": "Sempre copia **todo** o conteúdo da aba de log ativa para a área de transferência.",
+        "desc_ctrl_shift_c": "Sempre copia **todo** o conteúdo do painel de log focado (Tradução LC ou VOZ, Sistema, …).",
         "title_f1": "Ajuda (F1)",
         "desc_f1": (
             "Reimprime a ajuda de início (banner, dispositivos, motores, dicas) na aba **Sistema** e foca nela. "
@@ -465,10 +471,10 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f4": "Alterna UI compacta (esconde o menu de comandos; a linha de comando permanece). Igual a `u`.",
         "title_search": "Buscar no log (estilo vim)",
         "desc_search": (
-            "Digite `/texto` e Enter para buscar na aba de log **ativa** (sem diferenciar maiúsculas). "
-            "Funciona em Tradução, Sistema, Novidades e Lista de comandos. "
+            "Digite `/texto` e Enter para buscar no painel de log **focado** (sem diferenciar maiúsculas). "
+            "Em Tradução, clique em **LC** ou **VOZ** antes (padrão VOZ). Também Sistema, Novidades e Lista de comandos. "
             "Rola até a 1ª ocorrência e mostra contador (ex.: `1/7`). "
-            "Só `/` repete a última busca na aba atual. "
+            "Só `/` repete a última busca no painel atual. "
             "Se a tecla `/` não digitar na barra (terminal/layout), use: `find texto`, `find:texto` ou `s?texto`."
         ),
         "title_search_n": "Próxima ocorrência",
@@ -493,7 +499,11 @@ _I18N: dict[str, dict[str, str]] = {
             "(divide transcrições longas via `SUMMARY_MAX_INPUT_TOKENS`)."
         ),
         "title_cls": "Limpar log",
-        "desc_cls": "Limpa os painéis **Tradução** e **Sistema** (não limpa Novidades / Lista de comandos). No modo classic, limpa o terminal.",
+        "desc_cls": "Limpa **Tradução LC**, **Tradução VOZ** e **Sistema** (não limpa Novidades / Lista de comandos). No modo classic, limpa o terminal.",
+        "title_cls1": "Limpar LC (esquerda)",
+        "desc_cls1": "Limpa só a coluna **esquerda** de Tradução — LiveCaptions (`#log-lc`). Use `cls2` para VOZ, `cls` para tudo + Sistema.",
+        "title_cls2": "Limpar VOZ (direita)",
+        "desc_cls2": "Limpa só a coluna **direita** de Tradução — VOZ mic + comandos (`#log`). Use `cls1` para LC, `cls` para tudo + Sistema.",
         "title_co": "Comentar último",
         "desc_co": "Anexa um comentário de texto livre ao **último** chunk (SQLite; aparece no `l` com `#id`).",
         "title_coN": "Comentar chunk N",
@@ -522,9 +532,9 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_GG": "Vai ao **fim** da aba de log ativa e religa auto-scroll. Aliases: `GG` (sensível a maiúsculas), `gf`.",
         "title_l": "Listar mensagens",
         "desc_l": (
-            "Lista todas as frases da sessão (cronológico). **Dois trilhos:** "
-            "LiveCaptions (entrada) à **esquerda** (magenta), "
-            "LiveLingo VOZ (mic+áudio) à **direita** (amarelo). "
+            "Lista todas as frases da sessão (cronológico). **Painéis separados:** "
+            "LiveCaptions → log **esquerdo** (magenta), LiveLingo VOZ → log **direito** (amarelo). "
+            "Arraste a barra ║ para redimensionar; Expandir/Restaurar maximiza um lado. "
             "Cabeçalho com contagem LC vs VOZ. Timing, data, path de áudio, comentários (`#id`)."
         ),
         "title_lc": "Live Captions pausar/retomar",

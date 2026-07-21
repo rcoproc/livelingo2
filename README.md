@@ -13,7 +13,7 @@ architecture goes to the upstream project.
   <img src="docs/screenshots/live_lingo4.png" alt="LiveLingo2 TUI — Live Captions strip + Tradução log with LC caption/translated chunks" width="900" />
 </p>
 
-<p align="center"><em>TUI in action: Live Captions (EN→BR) above the scrollable <strong>Tradução</strong> log, with caption/translated pairs and pipeline status in the footer. See also <a href="screenshots.md">screenshots.md</a>.</em></p>
+<p align="center"><em>TUI in action: Live Captions (EN→BR) above <strong>Tradução</strong> (split LC | VOZ panes), with caption/translated pairs and pipeline status in the footer. See also <a href="screenshots.md">screenshots.md</a>.</em></p>
 
 **LiveLingo2** turns your speech into another language **live**, on a virtual
 microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears the
@@ -365,30 +365,36 @@ Stop any time with **Ctrl+C**.
 
 ### TUI (default)
 
-With `UI_MODE=tui` (default) you get a Textual UI: **two log tabs**, command field, fixed listen header (robot + language pair + audio), and a full-width command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
+With `UI_MODE=tui` (default) you get a Textual UI: log tabs, command field, fixed listen header (robot + language pair + audio), and a full-width command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
 
 | Tab | Content |
 |-----|---------|
-| **Tradução** | Heard/Translated phrase blocks + command output |
+| **Tradução** | Vertical split: **LC** (left, stable LiveCaptions pairs) \| **VOZ** (right, mic chunks + command output). Drag the **║** sash to resize width (double-click → 50/50). **Expandir/Restaurar** on the **VOZ** header maximizes the right pane. Click a pane to focus it for search / scroll / copy. Independent scroll per side. |
 | **Sistema** | Pipeline stages, VAD/listen lines, timings, debug, **F1** help |
+| **Novidades** | Project `CHANGELOG.md` (Markdown) |
+| **Lista de comandos** | Grouped command help in `SOURCE_LANG` |
+
+Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`═ ↕ captions ═`) to grow/shrink captions vs the middle log tabs. Between captions and tabs: compact **F2** bypass chip.
 
 | Shortcut / command | Action |
 |--------------------|--------|
 | `F1` | Startup help → **Sistema** tab (opens that tab) |
-| `F3` | Toggle Tradução ↔ Sistema |
+| `F3` | Cycle log tabs (Tradução → Sistema → Novidades → Lista de comandos) |
 | `F4` / `u` | Compact UI: hide command menu; keep command line (optional window height shrink) |
 | `Ctrl+C` | Copy selected log text |
-| `Ctrl+Shift+C` / `F2` | Copy entire log (active tab) |
+| `Ctrl+Shift+C` | Copy entire content of the **focused** log pane (on Tradução: LC or VOZ) |
+| `F2` / click bypass chip / `b` | **Voice bypass** — raw mic → CABLE without translation |
 | Palette → Screenshot | Save SVG+PNG under `.cache/screenshots/` and put the **image** on the clipboard |
 | `↑` / `↓` | Command history |
+| `/text` · `/n` · `/p` | Search in the focused log pane (aliases: `find text`, `s?text`) |
 | `g` | Swap SOURCE ↔ TARGET |
 | `t` / `t EN` | Change TARGET only (codes forced UPPERCASE) |
 | `enew <text>` | New translation from typed text (no mic); TTS if sound ON |
 | `e` / `eN` | Edit last / chunk N (TUI pre-fills the sentence in the command field) |
-| `b` / `bypass` | **Voice bypass** — raw mic → CABLE (Teams) without translation; press again to resume translate |
-| `gg` / `GG` (or `gt` / `gf`) | Go top / go bottom of the **active** log tab. `GG` is case-sensitive. |
-| `cls` | Clear both log panels |
-| `l` / `lo` / `lt` | List session / source-only / target-only |
+| `gg` / `GG` (or `gt` / `gf`) | Go top / go bottom of the **focused** log pane. `GG` is case-sensitive. |
+| `cls` | Clear LC + VOZ + Sistema |
+| `cls1` / `cls2` | Clear only left **LC** / right **VOZ** |
+| `l` / `lo` / `lt` | List session (into matching panes) / source-only / target-only |
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
 | `s` / `n` / `r` / `rN` | Sound, mic mute, replay |
 | `a` / `aN` / `p` / `pN` | Copy audio path / open audio folder |

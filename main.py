@@ -909,7 +909,7 @@ def _print_menu(pipeline=None):
             f"TTS: {_tts_menu_label()} | Sound: {sound} | Mic: {mic}"
         )
         ui.dim(
-            "Sentence: e/eN enew d/dN f/fN F l lo lt lc cls gg/GG gt/gf c | "
+            "Sentence: e/eN enew d/dN f/fN F l lo lt lc cls/cls1/cls2 gg/GG gt/gf c | "
             "Audio: r/rN rs/rsN s n b x a/aN p/pN ld lav lv ctts | "
             "Idiom: g t o | Cache: pc | Session: v m u(compact) q"
         )
@@ -1027,7 +1027,9 @@ def _print_menu(pipeline=None):
             "[co] Comment last",
             "[coN] Comment N",
             "[codN] Del comment #N",
-            "[cls] Clear log",
+            "[cls] Clear log (all)",
+            "[cls1] Clear LC left",
+            "[cls2] Clear VOZ right",
             "[gg/gt] Go top",
             "[GG/gf] Go bottom",
             "[c]  Export .md",
@@ -2337,22 +2339,38 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             return _wrap_labeled_body("", text, budget)
 
         def _emit_meta_tui(
-            shift, meta_indent, text, *, style="dim", e=None, nowrap=False
+            shift,
+            meta_indent,
+            text,
+            *,
+            style="dim",
+            e=None,
+            nowrap=False,
+            panel="main",
         ):
-            """TUI: emit wrapped meta with rail alignment preserved."""
+            """TUI: emit wrapped meta (panel=main VOZ | lc LC)."""
             e = e or (lambda x: x)
             head = shift + meta_indent
             for piece in _meta_pieces(shift, meta_indent, text, nowrap=nowrap):
                 if style == "dim":
-                    ui.dim(f"{pad}{head}{piece}")
+                    ui.dim(f"{pad}{head}{piece}", panel=panel)
                 elif style == "magenta":
-                    ui.rich(f"{pad}{head}[dim magenta]{e(piece)}[/]")
+                    ui.rich(
+                        f"{pad}{head}[dim magenta]{e(piece)}[/]",
+                        panel=panel,
+                    )
                 elif style == "yellow":
-                    ui.rich(f"{pad}{head}[bold yellow]{e(piece)}[/]")
+                    ui.rich(
+                        f"{pad}{head}[bold yellow]{e(piece)}[/]",
+                        panel=panel,
+                    )
                 elif style == "yellow_dim":
-                    ui.rich(f"{pad}{head}[yellow]{e(piece)}[/]")
+                    ui.rich(
+                        f"{pad}{head}[yellow]{e(piece)}[/]",
+                        panel=panel,
+                    )
                 else:
-                    ui.dim(f"{pad}{head}{piece}")
+                    ui.dim(f"{pad}{head}{piece}", panel=panel)
 
         def _emit_meta_classic(shift, meta_indent, text, style="", *, nowrap=False):
             head = shift + meta_indent
@@ -2378,27 +2396,35 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             return lines
 
         # ------------------------------------------------------------------ #
-        # TUI — dual rail + distinct colors
+        # TUI — real dual panels (LC left pane · VOZ right pane)
         # ------------------------------------------------------------------ #
         if in_tui:
             e = ui._rich_escape
-            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
+            # Headers on both panes
+            ui.rich(
+                f"{pad}[bold magenta]{e(rule)}[/]",
+                panel="lc",
+            )
+            ui.rich(
+                f"{pad}[bold magenta]"
+                f"{e(_title_line(f'HISTORICO LC · {n_lc} frase(s)'))}"
+                f"[/]",
+                panel="lc",
+            )
+            ui.rich(f"{pad}[bold magenta]{e(rule)}[/]", panel="lc")
+
+            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]", panel="main")
             ui.rich(
                 f"{pad}[bold cyan]"
-                f"{e(_title_line('HISTORICO (cronologico) · LC ◄ esquerda · VOZ ► direita'))}"
-                f"[/]"
+                f"{e(_title_line(f'HISTORICO VOZ · {n_voz} frase(s) · total {len(full_trans)}'))}"
+                f"[/]",
+                panel="main",
             )
-            # Legend row
-            leg_l = "◄ LC entrada (LiveCaptions)"
-            leg_r = "VOZ mic+áudio ►"
-            # pad legend right into right rail
-            mid = max(0, left_w - len(leg_l))
-            ui.rich(
-                f"{pad}[bold magenta]{e(leg_l)}[/]"
-                f"{' ' * mid}{' ' * gutter}"
-                f"[bold yellow]{e(leg_r)}[/]"
-            )
-            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
+            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]", panel="main")
+
+            # Per-pane wrap width (full column; _rail_geometry is no-pad in TUI)
+            lc_w = max(24, content_w)
+            voz_w = max(24, content_w)
 
             for entry in full_trans:
                 chunk_num, heard, translated, created_at, timing = (
@@ -2409,11 +2435,10 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 recorded = ui.format_recorded_stamp(created_at) if created_at else ""
 
                 if is_lc:
-                    # LEFT rail — magenta/cyan (inbound captions)
-                    col_w = left_w
-                    shift = left_shift
+                    col_w = lc_w
+                    shift = ""
+                    panel = "lc"
                     prefix = f"[LC {chunk_num}] "
-                    # Caption = original (heard), Translated = tgt
                     lab_cap = f"{prefix}{src_l}: "
                     lab_tr = f"{' ' * len(prefix)}{tgt_l}: "
                     ind_cap = " " * len(lab_cap)
@@ -2425,10 +2450,14 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"{pad}{shift}"
                                 f"[bold magenta]{e(prefix)}[/]"
                                 f"[bold cyan]{e(src_l)}: [/]"
-                                f"[green]{e(line)}[/]"
+                                f"[green]{e(line)}[/]",
+                                panel=panel,
                             )
                         else:
-                            ui.rich(f"{pad}{shift}{ind_cap}[green]{e(line)}[/]")
+                            ui.rich(
+                                f"{pad}{shift}{ind_cap}[green]{e(line)}[/]",
+                                panel=panel,
+                            )
                     for i, line in enumerate(
                         _wrap_labeled_body(lab_tr, translated, col_w)
                     ):
@@ -2437,10 +2466,14 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"{pad}{shift}"
                                 f"[dim]{e(' ' * len(prefix))}[/]"
                                 f"[bold cyan]{e(tgt_l)}: [/]"
-                                f"[bold white]{e(line)}[/]"
+                                f"[bold white]{e(line)}[/]",
+                                panel=panel,
                             )
                         else:
-                            ui.rich(f"{pad}{shift}{ind_tr}[bold white]{e(line)}[/]")
+                            ui.rich(
+                                f"{pad}{shift}{ind_tr}[bold white]{e(line)}[/]",
+                                panel=panel,
+                            )
                     meta_indent = " " * len(prefix)
                     if recorded:
                         _emit_meta_tui(
@@ -2449,9 +2482,17 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                             f"gravado: {recorded}",
                             style="dim",
                             e=e,
+                            panel=panel,
                         )
                     for tline in _timing_meta_lines(timing, created_at):
-                        _emit_meta_tui(shift, meta_indent, tline, style="dim", e=e)
+                        _emit_meta_tui(
+                            shift,
+                            meta_indent,
+                            tline,
+                            style="dim",
+                            e=e,
+                            panel=panel,
+                        )
                     for c_id, c_text, c_at in _comment_items(chunk_num):
                         stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
                         body = " ".join((c_text or "").split())
@@ -2461,12 +2502,13 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                             f"comment #{c_id}: {stamp}  {body}",
                             style="magenta",
                             e=e,
+                            panel=panel,
                         )
+                    ui.raw("", panel=panel)
                 else:
-                    # RIGHT rail — yellow/blue (mic + TTS audio)
-                    # Order: SOURCE (heard) → TARGET (translated)
-                    col_w = right_w
-                    shift = right_shift
+                    col_w = voz_w
+                    shift = ""
+                    panel = "main"
                     prefix = f"[Chunk {chunk_num}] "
                     lab_src = f"{prefix}{src_l}: "
                     lab_tgt = f"{' ' * len(prefix)}{tgt_l}: "
@@ -2479,10 +2521,14 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"{pad}{shift}"
                                 f"[bold yellow]{e(prefix)}[/]"
                                 f"[white]{e(src_l)}: [/]"
-                                f"[green]{e(line)}[/]"
+                                f"[green]{e(line)}[/]",
+                                panel=panel,
                             )
                         else:
-                            ui.rich(f"{pad}{shift}{ind_src}[green]{e(line)}[/]")
+                            ui.rich(
+                                f"{pad}{shift}{ind_src}[green]{e(line)}[/]",
+                                panel=panel,
+                            )
                     for i, line in enumerate(
                         _wrap_labeled_body(lab_tgt, translated, col_w)
                     ):
@@ -2491,15 +2537,26 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 f"{pad}{shift}"
                                 f"[white]{e(' ' * len(prefix))}[/]"
                                 f"[bold blue]{e(tgt_l)}: [/]"
-                                f"[bold white]{e(line)}[/]"
+                                f"[bold white]{e(line)}[/]",
+                                panel=panel,
                             )
                         else:
-                            ui.rich(f"{pad}{shift}{ind_tgt}[bold white]{e(line)}[/]")
+                            ui.rich(
+                                f"{pad}{shift}{ind_tgt}[bold white]{e(line)}[/]",
+                                panel=panel,
+                            )
 
                     meta_indent = " " * len(prefix)
                     audio_raw = _resolve_audio(chunk_num)
                     for tline in _timing_meta_lines(timing, created_at):
-                        _emit_meta_tui(shift, meta_indent, tline, style="dim", e=e)
+                        _emit_meta_tui(
+                            shift,
+                            meta_indent,
+                            tline,
+                            style="dim",
+                            e=e,
+                            panel=panel,
+                        )
                     if recorded:
                         _emit_meta_tui(
                             shift,
@@ -2507,8 +2564,8 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                             f"gravado: {recorded}",
                             style="dim",
                             e=e,
+                            panel=panel,
                         )
-                    # Full path, one line, right-aligned (no wrap / no …)
                     try:
                         ui._emit_audio_path_one_line(chunk_num, audio_raw, panel="main")
                     except Exception:
@@ -2520,6 +2577,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                                 style="yellow",
                                 e=e,
                                 nowrap=True,
+                                panel=panel,
                             )
                     for c_id, c_text, c_at in _comment_items(chunk_num):
                         stamp = ui.format_recorded_stamp(c_at) or (c_at or "")
@@ -2530,14 +2588,18 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                             f"comment #{c_id}: {stamp}  {body}",
                             style="yellow_dim",
                             e=e,
+                            panel=panel,
                         )
+                    ui.raw("", panel=panel)
 
-                ui.raw("")  # blank between chunks
-
-            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
-            tot = f"Total: {len(full_trans)}  ·  LC◄ {n_lc}  ·  VOZ► {n_voz}"
-            ui.rich(f"{pad}[bold cyan]{e(_title_line(tot))}[/]")
-            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]")
+            ui.rich(f"{pad}[bold magenta]{e(rule)}[/]", panel="lc")
+            ui.rich(
+                f"{pad}[bold magenta]{e(_title_line(f'Total LC: {n_lc}'))}[/]",
+                panel="lc",
+            )
+            ui.rich(f"{pad}[bold cyan]{e(rule)}[/]", panel="main")
+            tot = f"Total VOZ: {n_voz}  ·  sessão {len(full_trans)} (LC+VOZ)"
+            ui.rich(f"{pad}[bold cyan]{e(_title_line(tot))}[/]", panel="main")
             return
 
         # ------------------------------------------------------------------ #
@@ -2865,30 +2927,62 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         # cod99 — delete comment by primary key (no confirmation)
         comment_id = int(cmd[3:])
         pipeline.delete_comment(comment_id)
-    elif cmd == "cls":
-        # Clear TUI log panel (or classic terminal screen)
+    elif cmd in ("cls", "cls1", "cls2"):
+        # cls  = both Tradução columns + Sistema
+        # cls1 = left  (LiveCaptions #log-lc)
+        # cls2 = right (VOZ #log)
+        side = {"cls1": 1, "cls2": 2}.get(cmd)
         cleared = False
-        if indicator is not None and hasattr(indicator, "clear_log"):
-            try:
-                if hasattr(indicator, "call_from_thread"):
-                    indicator.call_from_thread(indicator.clear_log)
-                else:
-                    indicator.clear_log()
-                cleared = True
-            except Exception:
+        if side is not None:
+            # One-side clear (TUI split only)
+            if indicator is not None and hasattr(indicator, "clear_log_side"):
                 try:
-                    indicator.clear_log()
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator.clear_log_side, side)
+                    else:
+                        indicator.clear_log_side(side)
                     cleared = True
                 except Exception:
-                    pass
-        if not cleared:
-            # Classic: clear terminal
-            try:
-                sys.stdout.write("\033[H\033[J")
-                sys.stdout.flush()
-            except Exception:
-                print("\n" * 40)
-        ui.success("Log limpo." if ui.get_log_sink() else "Tela limpa.")
+                    try:
+                        indicator.clear_log_side(side)
+                        cleared = True
+                    except Exception:
+                        pass
+            if cleared:
+                which = (
+                    "LC (esquerda / LiveCaptions)"
+                    if side == 1
+                    else "VOZ (direita / mic + comandos)"
+                )
+                ui.success(f"Log {which} limpo.")
+            else:
+                ui.warn(
+                    f"[{cmd}] só na TUI (coluna esquerda=cls1, direita=cls2). "
+                    f"Use [cls] para limpar tudo, ou UI_MODE=tui."
+                )
+        else:
+            # Full clear
+            if indicator is not None and hasattr(indicator, "clear_log"):
+                try:
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator.clear_log)
+                    else:
+                        indicator.clear_log()
+                    cleared = True
+                except Exception:
+                    try:
+                        indicator.clear_log()
+                        cleared = True
+                    except Exception:
+                        pass
+            if not cleared:
+                # Classic: clear terminal
+                try:
+                    sys.stdout.write("\033[H\033[J")
+                    sys.stdout.flush()
+                except Exception:
+                    print("\n" * 40)
+            ui.success("Log limpo." if ui.get_log_sink() else "Tela limpa.")
     elif raw_cmd == "GG" or cmd == "gf":
         # Go bottom / footer — scroll log to end (TUI).
         # GG case-sensitive (vim-style); gf lowercase alias.
@@ -3117,7 +3211,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             f"r/rN, rs/rsN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
             f"lc (Live Captions), a/aN (copy audio path), p/pN (open audio folder), "
             f"n (mic), b (bypass voice), x, o, c, l, lo, lt, ld, lav, lv, ctts, "
-            f"co/coN, codN, cls, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
+            f"co/coN, codN, cls/cls1/cls2, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
             indent=3,
         )
 
