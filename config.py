@@ -510,6 +510,7 @@ LIVE_CAPTIONS_TARGET_LANG = _get_str("LIVE_CAPTIONS_TARGET_LANG", "")
 # Optional ONNX: onnxruntime-gpu (CUDA) or onnxruntime (CPU)
 # Drivers: OBS Virtual Cam (Windows/macOS) or v4l2loopback (Linux)
 # Runtime: [cam] toggle · [cam on|off|status]
+# cam on = open physical + virtual cam; cam off = release both (threads stay idle).
 # Docs: docs/webcam-lipsync.md
 WEBCAM_ENABLED = _get_bool("WEBCAM_ENABLED", False)
 # Start already streaming to virtual cam (else wait for [cam on]).

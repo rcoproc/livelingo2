@@ -8,6 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# CI/dev: requirements-dev installs opencv-python-headless. Skip cleanly if missing.
+pytest.importorskip("cv2", reason="opencv required (pip install opencv-python-headless)")
+
 from livelingo.webcam.face_roi import MouthROI
 from livelingo.webcam.mouth_template import (
     MouthTemplate,
