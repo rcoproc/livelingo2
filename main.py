@@ -3412,16 +3412,32 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         f"Webcam start falhou: {svc.snapshot().get('error') or '?'}",
                     )
                     return
-            svc.enable()
-            _cam_auto_sound()
-            _cam_ok(
-                "Webcam lip-sync ON — no Teams escolha OBS Virtual Camera "
-                "(não a webcam física).",
-            )
+            if svc.is_enabled():
+                _cam_info(
+                    "Webcam já ON — física + OBS Virtual Cam ativas. "
+                    "[cam status] · [cam off] libera.",
+                )
+            else:
+                svc.enable()
+                _cam_auto_sound()
+                _cam_ok(
+                    "Webcam ON — abrindo câmera física + OBS Virtual Cam. "
+                    "No Teams escolha OBS Virtual Camera (não a webcam física).",
+                )
             _cam_teams_hint()
         elif sub in ("off", "stop", "disable"):
+            was_on = bool(svc.is_enabled())
             svc.disable()
-            _cam_info("Webcam lip-sync OFF ([cam on] retoma).")
+            if was_on:
+                _cam_ok(
+                    "Webcam OFF — câmera física e OBS Virtual Cam liberadas "
+                    "(LED/device livres). [cam on] retoma sem reiniciar o app.",
+                )
+            else:
+                _cam_info(
+                    "Webcam já OFF — dispositivos de câmera livres. "
+                    "[cam on] liga de novo.",
+                )
         elif sub in (
             "closed",
             "closed on",
@@ -3557,10 +3573,16 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 on = svc.toggle()
                 if on:
                     _cam_auto_sound()
-                    _cam_ok("Webcam lip-sync ON.")
+                    _cam_ok(
+                        "Webcam ON — física + virtual cam. "
+                        "[cam off] libera dispositivos.",
+                    )
                     _cam_teams_hint()
                 else:
-                    _cam_info("Webcam lip-sync OFF.")
+                    _cam_ok(
+                        "Webcam OFF — física + OBS Virtual Cam liberadas. "
+                        "[cam on] retoma.",
+                    )
     elif cmd == "lc" or cmd.startswith("lc "):
         # Live Captions (Windows): pause / show / hide / status
         svc = getattr(pipeline, "caption_service", None)

@@ -340,9 +340,14 @@ _I18N: dict[str, dict[str, str]] = {
             "TTS audio from Cable Out drives the mouth. See `docs/webcam-lipsync.md`."
         ),
         "title_cam_on": "Webcam on",
-        "desc_cam_on": "Start threads (if needed) and enable streaming to the virtual camera.",
+        "desc_cam_on": (
+            "Start threads (if needed) and open physical cam + virtual cam stream."
+        ),
         "title_cam_off": "Webcam off",
-        "desc_cam_off": "Disable streaming (freeze last frame / idle). Threads may keep running.",
+        "desc_cam_off": (
+            "Release physical cam and OBS Virtual Cam so other apps can use them. "
+            "Threads idle; [cam on] re-opens devices (no full app restart)."
+        ),
         "title_cam_status": "Webcam status",
         "desc_cam_status": "FPS, face lock, template, engine, resolution, backend, last error.",
         "title_cam_snap_closed": "Snap closed-mouth photo",
@@ -626,9 +631,14 @@ _I18N: dict[str, dict[str, str]] = {
             "O áudio TTS do Cable Out move a boca. Ver `docs/webcam-lipsync.md`."
         ),
         "title_cam_on": "Webcam on",
-        "desc_cam_on": "Inicia threads (se preciso) e envia frames à câmera virtual.",
+        "desc_cam_on": (
+            "Inicia threads (se preciso) e abre webcam física + câmera virtual."
+        ),
         "title_cam_off": "Webcam off",
-        "desc_cam_off": "Pausa o stream (congela último frame). Threads podem permanecer.",
+        "desc_cam_off": (
+            "Libera webcam física e OBS Virtual Cam para outros apps. "
+            "Threads ficam idle; [cam on] reabre (sem reiniciar o app)."
+        ),
         "title_cam_status": "Status webcam",
         "desc_cam_status": "FPS, face, template, engine, resolução, backend, último erro.",
         "title_cam_snap_closed": "Foto boca fechada",
