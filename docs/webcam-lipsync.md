@@ -188,8 +188,8 @@ Runtime commands:
 | Command | Action |
 |---------|--------|
 | `cam` | Toggle enable (starts threads on first ON) |
-| `cam on` | Stream to virtual cam |
-| `cam off` | Pause stream (hold last frame) |
+| `cam on` | Open physical cam + stream to virtual cam |
+| `cam off` | **Release** physical cam + virtual cam (other apps free; `[cam on]` re-opens) |
 | `cam status` | FPS, face, template, engine, backend, errors |
 | `cam snap closed` | Save closed-mouth photo template (idle) |
 | `cam closed` / **F10** | Toggle closed-mouth photo **manual** ON/OFF |
@@ -211,7 +211,8 @@ Rules:
 1. Never do OpenCV / ONNX on the Textual UI thread.
 2. `push_tts_audio` must not raise or block the playback thread.
 3. If infer is slow, **drop frames** — do not grow queues.
-4. On `cam off`, emit thread re-sends last frame so Meet still sees a picture.
+4. On `cam off`, emit **closes** pyvirtualcam and capture **releases** the physical
+   device (LED off / free for Teams). Threads stay alive for a fast `[cam on]`.
 
 ## Lip engines
 
@@ -256,7 +257,7 @@ See `config.py` / `.env.example` keys `WEBCAM_*`.
 7. If `err=` / `could not be started`: another app is outputting to OBS Virtual Cam (OBS button still On, or zombie process). Stop it, wait 2s, `[cam on]` again (auto-retries).  
 8. If deps missing: reinstall webcam packages **in the same venv** that runs LiveLingo.  
 9. If `capture_ok=false`: free physical cam / try `WEBCAM_DEVICE_INDEX=1`.  
-10. `[cam off]` releases virtual cam; `[cam]` toggles; `[q]` clean shutdown.
+10. `[cam off]` releases physical + virtual cam; `[cam]` toggles; `[q]` full stop.
 
 ## Limits (honest)
 

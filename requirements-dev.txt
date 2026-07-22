@@ -5,3 +5,6 @@
 pytest>=8.0,<9
 pip-audit>=2.7
 ruff>=0.8.0
+# Webcam unit tests (mouth template / face_roi drawing). Headless = no GUI libs in CI.
+# Runtime webcam still uses requirements-webcam.txt (opencv-python + mediapipe + pyvirtualcam).
+opencv-python-headless>=4.8,<5

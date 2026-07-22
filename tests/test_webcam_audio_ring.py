@@ -1,4 +1,9 @@
-"""Unit tests for webcam audio schedule + amplitude engine (no OpenCV required)."""
+"""Unit tests for webcam audio schedule + amplitude / lip helpers.
+
+Audio-ring tests need only numpy. Graphics helpers (sync marker, force closed,
+animate speaking) need OpenCV — provided by requirements-dev
+(opencv-python-headless) in CI.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,18 @@ from livelingo.webcam.audio_ring import AudioRingBuffer
 from livelingo.webcam.engines import AmplitudeEngine, PassthroughEngine, build_engine
 from livelingo.webcam.face_roi import MouthROI
 from livelingo.webcam.service import check_webcam_deps
+
+# Optional: present in CI via requirements-dev; graphics tests skip if absent.
+try:
+    import cv2 as _cv2  # noqa: F401
+
+    HAS_CV2 = True
+except Exception:
+    HAS_CV2 = False
+
+requires_cv2 = pytest.mark.skipif(
+    not HAS_CV2, reason="opencv required (pip install opencv-python-headless)"
+)
 
 
 def test_audio_ring_push_latest_and_rms():
@@ -106,6 +123,7 @@ def test_heuristic_mouth_roi_when_no_mediapipe():
     assert r.x1 > r.x0 and r.y1 > r.y0
 
 
+@requires_cv2
 def test_draw_sync_marker_active_and_idle():
     from livelingo.webcam.face_roi import FaceMouthROI
 
@@ -198,6 +216,7 @@ def _rich_lip_landmarks():
     return pts
 
 
+@requires_cv2
 def test_force_mouth_closed_seals_gap_keeps_texture():
     from livelingo.webcam.face_roi import FaceMouthROI
 
@@ -229,6 +248,7 @@ def test_force_mouth_closed_seals_gap_keeps_texture():
     assert float(out[150:156, 145:175].astype(np.float32).std()) > 5.0
 
 
+@requires_cv2
 def test_animate_speaking_thin_slit_not_black_blob():
     from livelingo.webcam.face_roi import FaceMouthROI
 
@@ -352,3 +372,50 @@ def test_push_tts_audio_accepts_before_enable():
     samples, _ = svc.audio.latest(0.05)
     assert samples.size > 0
     assert svc.audio.is_playing()
+
+
+def test_cam_enable_disable_toggles_without_threads():
+    """[cam on]/[cam off] must flip enabled and drain queues; no device open in unit test."""
+    from livelingo.webcam.service import WebcamLipSyncService, _FramePacket
+
+    class Cfg:
+        WEBCAM_START_ENABLED = False
+        WEBCAM_LIP_ENGINE = "passthrough"
+        WEBCAM_AUDIO_SR = 16000
+        WEBCAM_AUDIO_RING_S = 1.0
+        WEBCAM_AUDIO_PLAY_DELAY_S = 0.0
+        WEBCAM_QUEUE_SIZE = 2
+        WEBCAM_ROI_PAD = 0.3
+        WEBCAM_FEATHER_PX = 5
+        WEBCAM_SYNC_MARKER = False
+
+    logs: list[str] = []
+    svc = WebcamLipSyncService(Cfg(), log=lambda m: logs.append(str(m)))
+    assert not svc.is_enabled()
+    # Idempotent off
+    svc.disable()
+    assert not svc.is_enabled()
+    # On → off cycle
+    svc.enable()
+    assert svc.is_enabled()
+    assert svc.snapshot().get("enabled") is True
+    # Stale frame must be dropped on disable
+    dummy = np.zeros((8, 8, 3), dtype=np.uint8)
+    svc._put_drop_old(svc._q_cap, _FramePacket(frame_bgr=dummy, t_capture=0.0))
+    svc._put_drop_old(svc._q_out, _FramePacket(frame_bgr=dummy, t_capture=0.0))
+    assert svc._q_cap.qsize() == 1
+    assert svc._q_out.qsize() == 1
+    svc.disable()
+    assert not svc.is_enabled()
+    assert svc._q_cap.qsize() == 0
+    assert svc._q_out.qsize() == 0
+    assert svc.snapshot().get("enabled") is False
+    # Toggle path
+    assert svc.toggle() is True
+    assert svc.is_enabled()
+    assert svc.toggle() is False
+    assert not svc.is_enabled()
+    # release messaging present
+    joined = " ".join(logs).lower()
+    assert "disabled" in joined or "off" in joined
+    assert "enabled" in joined or "enable" in joined
