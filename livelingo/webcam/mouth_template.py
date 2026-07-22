@@ -108,11 +108,10 @@ class MouthTemplate:
 
     def with_horizontal_flip(self) -> "MouthTemplate":
         """Mirror image + landmarks (Teams/selfie often opposite of OpenCV)."""
-        try:
-            import cv2
-        except Exception:
+        if self.image_bgr is None or getattr(self.image_bgr, "size", 0) == 0:
             return self
-        img = cv2.flip(self.image_bgr, 1)
+        # Pure numpy so unit tests / CI work without cv2 for this helper.
+        img = np.ascontiguousarray(self.image_bgr[:, ::-1])
         h, w = img.shape[:2]
         lm = np.zeros_like(self.landmarks_xy)
         if self.landmarks_xy is not None and self.landmarks_xy.size:

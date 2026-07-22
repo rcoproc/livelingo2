@@ -19,6 +19,13 @@ Design choices vs naive loop
   so Teams can list the device; frames resize to the vcam size.
 
 Commands: ``[cam]`` toggle · ``[cam on|off|status]``.
+
+Resource lifecycle
+------------------
+* ``[cam on]`` / ``enable()`` — open physical capture + virtual cam (exclusive devices).
+* ``[cam off]`` / ``disable()`` — **release** physical cam and virtual cam so other apps
+  (Teams, OBS, Zoom) can use them; worker threads stay alive for a fast re-enable.
+* ``stop()`` — full teardown (app exit / WEBCAM off). Does not touch audio/STT pipeline.
 """
 
 from __future__ import annotations
@@ -338,17 +345,42 @@ class WebcamLipSyncService:
             self._log("Webcam lip-sync stopped.")
 
     def enable(self) -> None:
+        """Turn stream ON: capture + virtual cam re-open if threads already running."""
+        self._capture_failed.clear()
         self._enabled.set()
         with self._status_lock:
             self._status.enabled = True
-        self._log("Webcam lip-sync ENABLED → virtual cam active.")
+            self._status.error = None
+        self._log(
+            "Webcam lip-sync ENABLED — opening physical cam + virtual cam "
+            "([cam off] libera ambos)."
+        )
         self._log(teams_setup_hint())
 
     def disable(self) -> None:
+        """
+        Turn stream OFF and release exclusive camera devices.
+
+        Capture and emit loops close VideoCapture / pyvirtualcam promptly so
+        Teams/OBS can reclaim them. Threads keep running (idle wait) so
+        ``[cam on]`` is fast — no full ``stop()`` / MediaPipe re-init.
+        Does not affect LiveLingo audio, STT, or TTS paths.
+        """
+        was_on = self._enabled.is_set()
         self._enabled.clear()
         with self._status_lock:
             self._status.enabled = False
-        self._log("Webcam lip-sync DISABLED (threads idle / last frame freeze).")
+            self._status.fps_cap = 0.0
+            self._status.fps_out = 0.0
+        if not was_on:
+            self._log("Webcam already OFF (physical + virtual cam free).")
+            return
+        # Drop stale frames so re-enable does not flash an old picture.
+        self._drain_queues()
+        self._log(
+            "Webcam lip-sync DISABLED — releasing physical cam + virtual cam "
+            "([cam on] reabre)."
+        )
 
     def toggle(self) -> bool:
         """Return new enabled state."""
@@ -897,6 +929,17 @@ class WebcamLipSyncService:
         except queue.Full:
             pass
 
+    def _drain_queues(self) -> None:
+        """Empty frame queues (best-effort; safe while threads idle on disable)."""
+        for q in (self._q_cap, self._q_out):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+                except Exception:
+                    break
+
     def _open_capture(self, idx: int):
         """Open physical camera; on Windows prefer DirectShow then Media Foundation."""
         import cv2
@@ -1140,83 +1183,112 @@ class WebcamLipSyncService:
     # Thread 1 — capture
     # ------------------------------------------------------------------ #
     def _capture_loop(self) -> None:
+        """
+        Open physical cam only while enabled; release on ``[cam off]``.
+
+        Mirrors ``_emit_loop``: exclusive device is not held idle forever.
+        Outer loop re-opens after disable→enable (and after transient open fails).
+        """
         import cv2
 
         idx = int(getattr(self.cfg, "WEBCAM_DEVICE_INDEX", 0) or 0)
         width = int(getattr(self.cfg, "WEBCAM_WIDTH", 0) or 0)
         height = int(getattr(self.cfg, "WEBCAM_HEIGHT", 0) or 0)
         target_fps = float(getattr(self.cfg, "WEBCAM_FPS", 30) or 30)
-
-        # Wait until enabled so we don't grab exclusive camera while idle.
-        while not self._stop.is_set() and not self._enabled.is_set():
-            time.sleep(0.05)
-        if self._stop.is_set():
-            return
-
-        cap = self._open_capture(idx)
-        if cap is None:
-            self._capture_failed.set()
-            with self._status_lock:
-                self._status.capture_ok = False
-            return
-
-        if width > 0:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        if height > 0:
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv2.CAP_PROP_FPS, target_fps)
-        try:
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        except Exception:
-            pass
-
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
-        with self._status_lock:
-            self._status.width = actual_w
-            self._status.height = actual_h
-            self._status.capture_ok = True
-        self._clear_error_if("Cannot open webcam")
-
         frame_interval = 1.0 / max(1.0, target_fps)
-        n = 0
-        t0 = time.perf_counter()
-        fail_reads = 0
-        while not self._stop.is_set():
-            if not self._enabled.is_set():
-                time.sleep(0.05)
-                continue
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                fail_reads += 1
-                if fail_reads == 30:
-                    self._set_error(
-                        f"Webcam read failed (index={idx}). "
-                        "Device busy or disconnected?"
-                    )
-                time.sleep(0.02)
-                continue
-            fail_reads = 0
-            self._put_drop_old(
-                self._q_cap,
-                _FramePacket(frame_bgr=frame, t_capture=time.perf_counter()),
-            )
-            n += 1
-            if n % 30 == 0:
-                dt = time.perf_counter() - t0
-                if dt > 0:
-                    with self._status_lock:
-                        self._status.fps_cap = n / dt
-                n = 0
-                t0 = time.perf_counter()
-            time.sleep(max(0.0, frame_interval * 0.15))
 
-        try:
-            cap.release()
-        except Exception:
-            pass
-        with self._status_lock:
-            self._status.capture_ok = False
+        while not self._stop.is_set():
+            # Wait until enabled so we don't grab exclusive camera while idle.
+            while not self._stop.is_set() and not self._enabled.is_set():
+                time.sleep(0.05)
+            if self._stop.is_set():
+                break
+
+            self._capture_failed.clear()
+            cap = self._open_capture(idx)
+            if cap is None:
+                self._capture_failed.set()
+                with self._status_lock:
+                    self._status.capture_ok = False
+                    self._status.fps_cap = 0.0
+                # Retry while still ON (device may free up); bail if user turns off.
+                for _ in range(25):
+                    if self._stop.is_set() or not self._enabled.is_set():
+                        break
+                    time.sleep(0.1)
+                continue
+
+            if width > 0:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            if height > 0:
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, target_fps)
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+            with self._status_lock:
+                self._status.width = actual_w
+                self._status.height = actual_h
+                self._status.capture_ok = True
+                self._status.fps_cap = 0.0
+            self._clear_error_if("Cannot open webcam")
+            self._clear_error_if("Webcam read failed")
+            self._log(
+                f"Capture LIVE index={idx} {actual_w}x{actual_h} "
+                f"([cam off] libera a webcam física)."
+            )
+
+            n = 0
+            t0 = time.perf_counter()
+            fail_reads = 0
+            try:
+                while not self._stop.is_set() and self._enabled.is_set():
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        fail_reads += 1
+                        if fail_reads == 30:
+                            self._set_error(
+                                f"Webcam read failed (index={idx}). "
+                                "Device busy or disconnected?"
+                            )
+                        time.sleep(0.02)
+                        continue
+                    fail_reads = 0
+                    self._put_drop_old(
+                        self._q_cap,
+                        _FramePacket(
+                            frame_bgr=frame, t_capture=time.perf_counter()
+                        ),
+                    )
+                    n += 1
+                    if n % 30 == 0:
+                        dt = time.perf_counter() - t0
+                        if dt > 0:
+                            with self._status_lock:
+                                self._status.fps_cap = n / dt
+                        n = 0
+                        t0 = time.perf_counter()
+                    time.sleep(max(0.0, frame_interval * 0.15))
+            finally:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = None
+                with self._status_lock:
+                    self._status.capture_ok = False
+                    self._status.fps_cap = 0.0
+                if not self._stop.is_set():
+                    self._log(
+                        "Capture released — webcam física livre "
+                        "([cam on] reabre)."
+                    )
+                # Brief settle so Windows can hand the device to another app.
+                time.sleep(0.15)
 
     # ------------------------------------------------------------------ #
     # Thread 2 — ROI + inference
