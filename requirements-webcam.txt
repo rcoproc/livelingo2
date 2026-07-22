@@ -1,0 +1,16 @@
+# Optional: Webcam lip-sync → virtual camera (Teams / Meet / Zoom)
+# Install:  pip install -r requirements-webcam.txt
+#
+# Windows also needs OBS Studio → Start Virtual Camera once:
+#   https://obsproject.com/
+# Linux: sudo modprobe v4l2loopback devices=1
+#
+# Docs: docs/webcam-lipsync.md
+# Runtime: WEBCAM_ENABLED=true · [cam on] · [cam status]
+
+opencv-python>=4.8
+mediapipe>=0.10.9
+pyvirtualcam>=0.11.0
+# Optional ONNX lip model (CUDA preferred):
+# onnxruntime-gpu>=1.17.0
+# onnxruntime>=1.17.0
