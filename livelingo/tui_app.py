@@ -1324,6 +1324,15 @@ _FOOTER_I18N = {
         "bypass_off_label": "F2 Transl. audio",
         "bypass_tooltip_on": "BYPASS ON — your raw voice → output (no translation). F2 / click / [b] to turn off.",
         "bypass_tooltip_off": "BYPASS OFF — translated audio path. F2 / click / [b] to send your voice directly.",
+        # F5: auto-scroll lock for Tradução LC + VOZ panes
+        "scroll_on_label": "F5 Auto↓ ON",
+        "scroll_off_label": "F5 Auto↓ OFF",
+        "scroll_tooltip_on": "AUTO-SCROLL ON — new LC/VOZ lines jump to bottom. F5 / click to lock scroll (read upper history).",
+        "scroll_tooltip_off": "AUTO-SCROLL OFF — LC/VOZ stay put while new lines arrive (chunks/commands). F5 / click to resume follow.",
+        "scroll_footer_on": "Auto↓ ON",
+        "scroll_footer_off": "Auto↓ OFF",
+        "scroll_log_on": "[F5] Auto-scroll ON — Tradução LC+VOZ follow new lines.",
+        "scroll_log_off": "[F5] Auto-scroll OFF — Tradução LC+VOZ scroll locked (chunks won't yank view).",
         # Pipeline activity bar (left of command box)
         "pipe_mic": "Mic",
         "pipe_stt": "STT",
@@ -1381,7 +1390,8 @@ _FOOTER_I18N = {
             "[bold green]Copy:[/] selection [bold]Ctrl+C[/]  ·  "
             "focused log [bold]Ctrl+Shift+C[/]  ·  "
             "bypass [bold]F2[/]  ·  "
-            "search [bold]/text[/] on focused pane  ·  F3 tabs"
+            "auto-scroll [bold]F5[/]  ·  "
+            "search [bold]/text[/]  ·  F3 tabs"
         ),
         "boot_voz_5": (
             "[dim]Split LC|VOZ: drag ║ · Expand top-right of this pane · "
@@ -1472,6 +1482,14 @@ _FOOTER_I18N = {
         "bypass_off_label": "F2 Áudio trad.",
         "bypass_tooltip_on": "BYPASS ON — sua voz vai direto à saída (sem tradução). F2 / clique / [b] para desligar.",
         "bypass_tooltip_off": "BYPASS OFF — caminho de áudio traduzido. F2 / clique / [b] para enviar sua voz direta.",
+        "scroll_on_label": "F5 Auto↓ ON",
+        "scroll_off_label": "F5 Auto↓ OFF",
+        "scroll_tooltip_on": "AUTO-SCROLL ON — novas linhas LC/VOZ vão ao fim. F5 / clique para travar rolagem (ler histórico).",
+        "scroll_tooltip_off": "AUTO-SCROLL OFF — LC/VOZ ficam no lugar com linhas novas (chunks/comandos). F5 / clique para voltar a seguir.",
+        "scroll_footer_on": "Auto↓ ON",
+        "scroll_footer_off": "Auto↓ OFF",
+        "scroll_log_on": "[F5] Auto-scroll ON — Tradução LC+VOZ seguem linhas novas.",
+        "scroll_log_off": "[F5] Auto-scroll OFF — Tradução LC+VOZ rolagem travada (chunks não puxam a vista).",
         "pipe_mic": "Mic",
         "pipe_stt": "STT",
         "pipe_tr": "Trad",
@@ -1527,7 +1545,8 @@ _FOOTER_I18N = {
             "[bold green]Copiar:[/] seleção [bold]Ctrl+C[/]  ·  "
             "log do painel focado [bold]Ctrl+Shift+C[/]  ·  "
             "bypass [bold]F2[/]  ·  "
-            "busca [bold]/texto[/] no painel focado  ·  F3 abas"
+            "auto-scroll [bold]F5[/]  ·  "
+            "busca [bold]/texto[/]  ·  F3 abas"
         ),
         "boot_voz_5": (
             "[dim]Split LC|VOZ: arraste ║ · Expandir no canto superior direito "
@@ -1602,6 +1621,10 @@ _FOOTER_I18N = {
         "bypass_off_label": "F2 Audio trad.",
         "bypass_tooltip_on": "BYPASS ON — tu voz va directa a la salida (sin traducción). F2 / clic / [b] para apagar.",
         "bypass_tooltip_off": "BYPASS OFF — ruta de audio traducido. F2 / clic / [b] para voz directa.",
+        "scroll_on_label": "F5 Auto↓ ON",
+        "scroll_off_label": "F5 Auto↓ OFF",
+        "scroll_footer_on": "Auto↓ ON",
+        "scroll_footer_off": "Auto↓ OFF",
     },
     "fr": {
         "sentence": "Phrase",
@@ -2458,6 +2481,41 @@ class LiveLingoApp(App):
         background: #38b05a;
     }
     /*
+     * F5 auto-scroll — chip next to F2 on #bypass-row.
+     * Green = follow bottom (default); amber = locked (no yank on new lines).
+     */
+    #cmd-scroll {
+        width: auto;
+        min-width: 12;
+        max-width: 18;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        margin: 0 0 0 1;
+        padding: 0 1;
+        text-style: bold;
+        content-align: center middle;
+        overflow: hidden;
+        border: none;
+        background: #2d9a4e;
+        color: #ffffff;
+    }
+    #cmd-scroll.-on {
+        background: #2d9a4e;
+        color: #ffffff;
+    }
+    #cmd-scroll.-off {
+        background: #c47a12;
+        color: #ffffff;
+    }
+    #cmd-scroll:hover {
+        text-style: bold underline;
+        background: #38b05a;
+    }
+    #cmd-scroll.-off:hover {
+        background: #d4891a;
+    }
+    /*
      * Command box — takes most of the footer row (1fr); pipe + TTS stay auto.
      * Gutters via #cmd-flex-l/r (2 cols each).
      */
@@ -2536,8 +2594,9 @@ class LiveLingoApp(App):
     """
 
     # Ctrl+C = selection (or full log if none); Ctrl+Shift+C = full log.
-    # F2 = voice bypass (compact badge in Tradução header, above LC|VOZ sash).
+    # F2 = voice bypass (compact badge above LC|VOZ sash).
     # F3 = cycle Tradução → Sistema → Novidades → …
+    # F4 = compact UI · F5 = auto-scroll lock for Tradução LC+VOZ
     BINDINGS = [
         Binding("ctrl+c", "copy_selection", "Copy", show=True, priority=True),
         Binding(
@@ -2552,6 +2611,13 @@ class LiveLingoApp(App):
         Binding("f2", "toggle_bypass", "Bypass", show=True, priority=True),
         Binding("f3", "toggle_log_tab", "Log tab", show=True, priority=True),
         Binding("f4", "toggle_compact_ui", "Compact UI", show=True, priority=True),
+        Binding(
+            "f5",
+            "toggle_trad_auto_scroll",
+            "Auto↓ ON",
+            show=True,
+            priority=True,
+        ),
     ]
 
     ALLOW_SELECT = True
@@ -2590,6 +2656,9 @@ class LiveLingoApp(App):
         self._mic_muted = False
         self._mic_mute_name: str = ""
         self._passthrough = False
+        # F5: when True (default), new Tradução LC/VOZ lines force scroll-to-bottom.
+        # When False, both panes keep viewport (chunks / command output won't yank).
+        self._trad_follow_scroll: bool = True
         self._log_queue: queue.Queue = queue.Queue()
         self._cached_log_width = 120
         self._cached_log_width_lc = 60
@@ -2719,13 +2788,19 @@ class LiveLingoApp(App):
         _cmds_label = _fi18n.get(
             "tab_commands", command_help.tab_title(_source_lang_code())
         )
-        # F2 chip: own row under captions / above tabs (never injected into Tabs)
+        # F2 + F5 chips: own row under captions / above tabs (never into Tabs)
         with Horizontal(id="bypass-row"):
             yield Static("", id="bypass-pad-l", markup=False)
             yield Static(
                 _fi18n.get("bypass_off_label", "F2 Transl. audio"),
                 id="cmd-bypass",
                 classes="-off",
+                markup=False,
+            )
+            yield Static(
+                _fi18n.get("scroll_on_label", "F5 Auto↓ ON"),
+                id="cmd-scroll",
+                classes="-on",
                 markup=False,
             )
             yield Static("", id="bypass-pad-r", markup=False)
@@ -2850,6 +2925,10 @@ class LiveLingoApp(App):
         self._paint_pipe_bar(force=True)
         try:
             self._refresh_bypass_badge()
+        except Exception:
+            pass
+        try:
+            self._refresh_scroll_follow_ui()
         except Exception:
             pass
         try:
@@ -3502,19 +3581,67 @@ class LiveLingoApp(App):
     def _active_log_widget(self):
         return self._resolve_log_widget(self._active_log_panel())
 
-    def _follow_log_bottom(self, log) -> None:
-        """
-        Re-enable live follow and jump to the end of a log panel.
+    def _trad_auto_scroll_enabled(self) -> bool:
+        """F5 master switch: follow-to-bottom for Tradução LC + VOZ panes."""
+        return bool(getattr(self, "_trad_follow_scroll", True))
 
-        Search (/) and gg set auto_scroll=False; Tradução panes still stick
-        to the bottom when new LC/VOZ lines arrive.
-        """
+    def _is_trad_panel(self, panel: str | None) -> bool:
+        """True for Tradução sub-panes (LC left / VOZ right)."""
+        panel_key = str(panel or "main").lower()
+        return panel_key in (
+            "main",
+            "traducao",
+            "tradução",
+            "translation",
+            "voz",
+            "lc",
+            "main-lc",
+            "livecaptions",
+            "captions",
+            "caption",
+        )
+
+    def _set_log_auto_scroll(self, log, enabled: bool) -> None:
         if log is None:
             return
         try:
-            log.auto_scroll = True
+            log.auto_scroll = bool(enabled)
         except Exception:
             pass
+
+    def _apply_trad_auto_scroll_flags(self) -> None:
+        """Sync RichLog.auto_scroll on both Tradução panes with F5 state."""
+        follow = self._trad_auto_scroll_enabled()
+        for panel in ("main", "lc"):
+            self._set_log_auto_scroll(self._resolve_log_widget(panel), follow)
+
+    def _follow_log_bottom(self, log, *, force: bool = False) -> None:
+        """
+        Re-enable live follow and jump to the end of a log panel.
+
+        For Tradução panes (LC/VOZ), respects F5 `_trad_follow_scroll` unless
+        force=True (explicit user jump such as GG/gf). Search (/) and gg set
+        auto_scroll=False; with F5 ON, new lines still stick to the bottom.
+        """
+        if log is None:
+            return
+        # Detect Tradução pane by id/role so F5 applies only there.
+        is_trad = False
+        try:
+            lid = str(getattr(log, "id", "") or "")
+            role = str(getattr(log, "pane_role", "") or "")
+            is_trad = lid in ("log", "log-lc") or role in ("lc", "voz")
+        except Exception:
+            is_trad = False
+        if is_trad and not force and not self._trad_auto_scroll_enabled():
+            self._set_log_auto_scroll(log, False)
+            return
+        try:
+            log.auto_scroll = True if (not is_trad or self._trad_auto_scroll_enabled()) else False
+        except Exception:
+            pass
+        if is_trad and not self._trad_auto_scroll_enabled() and not force:
+            return
         for kwargs in (
             {"animate": False, "immediate": True},
             {"animate": False},
@@ -3532,30 +3659,19 @@ class LiveLingoApp(App):
             log.scroll_to(0, y, animate=False)
         except Exception:
             pass
+        # After an explicit force jump with F5 OFF, keep auto_scroll disabled.
+        if is_trad and not self._trad_auto_scroll_enabled():
+            self._set_log_auto_scroll(log, False)
 
     def post_log(self, kind: str, text: str, panel: str = "main") -> None:
         """Must run on the UI thread (or via _drain_log_queue). panel=main|lc|app."""
         log = self._resolve_log_widget(panel)
         if log is None:
             return
-        panel_key = str(panel or "main").lower()
-        is_trad = panel_key in (
-            "main",
-            "traducao",
-            "tradução",
-            "translation",
-            "voz",
-            "lc",
-            "main-lc",
-            "livecaptions",
-            "captions",
-            "caption",
-        )
+        is_trad = self._is_trad_panel(panel)
         if is_trad:
-            try:
-                log.auto_scroll = True
-            except Exception:
-                pass
+            # F5 OFF → keep viewport; RichLog.write must not auto scroll_end.
+            self._set_log_auto_scroll(log, self._trad_auto_scroll_enabled())
         if text is None:
             return
         if text == "" or text.strip() == "":
@@ -3889,8 +4005,8 @@ class LiveLingoApp(App):
         Mic VAD: speech started/stopped.
 
         When speech starts, force the Tradução tab so Heard/Translated are
-        visible even if the user was on Sistema / Novidades / Lista de comandos,
-        and re-enable auto-scroll so new lines stick to the bottom.
+        visible even if the user was on Sistema / Novidades / Lista de comandos.
+        Follow-to-bottom only when F5 auto-scroll is ON.
         """
         speaking = bool(speaking)
         started = speaking and not self._speaking
@@ -3918,10 +4034,12 @@ class LiveLingoApp(App):
                 self.focus_log_tab("main")
             except Exception:
                 pass
-        try:
-            self._follow_log_bottom(self._resolve_log_widget("main"))
-        except Exception:
-            pass
+        # F5 OFF: do not yank VOZ to bottom when speech starts.
+        if self._trad_auto_scroll_enabled():
+            try:
+                self._follow_log_bottom(self._resolve_log_widget("main"))
+            except Exception:
+                pass
 
     def set_sound_on(self, on: bool) -> None:
         self._sound_on = bool(on)
@@ -4106,6 +4224,162 @@ class LiveLingoApp(App):
             pass
         self._bypass_badge_label = label
 
+    def _refresh_scroll_follow_ui(self) -> None:
+        """
+        Update F5 badge + Footer binding label for Tradução auto-scroll state.
+
+        Green chip + footer \"Auto↓ ON\" = follow; amber + \"Auto↓ OFF\" = locked.
+        """
+        follow = self._trad_auto_scroll_enabled()
+        t = _footer_i18n()
+        label = t.get(
+            "scroll_on_label" if follow else "scroll_off_label",
+            "F5 Auto↓ ON" if follow else "F5 Auto↓ OFF",
+        )
+        tip = t.get(
+            "scroll_tooltip_on" if follow else "scroll_tooltip_off",
+            "",
+        )
+        footer_desc = t.get(
+            "scroll_footer_on" if follow else "scroll_footer_off",
+            "Auto↓ ON" if follow else "Auto↓ OFF",
+        )
+        try:
+            badge = self.query_one("#cmd-scroll", Static)
+        except Exception:
+            badge = None
+        if badge is not None:
+            try:
+                badge.update(label)
+            except Exception:
+                pass
+            try:
+                badge.set_class(follow, "-on")
+                badge.set_class(not follow, "-off")
+            except Exception:
+                try:
+                    if follow:
+                        badge.remove_class("-off")
+                        badge.add_class("-on")
+                    else:
+                        badge.remove_class("-on")
+                        badge.add_class("-off")
+                except Exception:
+                    pass
+            try:
+                if tip:
+                    badge.tooltip = tip
+            except Exception:
+                pass
+        # Footer key text (below command box) mirrors ON/OFF.
+        # Replace Binding in place (frozen dataclass; App.bind would stack).
+        try:
+            from textual.binding import Binding
+
+            bmap = getattr(self, "_bindings", None)
+            key_map = getattr(bmap, "key_to_bindings", None) if bmap else None
+            if isinstance(key_map, dict):
+                old_list = list(key_map.get("f5") or [])
+                new_list = []
+                replaced = False
+                for b in old_list:
+                    act = str(getattr(b, "action", "") or "")
+                    if "toggle_trad_auto_scroll" in act:
+                        new_list.append(
+                            Binding(
+                                key=getattr(b, "key", "f5") or "f5",
+                                action=act,
+                                description=footer_desc,
+                                show=True,
+                                key_display=getattr(b, "key_display", None),
+                                priority=True,
+                                tooltip=tip or getattr(b, "tooltip", "") or "",
+                                id=getattr(b, "id", None),
+                                system=bool(getattr(b, "system", False)),
+                                group=getattr(b, "group", None),
+                            )
+                        )
+                        replaced = True
+                    else:
+                        new_list.append(b)
+                if not replaced:
+                    new_list.append(
+                        Binding(
+                            "f5",
+                            "toggle_trad_auto_scroll",
+                            footer_desc,
+                            show=True,
+                            priority=True,
+                            tooltip=tip or "",
+                        )
+                    )
+                key_map["f5"] = new_list
+        except Exception:
+            pass
+        try:
+            self.refresh_bindings()
+        except Exception:
+            pass
+        # Keep pane flags in sync (write path also sets per call).
+        try:
+            self._apply_trad_auto_scroll_flags()
+        except Exception:
+            pass
+
+    def _toggle_trad_auto_scroll_from_ui(self) -> None:
+        """F5 / click #cmd-scroll — toggle Tradução follow-to-bottom. UI thread."""
+        self._trad_follow_scroll = not self._trad_auto_scroll_enabled()
+        follow = self._trad_follow_scroll
+        try:
+            self._refresh_scroll_follow_ui()
+        except Exception:
+            pass
+        t = _footer_i18n()
+        if follow:
+            # Re-enabling: jump both panes to end so live follow is useful.
+            for panel in ("main", "lc"):
+                try:
+                    self._follow_log_bottom(
+                        self._resolve_log_widget(panel), force=True
+                    )
+                except Exception:
+                    pass
+            # force=True left auto_scroll True; re-apply F5 ON flags.
+            try:
+                self._apply_trad_auto_scroll_flags()
+            except Exception:
+                pass
+            msg = t.get(
+                "scroll_log_on",
+                "[F5] Auto-scroll ON — Tradução LC+VOZ follow new lines.",
+            )
+            try:
+                self.notify(msg, severity="information", timeout=3)
+            except Exception:
+                self.post_log("info", msg, panel="app")
+        else:
+            msg = t.get(
+                "scroll_log_off",
+                "[F5] Auto-scroll OFF — Tradução scroll locked.",
+            )
+            try:
+                self.notify(msg, severity="warning", timeout=3)
+            except Exception:
+                self.post_log("warn", msg, panel="app")
+
+    def action_toggle_trad_auto_scroll(self) -> None:
+        """Footer/F5: toggle Tradução auto-scroll (same as click on F5 badge)."""
+        self._toggle_trad_auto_scroll_from_ui()
+
+    @on(events.Click, "#cmd-scroll")
+    def on_scroll_badge_click(self, event: events.Click) -> None:
+        """Toggle Tradução auto-scroll when the F5 badge is clicked."""
+        try:
+            event.stop()
+        except Exception:
+            pass
+        self._toggle_trad_auto_scroll_from_ui()
+
     def _toggle_bypass_from_ui(self) -> None:
         """Click / F2 / [b] on #cmd-bypass — voice bypass toggle. UI thread."""
         try:
@@ -4163,6 +4437,10 @@ class LiveLingoApp(App):
             pass
         try:
             self._refresh_bypass_badge()
+        except Exception:
+            pass
+        try:
+            self._refresh_scroll_follow_ui()
         except Exception:
             pass
         try:
@@ -4664,14 +4942,19 @@ class LiveLingoApp(App):
     def scroll_log_footer(self) -> None:
         """
         [GG]/[gf] Go bottom — jump to end of the active log tab.
-        Re-enables auto_scroll for live follow.
+        Explicit user jump (always scrolls once). Tradução panes leave
+        auto_scroll according to F5 state (do not re-enable if F5 OFF).
         Must run on UI thread.
         """
         log = self._log_widget()
         if log is None:
             return
+        panel = self._active_log_panel()
+        is_trad = self._is_trad_panel(panel)
+        # Non-trad: keep old behavior (follow on). Trad: respect F5.
+        want_follow = True if not is_trad else self._trad_auto_scroll_enabled()
         try:
-            log.auto_scroll = True
+            log.auto_scroll = bool(want_follow)
         except Exception:
             pass
         for kwargs in (
@@ -4694,6 +4977,9 @@ class LiveLingoApp(App):
                 log.scroll_y = int(getattr(log, "max_scroll_y", 0) or 0)
             except Exception:
                 pass
+        # Explicit jump with F5 OFF: re-lock so next write doesn't stick.
+        if is_trad and not want_follow:
+            self._set_log_auto_scroll(log, False)
         try:
             log.refresh(layout=True)
         except Exception:

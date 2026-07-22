@@ -58,6 +58,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "f2", "group": "keys", "token": "F2", "sort": "f2"},
     {"id": "f3", "group": "keys", "token": "F3", "sort": "f3"},
     {"id": "f4", "group": "keys", "token": "F4", "sort": "f4"},
+    {"id": "f5", "group": "keys", "token": "F5", "sort": "f5"},
     {"id": "search", "group": "keys", "token": "/", "sort": "search"},
     {"id": "search_n", "group": "keys", "token": "/n", "sort": "search-n"},
     {"id": "search_p", "group": "keys", "token": "/p", "sort": "search-p"},
@@ -218,6 +219,14 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "Cycles tabs: **Tradução → Sistema → Novidades → Command list → …**.",
         "title_f4": "Compact UI (F4)",
         "desc_f4": "Toggle compact UI (hide the command menu strip; command line stays). Same as `u`.",
+        "title_f5": "Auto-scroll Tradução (F5)",
+        "desc_f5": (
+            "Toggle **auto-scroll** for both Tradução panes (**LC** left + **VOZ** right). "
+            "ON (default, green badge) = new lines / post-chunk / command output jump to the bottom. "
+            "OFF (amber badge) = viewport stays put so you can read upper history while live lines still append. "
+            "Footer key shows `Auto↓ ON` / `Auto↓ OFF`. Click the F5 chip or press **F5**. "
+            "`GG`/`gf` still jump to the end once without re-enabling follow when OFF."
+        ),
         "title_search": "Search in log (vim-style)",
         "desc_search": (
             "Type `/text` and Enter to search the **focused** log pane (case-insensitive). "
@@ -469,6 +478,14 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "Cicla as abas: **Tradução → Sistema → Novidades → Lista de comandos → …**.",
         "title_f4": "UI compacta (F4)",
         "desc_f4": "Alterna UI compacta (esconde o menu de comandos; a linha de comando permanece). Igual a `u`.",
+        "title_f5": "Auto-scroll Tradução (F5)",
+        "desc_f5": (
+            "Alterna o **auto-scroll** dos dois painéis de Tradução (**LC** esquerda + **VOZ** direita). "
+            "ON (padrão, badge verde) = linhas novas / pós-chunk / saída de comandos vão ao fim. "
+            "OFF (badge âmbar) = a vista fica onde você deixou — dá para ler o histórico enquanto chegam linhas. "
+            "No rodapé: `Auto↓ ON` / `Auto↓ OFF`. Clique no chip F5 ou pressione **F5**. "
+            "`GG`/`gf` ainda saltam ao fim uma vez sem religar o follow se estiver OFF."
+        ),
         "title_search": "Buscar no log (estilo vim)",
         "desc_search": (
             "Digite `/texto` e Enter para buscar no painel de log **focado** (sem diferenciar maiúsculas). "
@@ -683,6 +700,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "Cicla: **Tradução → Sistema → Novidades → Lista de comandos → …**.",
         "title_f4": "UI compacta (F4)",
         "desc_f4": "Oculta el menú de comandos; mantiene la línea de entrada. Igual que `u`.",
+        "title_f5": "Auto-scroll Tradução (F5)",
+        "desc_f5": (
+            "Activa/desactiva el **auto-scroll** de ambos paneles de Tradução (LC + VOZ). "
+            "ON = nuevas líneas van al final. OFF = la vista se queda fija. **F5** o clic en el chip."
+        ),
         "title_up_down": "Historial de comandos",
         "desc_up_down": "↑ / ↓ recorren comandos anteriores en el campo de comando.",
         "title_c": "Exportar Markdown",
@@ -811,6 +833,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "Cycle : **Tradução → Sistema → Novidades → Liste des commandes → …**.",
         "title_f4": "UI compacte (F4)",
         "desc_f4": "Masque le menu ; garde la ligne de commande. Comme `u`.",
+        "title_f5": "Auto-scroll Tradução (F5)",
+        "desc_f5": (
+            "Bascule l'**auto-scroll** des deux panneaux Tradução (LC + VOZ). "
+            "ON = nouvelles lignes en bas. OFF = vue figée. **F5** ou clic sur le chip."
+        ),
         "title_up_down": "Historique des commandes",
         "desc_up_down": "↑ / ↓ parcourent les commandes précédentes.",
         "title_c": "Exporter Markdown",
@@ -918,6 +945,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "Zyklus: **Tradução → Sistema → Novidades → Befehlsliste → …**.",
         "title_f4": "Kompakte UI (F4)",
         "desc_f4": "Menü ausblenden; Eingabezeile bleibt. Wie `u`.",
+        "title_f5": "Auto-Scroll Tradução (F5)",
+        "desc_f5": (
+            "Schaltet **Auto-Scroll** für beide Tradução-Panels (LC + VOZ). "
+            "ON = neue Zeilen ans Ende. OFF = Ansicht bleibt. **F5** oder Klick auf den Chip."
+        ),
         "title_up_down": "Befehlshistorie",
         "desc_up_down": "↑ / ↓ blättern frühere Befehle.",
         "title_c": "Markdown exportieren",
@@ -1025,6 +1057,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "Ciclo: **Tradução → Sistema → Novidades → Elenco comandi → …**.",
         "title_f4": "UI compatta (F4)",
         "desc_f4": "Nasconde il menu; mantiene la riga di comando. Come `u`.",
+        "title_f5": "Auto-scroll Tradução (F5)",
+        "desc_f5": (
+            "Attiva/disattiva l'**auto-scroll** di entrambi i pannelli Tradução (LC + VOZ). "
+            "ON = nuove righe in fondo. OFF = vista bloccata. **F5** o clic sul chip."
+        ),
         "title_up_down": "Cronologia comandi",
         "desc_up_down": "↑ / ↓ scorrono i comandi precedenti.",
         "title_c": "Esporta Markdown",
@@ -1132,6 +1169,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "循环：**Tradução → Sistema → Novidades → 命令列表 → …**。",
         "title_f4": "紧凑界面 (F4)",
         "desc_f4": "隐藏命令菜单条，保留输入行。等同 `u`。",
+        "title_f5": "自动滚动翻译窗 (F5)",
+        "desc_f5": (
+            "切换 **Tradução** 左右面板（LC + VOZ）的自动滚到底。 "
+            "ON = 新行跟到底；OFF = 视口锁定。**F5** 或点击徽章。"
+        ),
         "title_up_down": "命令历史",
         "desc_up_down": "在命令框中用 ↑ / ↓ 浏览历史命令。",
         "title_c": "导出 Markdown",
@@ -1239,6 +1281,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f3": "循環: **Tradução → Sistema → Novidades → コマンド一覧 → …**。",
         "title_f4": "コンパクト UI (F4)",
         "desc_f4": "メニューを隠し入力行は残す。`u` と同じ。",
+        "title_f5": "Tradução 自動スクロール (F5)",
+        "desc_f5": (
+            "Tradução 両ペイン（LC + VOZ）の**自動下端スクロール**を切替。 "
+            "ON = 新行で下へ。OFF = 位置固定。**F5** またはチップをクリック。"
+        ),
         "title_up_down": "コマンド履歴",
         "desc_up_down": "コマンド欄で ↑ / ↓ で履歴を辿る。",
         "title_c": "Markdown 書き出し",

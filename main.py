@@ -532,13 +532,25 @@ def _print_f1_help(pipeline=None):
     _print_streaming_info(indent=m)
 
     # --- Engines (same messages as _build_translator / STT / TTS startup) ---
-    if pipeline is not None and isinstance(
-        getattr(pipeline, "translator", None), LLMTranslator
-    ):
+    from livelingo.failover import (
+        FailoverTranscriber,
+        FailoverTranslator,
+        translator_uses_llm,
+        transcriber_uses_groq,
+    )
+
+    tr = getattr(pipeline, "translator", None) if pipeline is not None else None
+    st = getattr(pipeline, "transcriber", None) if pipeline is not None else None
+    if pipeline is not None and translator_uses_llm(tr):
         ui.success(
             f"LLM translation ready (Groq / {cfg.GROQ_MODEL}).",
             indent=m,
         )
+        if isinstance(tr, FailoverTranslator) and tr.secondary is not None:
+            ui.dim(
+                f"   HA: fallback → {tr.secondary_name} on LLM failure",
+                indent=m,
+            )
     else:
         ui.info(
             "Translation engine: Google (free). Tip: add a free GROQ_API_KEY in "
@@ -546,9 +558,7 @@ def _print_f1_help(pipeline=None):
             indent=m,
         )
 
-    if pipeline is not None and isinstance(
-        getattr(pipeline, "transcriber", None), GroqTranscriber
-    ):
+    if pipeline is not None and transcriber_uses_groq(st):
         ui.info(
             f"Speech-to-text: Groq cloud ({cfg.GROQ_STT_MODEL}).",
             indent=m,
@@ -557,6 +567,11 @@ def _print_f1_help(pipeline=None):
             f"Speech-to-text ready (Groq cloud / {cfg.GROQ_STT_MODEL}).",
             indent=m,
         )
+        if isinstance(st, FailoverTranscriber):
+            ui.dim(
+                f"   HA: fallback → {st.secondary_name} on Groq STT failure",
+                indent=m,
+            )
     else:
         ui.success("Speech-to-text ready (local Whisper).", indent=m)
 
@@ -661,34 +676,93 @@ def _print_device_overview(in_idx, in_name, out_idx, out_name):
 def _build_translator():
     """
     Pick the translation engine from config and return an object with a
-    `.translate(text)` method. For the LLM engine, do a quick self-test so a
-    bad key / model name fails fast with a clear message.
+    ``.translate(text)`` method.
+
+    P0 HA: when LLM is primary and TRANSLATION_FALLBACK=google, wrap in
+    FailoverTranslator so mid-session Groq failures switch to Google without
+    killing the app. Self-test failures no longer ``sys.exit`` if a fallback
+    exists.
     """
+    from livelingo.failover import FailoverTranslator
+
     engine = (cfg.TRANSLATION_ENGINE or "auto").lower()
     if engine == "auto":
         engine = "llm" if cfg.GROQ_API_KEY else "google"
 
-    if engine == "llm":
-        if not cfg.GROQ_API_KEY:
-            _log_error("TRANSLATION_ENGINE=llm but GROQ_API_KEY is empty.")
+    fb = (getattr(cfg, "TRANSLATION_FALLBACK", "google") or "google").lower()
+    want_google_fb = fb == "google"
+
+    def _google():
+        return Translator(cfg)
+
+    # Pure Google path (no LLM requested).
+    if engine == "google":
+        _log_info(
+            "Translation engine: Google (free). Tip: add a free GROQ_API_KEY in "
+            ".env for much more natural results."
+        )
+        return _google()
+
+    # LLM requested.
+    if engine == "llm" and not cfg.GROQ_API_KEY:
+        _log_error("TRANSLATION_ENGINE=llm but GROQ_API_KEY is empty.")
+        if want_google_fb:
+            _log_warn("Falling back to Google Translate (TRANSLATION_FALLBACK=google).")
             print(GROQ_KEY_HELP)
-            sys.exit(1)
-        translator = LLMTranslator(cfg)
+            return _google()
+        print(GROQ_KEY_HELP)
+        sys.exit(1)
+
+    primary = None
+    sample = None
+    if cfg.GROQ_API_KEY and engine == "llm":
+        primary = LLMTranslator(cfg)
         try:
-            sample = translator.translate("Bonjour, ceci est un test.")
+            sample = primary.translate("Bonjour, ceci est un test.")
+            _log_success(f"LLM translation ready (Groq / {cfg.GROQ_MODEL}).")
+            _log_dim(f'   self-test: "Bonjour, ceci est un test." -> "{sample}"')
         except LLMError as exc:
             _log_error(f"Groq self-test failed: {exc}")
-            print(GROQ_KEY_HELP)
-            sys.exit(1)
-        _log_success(f"LLM translation ready (Groq / {cfg.GROQ_MODEL}).")
-        _log_dim(f'   self-test: "Bonjour, ceci est un test." -> "{sample}"')
-        return translator
+            primary = None
+            if want_google_fb:
+                _log_warn(
+                    "Using Google Translate only this session "
+                    "(LLM self-test failed). Restart after fixing GROQ_API_KEY."
+                )
+                print(GROQ_KEY_HELP)
+            else:
+                print(GROQ_KEY_HELP)
+                sys.exit(1)
 
-    _log_info(
-        "Translation engine: Google (free). Tip: add a free GROQ_API_KEY in "
-        ".env for much more natural results."
-    )
-    return Translator(cfg)
+    if primary is not None and want_google_fb:
+        secondary = _google()
+        _log_info(
+            "Translation HA: Groq LLM primary → Google fallback "
+            f"(circuit {getattr(cfg, 'CIRCUIT_FAIL_THRESHOLD', 3)} fails / "
+            f"{getattr(cfg, 'CIRCUIT_COOLDOWN_S', 60)}s)."
+        )
+        return FailoverTranslator(
+            primary,
+            secondary,
+            cfg,
+            log=_log_info,
+            primary_name="llm",
+            secondary_name="google",
+        )
+
+    if primary is not None:
+        return primary
+
+    # No working LLM → Google if allowed.
+    if want_google_fb or engine == "auto":
+        _log_info(
+            "Translation engine: Google (free). Tip: add a free GROQ_API_KEY in "
+            ".env for much more natural results."
+        )
+        return _google()
+
+    _log_error("No translation engine available (LLM down, TRANSLATION_FALLBACK=none).")
+    sys.exit(1)
 
 
 def _build_local_transcriber():
@@ -787,15 +861,28 @@ def _warn_stt_prompt_language_mismatch():
 def _build_transcriber():
     """
     Pick the speech-to-text engine from config and return an object with a
-    `.transcribe(audio)` method. For the Groq engine, do a quick self-test so a
-    bad key / model name is caught early; on failure, fall back to local Whisper.
+    ``.transcribe(audio)`` method.
+
+    P0 HA: Groq primary + local Whisper fallback via FailoverTranscriber.
+    Local model warms in a daemon thread so mid-session Groq outages do not
+    block the UI; processor waits at most STT_FALLBACK_WAIT_S on fallback path.
     """
+    from livelingo.failover import FailoverTranscriber, classify_error, ErrorKind
+
     _warn_stt_prompt_language_mismatch()
 
     engine = (cfg.STT_ENGINE or "auto").lower()
     if engine == "auto":
         engine = "groq" if cfg.GROQ_API_KEY else "local"
 
+    fb = (getattr(cfg, "STT_FALLBACK", "local") or "local").lower()
+    want_local_fb = fb == "local"
+
+    # Pure local — no cloud wrapper.
+    if engine == "local":
+        return _build_local_transcriber()
+
+    primary = None
     if engine == "groq":
         if not cfg.GROQ_API_KEY:
             _log_warn(
@@ -804,22 +891,53 @@ def _build_transcriber():
             print(GROQ_KEY_HELP)
             return _build_local_transcriber()
 
-        transcriber = GroqTranscriber(cfg, log=_log_info)
+        primary = GroqTranscriber(cfg, log=_log_info)
         # Self-test with a short silent clip so a bad key/model fails fast.
         try:
             silence = np.zeros(int(0.5 * cfg.SAMPLE_RATE), dtype=np.float32)
-            transcriber.transcribe(silence)
+            primary.transcribe(silence)
+            _log_success(f"Speech-to-text ready (Groq cloud / {cfg.GROQ_STT_MODEL}).")
         except GroqSTTError as exc:
             _log_error(f"Groq STT self-test failed: {exc}")
-            _log_warn(
-                "Falling back to the local Whisper model. Fix GROQ_API_KEY, or "
-                "set STT_ENGINE=local to skip this check."
-            )
-            return _build_local_transcriber()
-        _log_success(f"Speech-to-text ready (Groq cloud / {cfg.GROQ_STT_MODEL}).")
-        return transcriber
+            kind = classify_error(exc)
+            if kind is ErrorKind.PERMANENT or not want_local_fb:
+                _log_warn(
+                    "Falling back to the local Whisper model. Fix GROQ_API_KEY, or "
+                    "set STT_ENGINE=local to skip this check."
+                )
+                primary = None
+            else:
+                # Transient boot failure: keep primary for later probes + warm local.
+                _log_warn(
+                    "Groq STT self-test had a transient error — keeping primary "
+                    "with local fallback warm-up."
+                )
 
-    return _build_local_transcriber()
+    if primary is None:
+        return _build_local_transcriber()
+
+    if not want_local_fb:
+        return primary
+
+    def _local_factory():
+        return Transcriber(cfg, log=_log_info)
+
+    wrapper = FailoverTranscriber(
+        primary,
+        _local_factory,
+        cfg,
+        log=_log_info,
+        primary_name="groq",
+        secondary_name="local",
+    )
+    _log_info(
+        "STT HA: Groq primary → local Whisper fallback "
+        f"(circuit {getattr(cfg, 'CIRCUIT_FAIL_THRESHOLD', 3)} fails / "
+        f"{getattr(cfg, 'CIRCUIT_COOLDOWN_S', 60)}s)."
+    )
+    if getattr(cfg, "STT_WARMUP_LOCAL", True):
+        wrapper.start_warmup()
+    return wrapper
 
 
 def _print_session_duration(start_time, title, session_id=None):
@@ -933,9 +1051,14 @@ def _print_menu(pipeline=None):
         _print_streaming_info(indent=margin)
 
         # Translation Engine status
-        from livelingo.llm import LLMTranslator
+        from livelingo.failover import (
+            FailoverTranscriber,
+            FailoverTranslator,
+            translator_uses_llm,
+            transcriber_uses_groq,
+        )
 
-        if isinstance(pipeline.translator, LLMTranslator):
+        if translator_uses_llm(pipeline.translator):
             ui.success(
                 f"LLM translation ready (Groq / {cfg.GROQ_MODEL}).",
                 indent=margin,
@@ -944,17 +1067,27 @@ def _print_menu(pipeline=None):
                 '   self-test: "Bonjour, ceci est un test." -> "Hello, this is a test."',
                 indent=margin,
             )
+            if isinstance(pipeline.translator, FailoverTranslator):
+                ui.dim(
+                    f"   HA: {pipeline.translator.primary_name} → "
+                    f"{pipeline.translator.secondary_name or 'none'}",
+                    indent=margin,
+                )
         else:
             ui.info("Translation engine: Google (free).", indent=margin)
 
         # Speech-to-text Engine status
-        from livelingo.groq_transcribe import GroqTranscriber
-
-        if isinstance(pipeline.transcriber, GroqTranscriber):
+        if transcriber_uses_groq(pipeline.transcriber):
             ui.success(
                 f"Speech-to-text ready (Groq cloud / {cfg.GROQ_STT_MODEL}).",
                 indent=margin,
             )
+            if isinstance(pipeline.transcriber, FailoverTranscriber):
+                ui.dim(
+                    f"   HA: {pipeline.transcriber.primary_name} → "
+                    f"{pipeline.transcriber.secondary_name or 'none'}",
+                    indent=margin,
+                )
         else:
             ui.success("Speech-to-text ready (local Whisper).", indent=margin)
 
