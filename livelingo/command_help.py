@@ -88,6 +88,22 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "lc_on", "group": "sentence", "token": "lc on", "sort": "lc-on"},
     {"id": "lc_show", "group": "sentence", "token": "lc show", "sort": "lc-show"},
     {"id": "lc_status", "group": "sentence", "token": "lc status", "sort": "lc-status"},
+    {"id": "cam", "group": "audio", "token": "cam", "sort": "cam"},
+    {"id": "cam_off", "group": "audio", "token": "cam off", "sort": "cam-off"},
+    {"id": "cam_on", "group": "audio", "token": "cam on", "sort": "cam-on"},
+    {"id": "cam_status", "group": "audio", "token": "cam status", "sort": "cam-status"},
+    {
+        "id": "cam_snap_closed",
+        "group": "audio",
+        "token": "cam snap closed",
+        "sort": "cam-snap-closed",
+    },
+    {
+        "id": "cam_closed",
+        "group": "audio",
+        "token": "cam closed",
+        "sort": "cam-closed",
+    },
     {"id": "lo", "group": "sentence", "token": "lo", "sort": "lo"},
     {"id": "lt", "group": "sentence", "token": "lt", "sort": "lt"},
     # --- Session ---
@@ -138,7 +154,12 @@ _I18N: dict[str, dict[str, str]] = {
         "title_aN": "Copy audio path N",
         "desc_aN": "Copies the **full** absolute path of **chunk N** audio file to the clipboard. Example: `a12`.",
         "title_b": "Voice bypass",
-        "desc_b": "Toggle: send raw microphone audio to the output device (e.g. VB-Cable) **without** STT/translation. Header shows `BYPASS`. Press again to resume translate mode. Same as **F2** or click the white badge. Aliases: `bypass`, `hot`.",
+        "desc_b": (
+            "Toggle bypass. **First press:** stop any TTS on Cable (same as `[x]`), "
+            "then send **raw mic → CABLE** without STT/translation (`BYPASS` header). "
+            "**Second press:** leave bypass and resume normal listen/translate/TTS. "
+            "Same as **F2** or the white badge. Aliases: `bypass`, `hot`."
+        ),
         "title_ctts": "Change TTS voice",
         "desc_ctts": "Change the Edge TTS voice for upcoming synthesis. Use `ctts <ShortName>` (e.g. `ctts en-US-AndrewMultilingualNeural`) or `ctts` alone to be prompted. Validates against the voice catalog.",
         "title_lav": "List all TTS voices",
@@ -312,6 +333,29 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_lc_hide": "Minimize/hide the Windows LiveCaptions window again (tool-window style).",
         "title_lc_status": "LiveCaptions status",
         "desc_lc_status": "Print service snapshot: status, paused, hidden, last error. Aliases: `lc st`, `lc ?`.",
+        "title_cam": "Webcam lip-sync (toggle)",
+        "desc_cam": (
+            "Toggle **webcam → lip-sync → virtual camera** (Teams/Meet). "
+            "Requires `WEBCAM_ENABLED=true` and `opencv-python` + `mediapipe` + `pyvirtualcam`. "
+            "TTS audio from Cable Out drives the mouth. See `docs/webcam-lipsync.md`."
+        ),
+        "title_cam_on": "Webcam on",
+        "desc_cam_on": "Start threads (if needed) and enable streaming to the virtual camera.",
+        "title_cam_off": "Webcam off",
+        "desc_cam_off": "Disable streaming (freeze last frame / idle). Threads may keep running.",
+        "title_cam_status": "Webcam status",
+        "desc_cam_status": "FPS, face lock, template, engine, resolution, backend, last error.",
+        "title_cam_snap_closed": "Snap closed-mouth photo",
+        "desc_cam_snap_closed": (
+            "Save a **closed-mouth photo template** (idle while mic listens). "
+            "Close your mouth, face the camera, then run this. "
+            "Files: `.cache/webcam/closed_mouth.png` (+ landmarks JSON)."
+        ),
+        "title_cam_closed": "Toggle closed mouth (F10)",
+        "desc_cam_closed": (
+            "**F10** or `cam closed`: show/hide closed-mouth photo manually. "
+            "`cam closed auto` returns to VAD automatic mode."
+        ),
         "title_lo": "List source only",
         "desc_lo": "List only **source** (heard) lines for the session.",
         "title_lt": "List target only",
@@ -401,7 +445,12 @@ _I18N: dict[str, dict[str, str]] = {
         "title_aN": "Copiar caminho do áudio N",
         "desc_aN": "Copia o caminho absoluto **completo** do áudio do **chunk N**. Exemplo: `a12`.",
         "title_b": "Bypass de voz",
-        "desc_b": "Alterna: envia o microfone **cru** para o dispositivo de saída (ex.: VB-Cable) **sem** STT/tradução. O cabeçalho mostra `BYPASS`. Pressione de novo para voltar a traduzir. Igual a **F2** ou clique no badge branco. Aliases: `bypass`, `hot`.",
+        "desc_b": (
+            "Alterna bypass. **1ª tecla:** corta qualquer TTS no Cable (como `[x]`) e "
+            "envia o **mic cru → CABLE** sem STT/tradução (cabeçalho `BYPASS`). "
+            "**2ª tecla:** sai do bypass e retoma escuta/tradução/TTS normal. "
+            "Igual a **F2** ou o badge branco. Aliases: `bypass`, `hot`."
+        ),
         "title_ctts": "Trocar voz TTS",
         "desc_ctts": "Altera a voz Edge TTS para as próximas sínteses. Use `ctts <ShortName>` (ex.: `ctts en-US-AndrewMultilingualNeural`) ou só `ctts` para digitar. Valida no catálogo de vozes.",
         "title_lav": "Listar todas as vozes TTS",
@@ -570,6 +619,29 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_lc_hide": "Minimiza/oculta de novo a janela do Windows LiveCaptions.",
         "title_lc_status": "Status LiveCaptions",
         "desc_lc_status": "Mostra snapshot do serviço: status, paused, hidden, último erro. Aliases: `lc st`, `lc ?`.",
+        "title_cam": "Webcam lip-sync (liga/desliga)",
+        "desc_cam": (
+            "Alterna **webcam → lip-sync → câmera virtual** (Teams/Meet). "
+            "Requer `WEBCAM_ENABLED=true` e `opencv-python` + `mediapipe` + `pyvirtualcam`. "
+            "O áudio TTS do Cable Out move a boca. Ver `docs/webcam-lipsync.md`."
+        ),
+        "title_cam_on": "Webcam on",
+        "desc_cam_on": "Inicia threads (se preciso) e envia frames à câmera virtual.",
+        "title_cam_off": "Webcam off",
+        "desc_cam_off": "Pausa o stream (congela último frame). Threads podem permanecer.",
+        "title_cam_status": "Status webcam",
+        "desc_cam_status": "FPS, face, template, engine, resolução, backend, último erro.",
+        "title_cam_snap_closed": "Foto boca fechada",
+        "desc_cam_snap_closed": (
+            "Salva **template de boca fechada** (idle enquanto o mic escuta). "
+            "Feche a boca, olhe a câmera e rode o comando. "
+            "Arquivos: `.cache/webcam/closed_mouth.png` (+ JSON de landmarks)."
+        ),
+        "title_cam_closed": "Boca calada (F10)",
+        "desc_cam_closed": (
+            "**F10** ou `cam closed`: mostra/tira a foto de boca calada manualmente. "
+            "`cam closed auto` volta ao modo automático (VAD)."
+        ),
         "title_lo": "Listar só source",
         "desc_lo": "Lista só as linhas **source** (ouvidas) da sessão.",
         "title_lt": "Listar só target",

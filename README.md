@@ -26,12 +26,21 @@ microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears 
 translation as if it were your mic. Speak **French**, others hear **English**
 (both languages configurable).
 
+**Current release: [v1.2.1](CHANGELOG.md#121---2026-07-22)** — webcam/TUI polish on top of
+v1.1.0: reliable **OBS Virtual Camera**, **full-face F10 freeze**, F2/F5 on the tab bar,
+bypass tips on **Sistema**, local Whisper first-boot notes. Full notes:
+[`CHANGELOG.md`](CHANGELOG.md).
+
 ```text
 🎤 mic (French)
    └─► Whisper STT  (speech → French text: Groq cloud large-v3, or local)
         └─► translation (French → English: Google free, or Groq LLM for quality)
              └─► edge-tts  (English text → speech, free)
                   └─► VB-Cable  ──►  "CABLE Output" used as mic in Teams
+
+Optional video (v1.1+):
+📷 webcam → MediaPipe mouth + lip engine → pyvirtualcam
+              └─► OBS Virtual Camera  ──►  Teams camera
 ```
 
 Translation and text-to-speech use free public services (internet required).
@@ -47,6 +56,7 @@ recommended) **or** fully locally with faster-whisper (offline).
 | **Windows 10/11** | The tool uses Windows audio APIs (MME via PortAudio). |
 | **Python 3.10+** | 3.10 – 3.12 recommended. Check with `python --version`. |
 | **VB-CABLE** | Free virtual audio cable. Download: **<https://vb-audio.com/Cable/>** |
+| **OBS Studio** *(optional, for Teams video / lip-sync)* | Provides the **OBS Virtual Camera** driver so LiveLingo can send a processed face to Teams. Download: **<https://obsproject.com/>** (full installer, not only the Microsoft Store build). |
 | **Internet** | Needed for translation + TTS (and the first Whisper model download). |
 
 ### Install VB-CABLE
@@ -60,6 +70,20 @@ After reboot you will have two new devices:
 
 - **CABLE Input (VB-Audio Virtual Cable)** — a *playback* device. **This tool sends the English speech here.**
 - **CABLE Output (VB-Audio Virtual Cable)** — a *recording* device. **Teams selects this as its microphone.**
+
+### Install OBS Studio (virtual camera for Teams video)
+
+Required only if you want **camera + lip-sync** in the call (audio-only translation still works with VB-Cable alone).
+
+1. Install **OBS Studio** from <https://obsproject.com/>.
+2. Open OBS **once as Administrator** (right-click → Run as administrator).
+3. Bottom-right **Start Virtual Camera** (or Tools → Start Virtual Camera).  
+   The first start **registers** the Windows **OBS Virtual Camera** device.
+4. **Stop Virtual Camera**, then fully quit OBS (so LiveLingo can open the same device).
+5. Windows Settings → Privacy → Camera → allow **desktop apps**.
+
+> **Important:** the virtual camera is **video only**. Translated speech still goes through
+> **VB-Cable**. In Teams you set **two** devices (see [Teams with audio + video](#use-it-as-your-microphone-and-camera-in-microsoft-teams--google-meet)).
 
 ---
 
@@ -75,6 +99,9 @@ python -m venv .venv
 # install dependencies
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+
+# optional — webcam lip-sync → OBS Virtual Camera (v1.1+)
+pip install -r requirements-webcam.txt
 ```
 
 > When using the **local** STT engine, the first run downloads the Whisper model
@@ -324,9 +351,19 @@ fast, and it offloads your CPU.
 
 Other knobs:
 
-- **Stay offline?** Set `STT_ENGINE=local` and raise the local model:
-  `WHISPER_MODEL=large-v3-turbo` (much more accurate than `small`, still
-  reasonable on CPU) or `medium`.
+- **Stay offline / always local?** In `.env`:
+  ```env
+  STT_ENGINE=local
+  WHISPER_MODEL=small              # daily CPU default (fast first boot)
+  WHISPER_DEVICE=cpu
+  WHISPER_COMPUTE_TYPE=int8
+  WHISPER_BEAM_SIZE=1
+  WHISPER_CPU_THREADS=4
+  ```
+  Larger models (`medium`, `large-v3-turbo`) need more RAM and the **first run
+  downloads + loads** from Hugging Face (can look like a hang for several minutes
+  on CPU). Prefer `small`/`base` for interactive use; use GPU
+  (`WHISPER_DEVICE=cuda`, `WHISPER_COMPUTE_TYPE=float16`) for large models.
 - **Wrong names/jargon?** Set `STT_INITIAL_PROMPT` to a sentence containing the
   expected vocabulary, names and accents — it biases both engines.
 
@@ -432,7 +469,7 @@ With `UI_MODE=tui` (default) you get a Textual UI: log tabs, command field, fixe
 | **Novidades** | Project `CHANGELOG.md` (Markdown) |
 | **Lista de comandos** | Grouped command help in `SOURCE_LANG` |
 
-Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`═ ↕ captions ═`) to grow/shrink captions vs the middle log tabs. Between captions and tabs: compact **F2** bypass chip and **F5** auto-scroll chip (both LC + VOZ).
+Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`═ ↕ captions ═`) to grow/shrink captions vs the middle log tabs. On the **same row as the log tabs** (right side): compact **F2** bypass chip and **F5** auto-scroll chip (both LC + VOZ).
 
 | Shortcut / command | Action |
 |--------------------|--------|
@@ -442,7 +479,8 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `F5` / click scroll chip | **Auto-scroll lock** for Tradução **LC + VOZ** — ON (green) follows new lines; OFF (amber) freezes the viewport while lines still append. Footer shows `Auto↓ ON` / `Auto↓ OFF`. `GG` still jumps once without re-enabling follow when OFF |
 | `Ctrl+C` | Copy selected log text |
 | `Ctrl+Shift+C` | Copy entire content of the **focused** log pane (on Tradução: LC or VOZ) |
-| `F2` / click bypass chip / `b` | **Voice bypass** — raw mic → CABLE without translation |
+| `F2` / click bypass chip / `b` | **Voice bypass** — stop Cable TTS (like `[x]`), then raw mic → CABLE; tips log on **Sistema**; press again to resume translate |
+| `F10` / `cam closed` | Toggle **full-face freeze** from the closed-mouth photo (manual show/hide; does **not** recapture — use `cam snap closed` to update) |
 | Palette → Screenshot | Save SVG+PNG under `.cache/screenshots/` and put the **image** on the clipboard |
 | `↑` / `↓` | Command history |
 | `/text` · `/n` · `/p` | Search in the focused log pane (aliases: `find text`, `s?text`) |
@@ -456,6 +494,8 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `l` / `lo` / `lt` | List session (into matching panes) / source-only / target-only |
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
 | `s` / `n` / `r` / `rN` | Sound, mic mute, replay |
+| `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync stream to **OBS Virtual Camera** (needs `requirements-webcam.txt` + OBS) |
+| `cam snap closed` | **Capture / update** the closed-mouth **full-face photo** used by F10. Preview shows the freeze oval. Aliases: `cam snap`, `cam snapshot closed` |
 | `a` / `aN` / `p` / `pN` | Copy audio path / open audio folder |
 | `ld` | List audio devices (`python list_devices.py`) into the log |
 | `lav` | List all edge-tts voices (`edge-tts --list-voices`) into the log |
@@ -485,9 +525,11 @@ python main.py <session_id>
 livelingo <session_id>
 ```
 
-### Use it as your microphone in Microsoft Teams / Google Meet
+### Use it as your microphone (and camera) in Microsoft Teams / Google Meet
 
 **LiveLingo `.env` (example):** `INPUT_DEVICE=<your mic>` · `OUTPUT_DEVICE=CABLE Input` (or its index, e.g. `19`).
+
+#### Audio only (classic)
 
 | Role | Device |
 |------|--------|
@@ -503,7 +545,67 @@ livelingo <session_id>
 
 > **You do not hear your own CABLE feed in Teams/Meet by default** (no mic sidetone). The CABLE Output **level meter** moving means audio is entering the call. To hear the translation yourself: `MONITOR_PLAYBACK=true` + `MONITOR_DEVICE=<speakers>`, or Windows 11 *Sound settings → More sound settings → Recording → CABLE Output → Properties → Listen → Listen to this device*.
 
-**Speak English (or any language) without translation:** press **`b`** (bypass) — raw mic goes to CABLE; press **`b`** again to resume translate.
+**Speak English (or any language) without translation:** press **`b`** (bypass) — first press **cuts any TTS on Cable** (same idea as `[x]`), then raw mic goes to CABLE; press **`b`** again to leave bypass and resume translate.
+
+#### Audio + video with OBS Virtual Camera (v1.1 lip-sync)
+
+So participants see **your face** while the **mouth stays closed** when you speak the source language, and moves with the **translated** TTS on Cable:
+
+| Role | Device / setting |
+|------|------------------|
+| You speak | Real microphone |
+| LiveLingo TTS (translation) | **CABLE Input** |
+| Teams / Meet **microphone** | **CABLE Output** |
+| LiveLingo video | **OBS Virtual Camera** (`pyvirtualcam` + OBS driver) |
+| Teams / Meet **camera** | **OBS Virtual Camera** (not the physical webcam) |
+| You hear others / pre-TTS bip | Headset; set `MONITOR_DEVICE` to your headphones index |
+
+1. Install OBS and register **Virtual Camera** once ([section 1](#install-obs-studio-virtual-camera-for-teams-video)).
+2. `pip install -r requirements-webcam.txt` and enable in `.env`:
+   ```env
+   WEBCAM_ENABLED=true
+   WEBCAM_START_ENABLED=false   # or true to start streaming on boot
+   WEBCAM_DEVICE_INDEX=0
+   MONITOR_DEVICE=18            # your headphones index (list_devices.py) — cue only
+   TTS_MONITOR_CUE=true
+   ```
+3. Run LiveLingo with **Windows Python** (not WSL) so Teams can see OBS Virtual Camera.
+4. Commands: **`cam on`** → stream face; **`cam snap closed`** to capture the closed-mouth
+   background (see below); **`s`** so TTS reaches Cable; **`cam status`** should show `vcam=true`.
+5. **Teams:** Camera = **OBS Virtual Camera**, Microphone = **CABLE Output**.
+
+##### Generate / update the closed-mouth **full-face** photo (`cam snap closed`)
+
+The virtual cam freezes a **photo of your whole face with mouth closed** (soft-blended
+face oval on the live video) while you speak the source language, so Teams does not
+see source-language lip motion. **F10** only shows/hides that plate — it does **not**
+recapture. There is **no** procedural “virtual teeth” paint (removed).
+
+1. Enable webcam (`WEBCAM_ENABLED=true`) and start the stream: **`cam on`**  
+   (or `WEBCAM_START_ENABLED=true`).
+2. Face the camera with a **natural closed mouth** (same lighting/angle as the call).
+3. Type:
+   ```text
+   cam snap closed
+   ```
+   Aliases: `cam snap` · `cam snapshot closed` · `cam capture closed`
+4. OpenCV preview (Windows): green **full-face** oval = freeze region.  
+   **SPACE/ENTER** save · **ESC** cancel · or ~3s auto-save with face lock.
+5. Files (defaults):
+   ```text
+   .cache/webcam/closed_mouth.png
+   .cache/webcam/closed_mouth.json
+   ```
+6. **`cam status`** → `tpl=true`. Toggle: **F10** / `cam closed` · `cam closed auto` (VAD).
+
+Plate size: `WEBCAM_TEMPLATE_REGION_SCALE` (default `1.15`) · feather
+`WEBCAM_TEMPLATE_FEATHER_PX` (default `24`). Paths:
+`WEBCAM_CLOSED_MOUTH_IMAGE` · `WEBCAM_CLOSED_MOUTH_LANDMARKS`.
+
+**OBS:** while LiveLingo streams, **Stop Virtual Camera** in OBS (exclusive producer).
+LiveLingo owns the device; Teams camera = **OBS Virtual Camera**.
+
+Full guide: [`docs/webcam-lipsync.md`](docs/webcam-lipsync.md).
 
 ---
 
@@ -517,6 +619,16 @@ index.
 **Teams doesn't pick up any audio.**
 Make sure Teams' microphone is **CABLE Output** (the *Output* one), not CABLE
 Input. Also confirm `main.py` is actually producing chunks (status lines appear).
+Press **`s`** if sound is still OFF (default).
+
+**Teams camera black / no virtual cam / `vcam=false`.**
+Install OBS Studio, **Start Virtual Camera** once as admin, then stop and quit OBS.
+Privacy → Camera → allow desktop apps. Run LiveLingo on **Windows Python**, not WSL.
+See [`docs/webcam-lipsync.md`](docs/webcam-lipsync.md).
+
+**Pre-TTS beep also in Teams.**
+Set `MONITOR_DEVICE` to your **headphones** index (not CABLE Input). Cue must never
+use Cable. Check Sistema log: `TTS cue → [N] … (SOMENTE monitor; NUNCA Cable/Teams)`.
 
 **Short words get cut off / it never sends a chunk.**
 Adjust VAD: lower `SILENCE_THRESHOLD` (e.g. `0.008`) if your mic is quiet, or
@@ -569,7 +681,10 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
 ├── config.py           # all tunable settings (env / .env overridable)
 ├── list_devices.py     # prints audio devices + their indices
 ├── requirements.txt    # runtime deps (security floors documented above)
+├── requirements-webcam.txt # optional: OpenCV + MediaPipe + pyvirtualcam (OBS VC)
 ├── requirements-dev.txt # pytest + pip-audit + ruff (CI / pre-deploy)
+├── docs/
+│   └── webcam-lipsync.md       # OBS Virtual Camera + lip-sync guide
 ├── .github/workflows/
 │   └── ci.yml                  # GitHub Actions: security + pytest (badge)
 ├── scripts/
@@ -587,11 +702,13 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
     ├── llm.py          # Groq LLM translation (higher quality, optional)
     ├── synthesize.py   # edge-tts TTS -> numpy audio
     ├── playback.py     # audio -> VB-Cable output device
+    ├── monitor_cue.py  # pre-TTS beep on headphones only (never Cable)
     ├── pipeline.py     # threads + queues orchestration
     ├── devices.py      # device discovery / resolution
     ├── tui_app.py      # Textual TUI (log, menu, screenshot, clipboard)
     ├── db.py           # SQLite sessions, chunks, comments, favorites
-    └── ui.py           # terminal banner, colors, status lines
+    ├── ui.py           # terminal banner, colors, status lines
+    └── webcam/         # optional lip-sync → OBS Virtual Camera
 ```
 
 ## Notes & limitations

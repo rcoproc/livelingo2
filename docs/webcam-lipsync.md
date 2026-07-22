@@ -29,12 +29,13 @@ Files (defaults):
 ```env
 WEBCAM_CLOSED_MOUTH_IMAGE=.cache/webcam/closed_mouth.png
 WEBCAM_CLOSED_MOUTH_LANDMARKS=.cache/webcam/closed_mouth.json
-WEBCAM_TEMPLATE_REGION_SCALE=2.4   # larger plate: mouth + cheeks + chin
-WEBCAM_TEMPLATE_FEATHER_PX=36      # soft blend into live background
+WEBCAM_TEMPLATE_REGION_SCALE=1.15  # full-face freeze (1.0 tight … 1.4 larger)
+WEBCAM_TEMPLATE_FEATHER_PX=24      # soft edge of face plate
 ```
 
-The photo is warped onto the live face as a **large freeze plate** (not a thin
-lip strip). Edges feather into the live frame so the patch does not look cut-out.
+The photo freezes the **whole face** (MediaPipe face oval: forehead → chin) on top of
+the live video when F10 / closed-mouth mode is ON. Soft edges blend into the background;
+caps leave a little room around the head (not a full-frame rectangle).
 
 **When it applies (continuous loop):**
 
@@ -53,7 +54,8 @@ Driven by capture VAD (`on_listening`) when not in F10 manual mode.
 
 If left/right looks wrong: `WEBCAM_TEMPLATE_FLIP_H=true` (default is `false`).
 Hangover: `WEBCAM_SPEECH_HANGOVER_S=1.5`.
-Plate is **boxy** (not oval) with soft edge (`WEBCAM_TEMPLATE_FEATHER_PX=28`).
+Plate is the **full face** (`WEBCAM_TEMPLATE_REGION_SCALE≈1.15`). Snap preview
+shows the same oval/hull as F10. Larger face pad: `1.25`–`1.35`; tighter: `1.0`.
 
 Re-snap if lighting or camera angle changes a lot.  
 `cam status` shows `tpl=true` when the template is loaded.
@@ -244,14 +246,17 @@ See `config.py` / `.env.example` keys `WEBCAM_*`.
 
 ## Manual test checklist
 
-1. `WEBCAM_ENABLED=true`, `pip install -r requirements-webcam.txt`, OBS Virtual Cam started once.  
-2. **Close Teams camera** (or leave Teams closed) so the physical cam is free.  
-3. Start LiveLingo → `[cam on]` → `cam status`: `enabled=true`, `vcam=true`, `cap_ok=true`, `fps_out` &gt; 0.  
-4. Open Teams → camera = **OBS Virtual Camera** → preview shows face (or placeholder if capture failed).  
-5. Teams mic = **CABLE Output**; LiveLingo `[s]` ON; speak → translation on Cable + mouth moves.  
-6. If `err=` mentions deps: reinstall webcam packages **in the same venv** that runs LiveLingo.  
-7. If `capture_ok=false`: free physical cam / try `WEBCAM_DEVICE_INDEX=1`.  
-8. `[cam off]` freezes; `[cam]` toggles; `[q]` clean shutdown.
+1. `WEBCAM_ENABLED=true`, `pip install -r requirements-webcam.txt`.  
+2. **OBS driver (once):** Install OBS → run as Admin → **Start Virtual Camera** (registers driver) → **Stop Virtual Camera**.  
+   LiveLingo is the *producer*; OBS Virtual Camera button must stay **OFF** while LiveLingo streams. OBS app may remain open.  
+3. **Close Teams camera** (or leave Teams closed) so the **physical** cam is free for capture.  
+4. Start LiveLingo → `[cam on]` → `cam status`: `enabled=true`, `vcam=true`, `cap_ok=true`, `fps_out` &gt; 0.  
+5. Open Teams → camera = **OBS Virtual Camera** → preview shows face (or placeholder if capture failed).  
+6. Teams mic = **CABLE Output**; LiveLingo `[s]` ON; speak → translation on Cable + mouth moves.  
+7. If `err=` / `could not be started`: another app is outputting to OBS Virtual Cam (OBS button still On, or zombie process). Stop it, wait 2s, `[cam on]` again (auto-retries).  
+8. If deps missing: reinstall webcam packages **in the same venv** that runs LiveLingo.  
+9. If `capture_ok=false`: free physical cam / try `WEBCAM_DEVICE_INDEX=1`.  
+10. `[cam off]` releases virtual cam; `[cam]` toggles; `[q]` clean shutdown.
 
 ## Limits (honest)
 

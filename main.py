@@ -121,6 +121,19 @@ def _log_dim(msg):
     ui.dim(msg, indent=UI_MARGIN)
 
 
+def _log_cam(msg):
+    """Webcam/vcam logs → TUI aba Sistema (not translation tab)."""
+    ui.info(msg, indent=UI_MARGIN, panel="app")
+
+
+def _log_cam_warn(msg):
+    ui.warn(msg, indent=UI_MARGIN, panel="app")
+
+
+def _log_cam_success(msg):
+    ui.success(msg, indent=UI_MARGIN, panel="app")
+
+
 def _copy_path_to_clipboard(text: str) -> bool:
     """Copy text to OS clipboard. Returns True on success."""
     text = (text or "").strip()
@@ -1492,9 +1505,20 @@ def _normalize_cmd(raw_cmd, cmd):
     Double-tap of a single letter (e.g. 'gg', 'ss') is treated as one press —
     the listen-indicator often glues the first character onto the status line,
     so users press the key twice and would otherwise get Unknown command.
+
+    Also strips decorative brackets from help text: ``[cam on]`` → ``cam on``,
+    ``[s]`` → ``s`` (users often type the docs notation literally).
     """
     raw_cmd = (raw_cmd or "").strip()
     cmd = (cmd or raw_cmd).strip().lower()
+    # Strip one pair of wrapping [] used in docs/UI hints
+    if len(raw_cmd) >= 2 and raw_cmd[0] == "[" and raw_cmd[-1] == "]":
+        raw_cmd = raw_cmd[1:-1].strip()
+        cmd = raw_cmd.lower()
+    elif len(cmd) >= 2 and cmd[0] == "[" and cmd[-1] == "]":
+        cmd = cmd[1:-1].strip()
+        if len(raw_cmd) >= 2 and raw_cmd[0] == "[" and raw_cmd[-1] == "]":
+            raw_cmd = raw_cmd[1:-1].strip()
     if len(cmd) >= 2 and len(set(cmd)) == 1 and cmd[0] in _SINGLE_LETTER_CMDS:
         letter = cmd[0]
         return (letter.upper() if raw_cmd.isupper() else letter), letter
@@ -2129,31 +2153,35 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             )
         _print_menu(pipeline)
     elif cmd in ("b", "bypass", "hot"):
-        # Direct voice to OUTPUT (CABLE) — no STT/translate. Toggle.
-        # Pause listen-to-translate; raw mic → Teams mic path.
+        # Toggle: first [b] = stop Cable TTS (like [x]) + raw voice bypass;
+        # second [b] = leave bypass, resume normal listen/translate/TTS.
         try:
             active = pipeline.toggle_voice_passthrough()
         except Exception as exc:
             ui.error(f"[b] Bypass falhou: {exc}")
             return
         if active:
+            # Sistema tab (not VOZ/Tradução) — operational A/V routing tip
             ui.warn(
-                "[b] BYPASS ON — sua voz vai direto ao CABLE/Teams (sem tradução). "
-                "Escuta de tradução pausada. Pressione [b] de novo para voltar.",
+                "[b] BYPASS ON — TTS no Cable cortado (como [x]); "
+                "sua voz vai direto ao CABLE/Teams (sem tradução). "
+                "Pressione [b] de novo para voltar ao normal.",
                 indent=3,
+                panel="app",
             )
             ui.dim(
-                "  Dica: fale em inglês (ou o idioma da call). "
-                "Mic do Teams deve ser CABLE Output.",
+                "  Dica: fale no idioma da call. "
+                "Mic do Teams = CABLE Output.",
                 indent=3,
+                panel="app",
             )
         else:
             ui.success(
-                "[b] BYPASS OFF — escuta/tradução retomadas. Fale no idioma SOURCE.",
+                "[b] BYPASS OFF — fluxo normal: escuta + tradução + TTS no Cable.",
                 indent=3,
+                panel="app",
             )
-            # Blank separator before the next log activity
-            ui.raw("")
+            ui.raw("", panel="app")
         if indicator is not None:
             # Optional header cue if the TUI supports it
             try:
@@ -2378,9 +2406,16 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     f"**Total de palavras** (fonte; >1 sílaba; "
                     f"sem e/a/ou/para/ao/à): {word_count}\n"
                 )
-            ui.success(f"File generated and exported successfully: '{filename}'")
+            ui.success(
+                f"Export .md gerado: '{filename}'",
+                panel="app",
+            )
+            ui.dim(
+                f"arquivo: {filename}  (sessão exportada)",
+                panel="app",
+            )
         except Exception as exc:
-            ui.error(f"Error saving share file: {exc}")
+            ui.error(f"Error saving share file: {exc}", panel="app")
     elif cmd == "l":
         full_trans = pipeline.get_full_transcript()
         if not full_trans:
@@ -3287,6 +3322,245 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 "Comando [u]/compact só funciona no modo TUI (UI_MODE=tui).",
                 indent=3,
             )
+    elif (
+        cmd == "cam"
+        or cmd.startswith("cam ")
+        or cmd == "webcam"
+        or cmd.startswith("webcam ")
+    ):
+        # Webcam lip-sync → virtual camera (optional module)
+        # Video → pyvirtualcam (OBS Virtual Cam). Audio → VB-Cable separately.
+        # Physical cam LED only lights AFTER start+enable (OpenCV opens device).
+        svc = getattr(pipeline, "webcam_service", None)
+        sub = ""
+        low = (cmd or "").strip().lower()
+        if low.startswith("webcam "):
+            sub = low[7:].strip()
+        elif low == "webcam":
+            sub = ""
+        elif low.startswith("cam "):
+            sub = low[4:].strip()
+        elif (raw_cmd or "").strip().lower().startswith("cam "):
+            sub = (raw_cmd or "").strip()[4:].strip().lower()
+        elif (raw_cmd or "").strip().lower().startswith("webcam "):
+            sub = (raw_cmd or "").strip()[7:].strip().lower()
+
+        def _cam_info(msg):
+            ui.info(msg, indent=3, panel="app")
+
+        def _cam_ok(msg):
+            ui.success(msg, indent=3, panel="app")
+
+        def _cam_warn(msg):
+            ui.warn(msg, indent=3, panel="app")
+
+        def _cam_err(msg):
+            ui.error(msg, indent=3, panel="app")
+
+        def _cam_auto_sound():
+            """TTS → CABLE is separate from video; lips need the same samples."""
+            if not getattr(cfg, "WEBCAM_AUTO_SOUND", True):
+                return
+            try:
+                if not pipeline.is_sound_enabled():
+                    pipeline.set_sound_enabled(True)
+                    _cam_ok(
+                        "Som ON automático (WEBCAM_AUTO_SOUND) — TTS → CABLE. "
+                        "Teams mic = CABLE Output. Toggle: [s]"
+                    )
+                    if indicator is not None and hasattr(indicator, "set_sound_on"):
+                        try:
+                            if hasattr(indicator, "call_from_thread"):
+                                indicator.call_from_thread(indicator.set_sound_on, True)
+                            else:
+                                indicator.set_sound_on(True)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                _cam_warn(f"WEBCAM_AUTO_SOUND falhou: {exc}")
+
+        def _cam_teams_hint():
+            from livelingo.webcam.service import teams_setup_hint
+
+            sound_on = bool(
+                getattr(pipeline, "is_sound_enabled", lambda: False)()
+            )
+            _cam_info(teams_setup_hint())
+            if not sound_on:
+                _cam_warn(
+                    "Som LiveLingo está OFF — [s] liga TTS → CABLE → mic Teams. "
+                    "Sem [s] o Teams não ouve tradução e a boca não mexe."
+                )
+            else:
+                _cam_info(
+                    f"Som ON · OUTPUT={getattr(cfg, 'OUTPUT_DEVICE', '?')} → "
+                    "Teams deve usar mic CABLE Output."
+                )
+
+        if svc is None:
+            _cam_warn(
+                "Webcam lip-sync indisponível. "
+                "Defina WEBCAM_ENABLED=true e instale: "
+                "pip install opencv-python mediapipe pyvirtualcam "
+                "(+ OBS Virtual Cam / v4l2loopback). Ver docs/webcam-lipsync.md",
+            )
+        elif sub in ("on", "start", "enable"):
+            if not getattr(svc, "_started", False):
+                ok = svc.start()
+                if not ok:
+                    _cam_err(
+                        f"Webcam start falhou: {svc.snapshot().get('error') or '?'}",
+                    )
+                    return
+            svc.enable()
+            _cam_auto_sound()
+            _cam_ok(
+                "Webcam lip-sync ON — no Teams escolha OBS Virtual Camera "
+                "(não a webcam física).",
+            )
+            _cam_teams_hint()
+        elif sub in ("off", "stop", "disable"):
+            svc.disable()
+            _cam_info("Webcam lip-sync OFF ([cam on] retoma).")
+        elif sub in (
+            "closed",
+            "closed on",
+            "closed off",
+            "closed auto",
+            "boca",
+            "boca on",
+            "boca off",
+            "boca auto",
+            "f10",
+        ):
+            # Manual closed-mouth plate (same as F10 in TUI)
+            if not getattr(svc, "_started", False):
+                ok = svc.start()
+                if not ok:
+                    _cam_err(
+                        f"Webcam start falhou: {svc.snapshot().get('error') or '?'}",
+                    )
+                    return
+            if not svc.is_enabled():
+                svc.enable()
+                _cam_auto_sound()
+            parts = sub.split()
+            action = parts[-1] if len(parts) > 1 else "toggle"
+            if action in ("on", "1", "true"):
+                on, msg = svc.set_closed_mouth_manual(True)
+                _cam_ok(msg) if on else _cam_info(msg)
+            elif action in ("off", "0", "false"):
+                on, msg = svc.set_closed_mouth_manual(False)
+                _cam_info(msg)
+            elif action in ("auto", "vad"):
+                _cam_info(svc.set_closed_mouth_auto())
+            else:
+                on, msg = svc.toggle_closed_mouth_manual()
+                (ui.success if on else ui.info)(msg, indent=3)
+        elif sub in (
+            "snap closed",
+            "snap",
+            "snapshot closed",
+            "capture closed",
+            "snap closed preview",
+        ):
+            # Photo of closed mouth → template for idle (mic listening)
+            if not getattr(svc, "_started", False):
+                ok = svc.start()
+                if not ok:
+                    _cam_err(
+                        f"Webcam start falhou: {svc.snapshot().get('error') or '?'}",
+                    )
+                    return
+            if not svc.is_enabled():
+                svc.enable()
+                _cam_auto_sound()
+            _cam_info(
+                "Abrindo preview da câmera… "
+                "Feche a boca | SPACE/ENTER=salvar | ESC=cancelar | "
+                "auto-save ~3s com face OK.",
+            )
+            _cam_info(
+                "Se não aparecer janela (WSL/headless), use Windows nativo "
+                "ou confira: pip install mediapipe",
+            )
+            ok, msg = svc.snap_closed_mouth(preview=True, timeout_s=45.0)
+            if ok:
+                _cam_ok(
+                    f"{msg} — idle usará esta foto (sem TTS). "
+                    "Refaça se a iluminação mudar. [cam status] → tpl=true",
+                )
+            else:
+                _cam_err(msg)
+        elif sub in ("status", "st", "?"):
+            snap = svc.snapshot()
+            sound_on = bool(
+                getattr(pipeline, "is_sound_enabled", lambda: False)()
+            )
+            _cam_info(
+                f"CAM running={snap.get('running')} enabled={snap.get('enabled')} "
+                f"engine={snap.get('engine')} face={snap.get('face_ok')} "
+                f"cap_ok={snap.get('capture_ok')} vcam={snap.get('vcam_ready')} "
+                f"phase={snap.get('emit_phase') or '—'} "
+                f"fps_cap={snap.get('fps_cap')} fps_out={snap.get('fps_out')} "
+                f"sent={snap.get('frames_sent')} "
+                f"tts={snap.get('audio_playing')} rms={snap.get('audio_rms')} "
+                f"tpl={snap.get('template_ok')} vad={snap.get('vad_speech')} "
+                f"marker={snap.get('sync_marker')} sound={sound_on} "
+                f"out={getattr(cfg, 'OUTPUT_DEVICE', '?')} "
+                f"{snap.get('width')}x{snap.get('height')} "
+                f"backend={snap.get('backend') or '—'} "
+                f"err={snap.get('error') or '—'}",
+            )
+            if not snap.get("template_ok"):
+                _cam_info(
+                    "Sem foto de boca fechada — digite: cam snap closed "
+                    "(boca fechada, olhando a câmera).",
+                )
+            if snap.get("enabled") and not snap.get("vcam_ready"):
+                _cam_warn(
+                    "vcam ainda não abriu — OBS Virtual Camera é exclusiva: "
+                    "em OBS clique Stop Virtual Camera (botão OFF), feche outros "
+                    "produtores, aguarde ~2s (auto-retry). Driver: Start Virtual "
+                    "Camera uma vez (Admin) só para registrar, depois Stop. "
+                    "pip install pyvirtualcam · docs/webcam-lipsync.md",
+                )
+            if snap.get("enabled") and not snap.get("capture_ok"):
+                _cam_warn(
+                    "capture_ok=false — feche a câmera no Teams e use "
+                    "WEBCAM_DEVICE_INDEX correto (listar no Device Manager).",
+                )
+            if sound_on and not snap.get("audio_playing"):
+                _cam_info(
+                    "tts=false — boca/marker só mexem durante TTS. "
+                    "Fale e espere tradução. Confirma Teams mic = CABLE Output.",
+                )
+            elif sound_on and float(snap.get("audio_rms") or 0) < 1e-4:
+                _cam_info(
+                    "tts ativo mas rms≈0 (silêncio no clip). Marker idle se sem energia.",
+                )
+            _cam_teams_hint()
+        else:
+            # bare [cam] toggles enable (starts threads on first on)
+            if not getattr(svc, "_started", False):
+                ok = svc.start()
+                if not ok:
+                    _cam_err(
+                        f"Webcam start falhou: {svc.snapshot().get('error') or '?'}",
+                    )
+                    return
+                svc.enable()
+                _cam_auto_sound()
+                _cam_ok("Webcam lip-sync ON (1ª ativação).")
+                _cam_teams_hint()
+            else:
+                on = svc.toggle()
+                if on:
+                    _cam_auto_sound()
+                    _cam_ok("Webcam lip-sync ON.")
+                    _cam_teams_hint()
+                else:
+                    _cam_info("Webcam lip-sync OFF.")
     elif cmd == "lc" or cmd.startswith("lc "):
         # Live Captions (Windows): pause / show / hide / status
         svc = getattr(pipeline, "caption_service", None)
@@ -3336,13 +3610,20 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 svc.stop()
         except Exception:
             pass
+        try:
+            cam = getattr(pipeline, "webcam_service", None)
+            if cam is not None:
+                cam.stop()
+        except Exception:
+            pass
         pipeline.stop()
         return
     else:
         ui.warn(
             f"Unknown command: '{cmd}'. Use: "
             f"r/rN, rs/rsN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
-            f"lc (Live Captions), a/aN (copy audio path), p/pN (open audio folder), "
+            f"lc (Live Captions), cam (webcam lip-sync), a/aN (copy audio path), "
+            f"p/pN (open audio folder), "
             f"n (mic), b (bypass voice), x, o, c, l, lo, lt, ld, lav, lv, ctts, "
             f"co/coN, codN, cls/cls1/cls2, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
             indent=3,
@@ -3825,18 +4106,32 @@ def main():
         _print_device_overview(in_idx, in_name, out_idx, out_name)
 
         monitor_idx = None
-        if cfg.MONITOR_PLAYBACK:
-            if cfg.MONITOR_DEVICE:
-                try:
-                    monitor_idx, _ = devices.resolve_device(
-                        cfg.MONITOR_DEVICE, "output"
-                    )
-                except ValueError as exc:
-                    _log_warn(f"Monitor device problem ({exc}); using default output.")
-                    monitor_idx = devices.default_output_index()
-            else:
-                monitor_idx = devices.default_output_index()
-            _log_info(f"Monitor playback ON -> {devices.device_name(monitor_idx)}")
+        # Monitor headphones: full TTS copy and/or pre-TTS cue (strict MONITOR_DEVICE)
+        want_monitor = bool(getattr(cfg, "MONITOR_PLAYBACK", False)) or bool(
+            getattr(cfg, "TTS_MONITOR_CUE", True)
+        )
+        if want_monitor:
+            mon_spec = str(getattr(cfg, "MONITOR_DEVICE", "") or "").strip()
+            from livelingo.monitor_cue import resolve_headphones
+
+            monitor_idx, mon_name = resolve_headphones(
+                mon_spec, cable_index=out_idx
+            )
+            if monitor_idx is None:
+                _log_warn(
+                    f"Monitor/cue: {mon_name}. "
+                    "Defina MONITOR_DEVICE=13 (índice do fone em list_devices.py)."
+                )
+            elif cfg.MONITOR_PLAYBACK:
+                _log_info(
+                    f"Monitor playback ON -> [{monitor_idx}] {mon_name}"
+                )
+            elif getattr(cfg, "TTS_MONITOR_CUE", True):
+                _log_info(
+                    f"TTS cue → fone [{monitor_idx}] {mon_name} "
+                    f"(~{getattr(cfg, 'TTS_MONITOR_CUE_LEAD_S', 1.0)}s antes; "
+                    "NÃO Cable/Teams)"
+                )
 
         if getattr(cfg, "MUTE_CAPTURE_DURING_PLAYBACK", True):
             hang_ms = int(getattr(cfg, "MUTE_CAPTURE_HANGOVER_MS", 350))
@@ -3873,6 +4168,13 @@ def main():
             # UX: always log listen start/end in the scrollback (TUI + classic).
             try:
                 ui.listen_progress(bool(is_speaking))
+            except Exception:
+                pass
+            # Webcam closed-mouth photo: only while VAD hears speech
+            try:
+                cam = getattr(pipeline, "webcam_service", None)
+                if cam is not None and hasattr(cam, "notify_vad_speech"):
+                    cam.notify_vad_speech(bool(is_speaking))
             except Exception:
                 pass
             app = tui_holder.get("app")
@@ -3981,6 +4283,73 @@ def main():
         else:
             pipeline.caption_service = None
 
+        # --- Webcam lip-sync → virtual camera (optional; Teams/Meet) ---
+        # NOTE: virtual cam = VIDEO only. Translated audio still goes to
+        # OUTPUT_DEVICE (CABLE Input); Teams mic must be CABLE Output.
+        webcam_service = None
+        if getattr(cfg, "WEBCAM_ENABLED", False):
+            try:
+                from livelingo.webcam import build_webcam_service
+                from livelingo.webcam.service import check_webcam_deps, teams_setup_hint
+
+                deps = check_webcam_deps()
+                if not deps.get("cv2") or not deps.get("pyvirtualcam"):
+                    miss = [
+                        n
+                        for n, ok in (
+                            ("opencv-python", deps.get("cv2")),
+                            ("pyvirtualcam", deps.get("pyvirtualcam")),
+                            ("mediapipe", deps.get("mediapipe")),
+                        )
+                        if not ok
+                    ]
+                    _log_warn(
+                        "WEBCAM_ENABLED=true mas deps ausentes: "
+                        + ", ".join(miss)
+                        + " → pip install opencv-python mediapipe pyvirtualcam"
+                    )
+                webcam_service = build_webcam_service(cfg, log=_log_cam)
+                pipeline.webcam_service = webcam_service
+                if webcam_service is not None:
+                    # Closed-mouth photo driven by VAD via on_listening → notify_vad_speech
+                    # Auto-start is deferred until TUI log sink is ready so
+                    # capture/vcam thread messages appear in the TUI log.
+                    # Classic CLI starts immediately below.
+                    want_auto = bool(getattr(cfg, "WEBCAM_START_ENABLED", False))
+                    pipeline._webcam_autostart = want_auto
+                    if want_auto and not use_tui:
+                        if webcam_service.start():
+                            webcam_service.enable()
+                            _log_cam(
+                                "Webcam lip-sync ON (auto) — virtual cam · "
+                                "[cam] toggle · [cam status]."
+                            )
+                            _log_cam(teams_setup_hint())
+                        else:
+                            _log_cam_warn(
+                                "Webcam enabled but start failed — "
+                                f"{webcam_service.snapshot().get('error')}"
+                            )
+                    elif want_auto and use_tui:
+                        _log_cam(
+                            "Webcam lip-sync: auto-start após TUI "
+                            "(logs na aba Sistema)."
+                        )
+                        _log_cam(teams_setup_hint())
+                    else:
+                        _log_cam(
+                            "Webcam lip-sync ready (idle) — "
+                            "ainda NÃO envia vídeo. Digite [cam on] com o app aberto, "
+                            "depois [cam status] (vcam=true cap_ok=true)."
+                        )
+                        _log_cam(teams_setup_hint())
+            except Exception as exc:
+                _log_cam_warn(f"Webcam lip-sync não iniciou: {exc}")
+                webcam_service = None
+                pipeline.webcam_service = None
+        else:
+            pipeline.webcam_service = None
+
         cmd_thread = None
         if use_tui:
             try:
@@ -4042,16 +4411,46 @@ def main():
                         caption_service.stop()
                 except Exception:
                     pass
+                try:
+                    if webcam_service is not None:
+                        webcam_service.stop()
+                except Exception:
+                    pass
                 pipeline.stop()
                 pipeline.join(timeout=5.0)
                 if cmd_thread is not None:
                     cmd_thread.join(timeout=5.0)
             session_switch = bool(getattr(pipeline, "switch_session", False))
         else:
-            # TUI exited — clean pipeline + Live Captions
+            # TUI exited — clean pipeline + Live Captions + webcam
             try:
                 if caption_service is not None:
                     caption_service.stop()
+            except Exception:
+                pass
+            # Snapshot BEFORE stop so terminal shows last cam state (TUI logs vanish).
+            if webcam_service is not None:
+                try:
+                    snap = webcam_service.snapshot() or {}
+                    ui.info(
+                        f"CAM final (antes de parar): vcam={snap.get('vcam_ready')} "
+                        f"cap_ok={snap.get('capture_ok')} "
+                        f"fps_out={snap.get('fps_out')} sent={snap.get('frames_sent')} "
+                        f"backend={snap.get('backend') or '—'} "
+                        f"err={snap.get('error') or '—'}",
+                        indent=3,
+                    )
+                    if not snap.get("vcam_ready"):
+                        ui.warn(
+                            "vcam nunca ficou ready — OBS Virtual Camera / "
+                            "pip install pyvirtualcam. Ver .cache/webcam_status.txt",
+                            indent=3,
+                        )
+                except Exception:
+                    pass
+            try:
+                if webcam_service is not None:
+                    webcam_service.stop()
             except Exception:
                 pass
             try:

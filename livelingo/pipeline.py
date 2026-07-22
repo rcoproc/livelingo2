@@ -301,28 +301,74 @@ class Pipeline:
         Returns the new active state.
         """
         enabled = bool(enabled)
+        join_thread = None
         with self._passthrough_lock:
             if enabled == self._passthrough_active:
                 return self._passthrough_active
             if enabled:
                 self._start_passthrough_unlocked()
-            else:
-                self._stop_passthrough_unlocked()
-            return self._passthrough_active
+                return True
+            join_thread = self._signal_stop_passthrough_unlocked()
+        # NEVER join / resume while holding _passthrough_lock (deadlock).
+        self._join_passthrough_thread(join_thread)
+        self._finish_stop_passthrough()
+        return False
 
     def toggle_voice_passthrough(self) -> bool:
         """Toggle bypass; returns True if passthrough is now active."""
+        join_thread = None
         with self._passthrough_lock:
             if self._passthrough_active:
-                self._stop_passthrough_unlocked()
-                return False
-            self._start_passthrough_unlocked()
-            return True
+                join_thread = self._signal_stop_passthrough_unlocked()
+            else:
+                self._start_passthrough_unlocked()
+                return True
+        # Join + resume OUTSIDE the lock — second [b] used to freeze the app:
+        # stop held the lock, then join + _resume_chunk_playback →
+        # is_passthrough_active() re-entered the same non-reentrant Lock.
+        self._join_passthrough_thread(join_thread)
+        self._finish_stop_passthrough()
+        return False
+
+    def _signal_stop_passthrough_unlocked(self):
+        """
+        Mark bypass OFF and return the worker thread to join *outside* the lock.
+
+        Caller must hold ``_passthrough_lock``.
+        """
+        self._passthrough_stop.set()
+        t = self._passthrough_thread
+        self._passthrough_thread = None
+        self._passthrough_active = False
+        return t
+
+    def _join_passthrough_thread(self, t):
+        if t is not None and t.is_alive():
+            t.join(timeout=2.0)
+        # Ready for a later start (start also clears this flag).
+        try:
+            self._passthrough_stop.clear()
+        except Exception:
+            pass
+
+    def _finish_stop_passthrough(self):
+        """Resume TTS + STT after bypass OFF (must not hold _passthrough_lock)."""
+        try:
+            self._resume_chunk_playback()
+        except Exception:
+            pass
+        try:
+            if not self.is_mic_muted() and not self._is_capture_held_for_playback():
+                self.recorder.set_capture_enabled(True)
+        except Exception:
+            pass
 
     def _start_passthrough_unlocked(self):
-        # Stop any TTS going to CABLE
+        # Same hard stop as [x]: cut any TTS already going to Cable/Teams
         try:
-            self._interrupt_playback()
+            with self._playback_suppress_lock:
+                self._playback_suppressed = True
+            self._interrupt_playback(force=True)
         except Exception:
             pass
         try:
@@ -346,30 +392,31 @@ class Pipeline:
                 except Exception:
                     pass
                 self._player = None
+        # Drop any TTS still queued while we own Cable for raw voice
+        try:
+            while True:
+                self.playback_queue.get_nowait()
+        except Exception:
+            pass
+        try:
+            cam = getattr(self, "webcam_service", None)
+            if cam is not None and hasattr(cam, "clear_tts_audio"):
+                cam.clear_tts_audio()
+        except Exception:
+            pass
 
         self._passthrough_stop.clear()
         self._passthrough_active = True
+        # Suppress must stay True for entire bypass ON (in-flight chunks
+        # call _resume_chunk_playback before TTS — must not re-arm Cable).
+        with self._playback_suppress_lock:
+            self._playback_suppressed = True
         self._passthrough_thread = threading.Thread(
             target=self._passthrough_loop,
             name="voice-passthrough",
             daemon=True,
         )
         self._passthrough_thread.start()
-
-    def _stop_passthrough_unlocked(self):
-        self._passthrough_stop.set()
-        t = self._passthrough_thread
-        self._passthrough_thread = None
-        self._passthrough_active = False
-        if t is not None and t.is_alive():
-            t.join(timeout=1.5)
-        self._passthrough_stop.clear()
-        # Resume STT capture unless mic is muted or TTS hold is active
-        try:
-            if not self.is_mic_muted() and not self._is_capture_held_for_playback():
-                self.recorder.set_capture_enabled(True)
-        except Exception:
-            pass
 
     def _passthrough_loop(self):
         """
@@ -388,6 +435,9 @@ class Pipeline:
         use_mon = mon_dev is not None and bool(
             getattr(self.cfg, "MONITOR_PLAYBACK", False)
         )
+        # True if loop ended without user toggle / app stop (error or device fail)
+        unexpected_exit = False
+        me = threading.current_thread()
 
         try:
             with (
@@ -431,6 +481,9 @@ class Pipeline:
                         else:
                             data = data.reshape(-1, 1)
                         frame = np.ascontiguousarray(data, dtype=np.float32)
+                        # Stop may have been set during blocking read — don't write
+                        if self._passthrough_stop.is_set() or self.stop_event.is_set():
+                            break
                         out.write(frame)
                         if mon is not None:
                             try:
@@ -445,21 +498,25 @@ class Pipeline:
                         except Exception:
                             pass
         except Exception as exc:
-            ui.error(f"[b] Bypass de voz falhou: {exc}")
+            unexpected_exit = True
+            ui.error(f"[b] Bypass de voz falhou: {exc}", panel="app")
         finally:
+            user_stop = self._passthrough_stop.is_set() or self.stop_event.is_set()
             with self._passthrough_lock:
-                self._passthrough_active = False
-                self._passthrough_thread = None
-            # If we exited due to error/stop, try to restore capture
-            try:
-                if (
-                    not self.stop_event.is_set()
-                    and not self.is_mic_muted()
-                    and not self._is_capture_held_for_playback()
-                ):
-                    self.recorder.set_capture_enabled(True)
-            except Exception:
-                pass
+                # User stop already cleared active/thread under lock; only clean
+                # up if we still own the slot (crash / unexpected exit).
+                if self._passthrough_thread is me:
+                    self._passthrough_thread = None
+                    self._passthrough_active = False
+                elif self._passthrough_active and self._passthrough_thread is None:
+                    self._passthrough_active = False
+            # Crash / device fail: keep TTS cut until user toggles [b] again.
+            if unexpected_exit or not user_stop:
+                try:
+                    with self._playback_suppress_lock:
+                        self._playback_suppressed = True
+                except Exception:
+                    pass
 
     def check_mic_muted_warn(self, indent=3):
         """Startup / pre-listen warning if OS mic is muted or volume ~0."""
@@ -993,16 +1050,43 @@ class Pipeline:
             )
         return self._executor
 
-    def _enqueue_playback(self, audio, sample_rate, interruptible=False):
+    def _is_tts_output_blocked(self) -> bool:
+        """
+        True when nothing may write TTS to OUTPUT_DEVICE (Cable → Teams).
+
+        Covers: voice bypass [b], user [x] suppress, sound-off suppress.
+        """
+        if self.is_passthrough_active():
+            return True
+        with self._playback_suppress_lock:
+            return bool(self._playback_suppressed)
+
+    def _enqueue_playback(
+        self, audio, sample_rate, interruptible=False, *, pre_tts_cue=False
+    ):
+        """
+        Queue TTS for Cable Out.
+
+        ``pre_tts_cue=True``: play headphones warning bip once before this
+        item. Use only for the **first** segment of a chunk (or one-shot
+        replay/edit). Later sentence/clause segments of the same chunk must
+        pass ``False`` so long utterances do not bip on every phrase.
+        """
         if not self.is_sound_enabled():
             return
-        if self.is_passthrough_active():
-            # Cable is owned by live mic bypass — do not mix TTS into it
+        if self._is_tts_output_blocked():
+            # Cable owned by bypass, or [x]/sound-off — never mix TTS in
             return
-        with self._playback_suppress_lock:
-            if self._playback_suppressed:
-                return
-        self.playback_queue.put((audio, sample_rate, interruptible))
+        self.playback_queue.put(
+            (audio, sample_rate, interruptible, bool(pre_tts_cue))
+        )
+        # Webcam lip-sync: feed the same TTS waveform that will hit Cable Out.
+        try:
+            cam = getattr(self, "webcam_service", None)
+            if cam is not None and hasattr(cam, "push_tts_audio"):
+                cam.push_tts_audio(audio, sample_rate)
+        except Exception:
+            pass
 
     def stop_playback(self):
         """Stop current TTS and drop queued audio for this utterance."""
@@ -1015,9 +1099,24 @@ class Pipeline:
         return True
 
     def _resume_chunk_playback(self):
-        """Allow TTS for the next (or current) chunk after stop or interrupt."""
+        """Allow TTS for the next (or current) chunk after stop or interrupt.
+
+        No-op while voice bypass owns Cable — in-flight chunk workers call this
+        before TTS (see process path); clearing suppress there re-armed Player
+        and leaked translation audio into Teams during [b].
+
+        Lock order: never hold suppress_lock and passthrough_lock together
+        (start bypass takes suppress under passthrough).
+        """
+        if self.is_passthrough_active():
+            return
         with self._playback_suppress_lock:
             self._playback_suppressed = False
+        # Bypass may have started between the check and clear — re-arm suppress.
+        if self.is_passthrough_active():
+            with self._playback_suppress_lock:
+                self._playback_suppressed = True
+            return
         with self._player_lock:
             player = self._player
         if player is not None:
@@ -1052,6 +1151,13 @@ class Pipeline:
                 self.playback_queue.get_nowait()
             except queue.Empty:
                 break
+        # Lip-sync: drop scheduled TTS so mouth closes with audio stop
+        try:
+            cam = getattr(self, "webcam_service", None)
+            if cam is not None and hasattr(cam, "clear_tts_audio"):
+                cam.clear_tts_audio()
+        except Exception:
+            pass
 
     def _use_streaming_llm(self):
         return getattr(self.cfg, "STREAMING_LLM", False) and hasattr(
@@ -1357,7 +1463,7 @@ class Pipeline:
         )
 
         self._resume_chunk_playback()
-        self._enqueue_playback(tts_audio, sample_rate)
+        self._enqueue_playback(tts_audio, sample_rate, pre_tts_cue=True)
         if self.is_sound_enabled():
             ui.success(f"Chunk {chunk_num} atualizado e reproduzido com sucesso!")
         else:
@@ -1528,10 +1634,10 @@ class Pipeline:
             return
         audio, rate, path = result
         # Always show folder+file (cache hit never prints "Gerando áudio…")
-        self._print_audio_path_line(path)
+        self._print_audio_path_line(path, chunk_num=n)
         try:
             self._resume_chunk_playback()
-            self._enqueue_playback(audio, rate)
+            self._enqueue_playback(audio, rate, pre_tts_cue=True)
         except Exception as exc:
             ui.error(f"Erro ao enfileirar áudio {label} do chunk {n}: {exc}")
             return
@@ -1585,8 +1691,8 @@ class Pipeline:
         return tts_audio, sample_rate, path
 
     @staticmethod
-    def _print_audio_path_line(path):
-        """Print full host path (folder+file) for r/rN/rs/rsN replay."""
+    def _print_audio_path_line(path, chunk_num=None):
+        """Print full host path with chunk ref on Sistema (TUI)."""
         if not path:
             return
         try:
@@ -1594,8 +1700,23 @@ class Pipeline:
         except Exception:
             display = str(path)
         display = (display or "").strip()
-        if display:
-            ui.dim(f"audio: {display}")
+        if not display:
+            return
+        n = chunk_num
+        if n is not None:
+            ui.print_audio_ref(n, display)
+        else:
+            # Fallback without number
+            try:
+                import os
+
+                base = os.path.basename(display.replace("\\", "/"))
+            except Exception:
+                base = ""
+            prefix = f"[Chunk ?] " if base else ""
+            ui.dim(f"{prefix}audio: {display}", panel="app")
+            if base:
+                ui.dim(f"{prefix}arquivo: {base}", panel="app")
 
     def _synthesize_with_optional_voice(self, text, voice_id=None):
         """
@@ -1931,15 +2052,22 @@ class Pipeline:
             else None
         )
 
+        # Pre-TTS cue once per chunk (first segment only), not every sentence.
+        pre_tts_cue_remaining = True
+
         def on_segment(audio, sample_rate_):
-            nonlocal tts_first_audio, time_to_audio, sample_rate
+            nonlocal tts_first_audio, time_to_audio, sample_rate, pre_tts_cue_remaining
             now = time.perf_counter()
             if tts_first_audio is None and t_tts_start is not None:
                 tts_first_audio = now - t_tts_start
             if time_to_audio is None:
                 time_to_audio = now - t0
             sample_rate = sample_rate_
-            self._enqueue_playback(audio, sample_rate_, False)
+            do_cue = pre_tts_cue_remaining
+            pre_tts_cue_remaining = False
+            self._enqueue_playback(
+                audio, sample_rate_, False, pre_tts_cue=do_cue
+            )
 
         will_synthesize = sound_on or (sound_off and not self._skip_tts_when_muted())
         if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
@@ -2257,6 +2385,13 @@ class Pipeline:
                         f"[chunk {n}] [debug] TTS em background concluído (sound OFF)."
                     )
                 _finalize_chunk_timings(t3, print_timings=False)
+                # print_timings=False skips path line — log file on Sistema here
+                try:
+                    p = self.get_audio_path_by_chunk(n) or ""
+                    if p:
+                        ui.print_audio_ref(n, p)
+                except Exception:
+                    pass
                 ui.chunk_progress(n, "ready", detail="voz em cache")
                 if self.cfg.VERBOSE:
                     ui.dim(
@@ -2384,6 +2519,82 @@ class Pipeline:
         return path
 
     # ------------------------------------------------------------------ #
+    def _play_monitor_pre_tts_cue(self, player, sample_rate: int) -> None:
+        """
+        ~1s before Cable TTS: bip on MONITOR only — never Cable/Teams.
+
+        Called only for the first playback item of a chunk (see
+        ``pre_tts_cue`` on ``_enqueue_playback``), not for every
+        sentence/clause of a long multi-segment utterance.
+
+        - Writes only via monitor_cue (separate OutputStream on headphones).
+        - Pauses Player Cable stream for the whole lead window so the bip
+          cannot leak into CABLE Input (Teams mic path).
+        - Lead after the short bip is wall-clock sleep (no silence pad on a
+          long stream that could dual-route on Windows shared mode).
+        """
+        if not bool(getattr(self.cfg, "TTS_MONITOR_CUE", True)):
+            return
+
+        from .monitor_cue import make_double_beep, play_cue_on_headphones
+
+        lead = float(getattr(self.cfg, "TTS_MONITOR_CUE_LEAD_S", 1.0) or 1.0)
+        lead = max(0.2, min(3.0, lead))
+        sr = int(sample_rate or 24000)
+        try:
+            cue = make_double_beep(
+                sr,
+                duration_s=float(
+                    getattr(self.cfg, "TTS_MONITOR_CUE_DURATION_S", 0.14) or 0.14
+                ),
+                freq_hz=float(getattr(self.cfg, "TTS_MONITOR_CUE_FREQ_HZ", 880) or 880),
+                amplitude=float(
+                    getattr(self.cfg, "TTS_MONITOR_CUE_AMPLITUDE", 0.22) or 0.22
+                ),
+            )
+        except Exception:
+            return
+
+        def _clog(msg):
+            try:
+                ui.info(msg, indent=3, panel="app")
+            except Exception:
+                pass
+
+        # Prefer index resolved at startup (pipeline.monitor_device)
+        mon_idx = self.monitor_device
+        mon_spec = str(getattr(self.cfg, "MONITOR_DEVICE", "") or "")
+        if mon_idx is None and not mon_spec.strip():
+            _clog("TTS cue SKIP: MONITOR_DEVICE vazio")
+            return
+
+        # Mute Cable for entire cue+lead window (bip must not reach Teams)
+        if player is not None:
+            try:
+                player.pause_main_output()
+            except Exception:
+                pass
+        t0 = time.perf_counter()
+        try:
+            play_cue_on_headphones(
+                cue,  # short bip only — no silence pad on the stream
+                sr,
+                monitor_index=mon_idx,
+                monitor_spec=mon_spec,
+                cable_index=self.output_device,
+                log=_clog,
+            )
+            # Remaining lead: sleep while Cable stays paused (silent)
+            remaining = lead - (time.perf_counter() - t0)
+            if remaining > 0.01:
+                time.sleep(remaining)
+        finally:
+            if player is not None:
+                try:
+                    player.resume_main_output()
+                except Exception:
+                    pass
+
     def _playback_loop(self):
         """Send synthesized audio to the VB-Cable output device."""
         try:
@@ -2400,20 +2611,27 @@ class Pipeline:
                         player.interrupt()
                     continue
 
-                if len(item) == 3:
+                # (audio, sr, interruptible[, pre_tts_cue])
+                pre_tts_cue = False
+                if len(item) == 4:
+                    audio, sample_rate, interruptible, pre_tts_cue = item
+                    pre_tts_cue = bool(pre_tts_cue)
+                elif len(item) == 3:
                     audio, sample_rate, interruptible = item
                 else:
                     audio, sample_rate = item
                     interruptible = False
 
-                # Drop leftovers after [x] / sound-off suppress (queue race).
-                with self._playback_suppress_lock:
-                    if self._playback_suppressed:
-                        continue
+                # Drop leftovers after [x] / sound-off / voice bypass (queue race).
+                if self._is_tts_output_blocked():
+                    continue
 
                 # Create/get player under lock, but NEVER hold lock during play()
-                # so interrupt() can fire mid-write.
+                # so interrupt() can fire mid-write. Never open Player while
+                # bypass owns Cable (would mix TTS into Teams mic path).
                 with self._player_lock:
+                    if self.is_passthrough_active():
+                        continue
                     if self._player is None:
                         try:
                             self._player = Player(
@@ -2421,6 +2639,9 @@ class Pipeline:
                                 sample_rate,
                                 self.monitor_device,
                                 block_ms=getattr(self.cfg, "PLAYBACK_BLOCK_MS", 40),
+                                monitor_full_playback=bool(
+                                    getattr(self.cfg, "MONITOR_PLAYBACK", False)
+                                ),
                             )
                         except Exception as exc:
                             ui.error(
@@ -2431,13 +2652,12 @@ class Pipeline:
                             break
                     player = self._player
 
-                # clear + re-check suppress so a concurrent [x] is not undone
-                # by play()'s default clear.
+                # clear + re-check suppress/bypass so concurrent [x]/[b] is not
+                # undone by play()'s default clear.
                 player.clear_interrupt()
-                with self._playback_suppress_lock:
-                    if self._playback_suppressed:
-                        player.interrupt()
-                        continue
+                if self._is_tts_output_blocked():
+                    player.interrupt()
+                    continue
 
                 self._hold_capture_for_playback()
                 try:
@@ -2445,6 +2665,12 @@ class Pipeline:
                         ui.pipeline_stage("play", source="voz")
                     except Exception:
                         pass
+                    # Heads-up bip once per chunk (first segment only), never
+                    # again for each sentence/clause of a long utterance.
+                    if pre_tts_cue:
+                        self._play_monitor_pre_tts_cue(player, sample_rate)
+                    if self._is_tts_output_blocked() or player.is_interrupted():
+                        continue
                     player.play(
                         audio,
                         sample_rate,

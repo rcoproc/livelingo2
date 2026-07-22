@@ -95,8 +95,11 @@ def test_heuristic_mouth_roi_when_no_mediapipe():
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     frame[:] = 40
     roi_h = FaceMouthROI()
-    # Force no mesh path
+    # Force heuristic path without importing mediapipe (lazy init)
+    roi_h._init_attempted = True
     roi_h._mesh = None
+    roi_h._cv2 = None
+    roi_h._mp = None
     r = roi_h.process(frame)
     assert r.face_ok is True
     assert r.crop_bgr.size > 0
