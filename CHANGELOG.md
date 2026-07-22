@@ -11,13 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 Tag: [`v1.2.1`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1).
 
-**Highlights:** webcam/TUI day-to-day polish after v1.1.0 — reliable **OBS Virtual Camera** open, **full-face F10 freeze**, cleaner TUI tab bar (F2/F5), bypass tips on **Sistema**, no procedural teeth paint, safer MediaPipe probe on Windows.
+**Highlights:** webcam/TUI day-to-day polish after v1.1.0 — reliable **OBS Virtual Camera** open, **full-face F10 freeze**, **`[cam on]`/`[cam off]`** that truly free physical + virtual devices, cleaner TUI tab bar (F2/F5), bypass tips on **Sistema**, CI webcam unit tests with OpenCV headless, safer MediaPipe probe on Windows.
 
 ### Fixed
 
 - **OBS Virtual Camera open** — exclusive producer lock (Stop Virtual Camera in OBS
   while LiveLingo streams); open vcam on the emit thread (no nested open zombies);
   retry while `[cam on]`; release vcam on disable; clearer Windows/OBS conflict hints.
+- **`[cam off]` held the physical webcam** — capture loop only paused reads; LED/device
+  stayed exclusive. Capture now mirrors emit: **release** `VideoCapture` on disable,
+  re-open on `[cam on]`. Queues drained so re-enable does not flash a stale frame.
+  Audio/STT/TTS paths untouched; worker threads stay idle for a fast re-enable.
 - **Closed-mouth / F10 plate size** — freeze plate is **full face** (MediaPipe face
   oval or mouth-anchored ellipse forehead→chin), not a tiny mouth-only oval and not
   a full-frame rectangular paste. Snap preview (`cam snap closed`) draws the same
@@ -30,6 +34,9 @@ Tag: [`v1.2.1`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1).
 - **Webcam deps probe / FaceMouthROI** — lazy MediaPipe init; `check_webcam_deps`
   uses `importlib.util.find_spec` (avoids native crash on some Windows/Python builds
   when probing mediapipe at import time).
+- **CI webcam unit tests** — GitHub Actions had no OpenCV → 8 failures
+  (`No module named 'cv2'`, no-op blend/flip/marker). `requirements-dev.txt` now
+  installs `opencv-python-headless`; graphics tests skip cleanly if OpenCV is absent.
 
 ### Changed
 
@@ -37,14 +44,20 @@ Tag: [`v1.2.1`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1).
   Removed dedicated `#bypass-row` that wasted a line above the logs.
 - **Webcam open morph** — gentle lip warp only; **procedural virtual teeth paint
   removed** (poor position/quality). `WEBCAM_TEETH_*` config dropped.
+- **`[cam on]` / `[cam off]` messaging** — clear device lifecycle (open/release
+  physical + OBS Virtual Cam); idempotent on/off; help + `docs/webcam-lipsync.md`
+  no longer claim “freeze last frame” on off.
 - **Local STT first boot** — docs note that `WHISPER_MODEL=large-v3-turbo` on CPU
   blocks startup on Hugging Face download + load (prefer `small` for daily use).
+- **`MouthTemplate.with_horizontal_flip`** — pure NumPy flip (no cv2 required for
+  that helper).
 
 ### Docs
 
 - README (EN/pt-BR): full-face freeze + `cam snap closed` steps; F2/F5 on tab bar;
   OBS exclusive-producer checklist; local Whisper `.env` notes.
-- `docs/webcam-lipsync.md`: plate scale defaults, full-face behavior, OBS stop/start.
+- `docs/webcam-lipsync.md`: plate scale defaults, full-face behavior, OBS stop/start;
+  `[cam off]` releases physical + virtual cam; `[cam on]` re-opens.
 
 ## [1.1.0] - 2026-07-22
 
@@ -327,7 +340,8 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
 
-[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1
 [1.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.1.0
 [1.0.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0
 [0.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v0.1.0
