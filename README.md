@@ -246,6 +246,12 @@ Common settings:
 | `TRANSLATION_ENGINE` | `auto` | `auto`/`llm`/`google` (see below) |
 | `GROQ_API_KEY` | *(empty)* | Free Groq key → much better translation quality |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model (`llama-3.1-8b-instant` = faster) |
+| `STT_FALLBACK` | `local` | On Groq STT failure mid-session: `local` Whisper or `none` |
+| `TRANSLATION_FALLBACK` | `google` | On LLM failure mid-session: `google` or `none` |
+| `CIRCUIT_FAIL_THRESHOLD` | `3` | Open circuit after N primary failures |
+| `CIRCUIT_COOLDOWN_S` | `60` | Seconds before probing primary again |
+| `STT_WARMUP_LOCAL` | `true` | Pre-load local Whisper in background when Groq is primary |
+| `FAILOVER_LOG` | `true` | Rate-limited `[ha]` messages on the System panel |
 
 ### Elegant Edge voices (quick reference)
 
@@ -324,8 +330,10 @@ Other knobs:
 - **Wrong names/jargon?** Set `STT_INITIAL_PROMPT` to a sentence containing the
   expected vocabulary, names and accents — it biases both engines.
 
-> If the Groq key/network fails at startup, LiveLingo automatically falls back
-> to the local Whisper model so it always works.
+> If the Groq key/network fails at **startup**, LiveLingo falls back to the local
+> Whisper model. With default HA settings it also fails over **mid-session**
+> (timeout / 429 / network) to local Whisper without quitting — see
+> [Provider failover](#provider-failover-ha) below.
 
 ### Better translation quality (optional, free LLM)
 
@@ -349,6 +357,37 @@ translates it in one step), plug in a **free Groq API key**:
 > transcription; with the LLM engine, the recognized **text** is sent for
 > translation. To keep audio fully local, set `STT_ENGINE=local`. Without a key,
 > STT runs locally and only Google Translate is used.
+
+### Provider failover (HA)
+
+LiveLingo keeps the session alive when a cloud provider blips. Wrappers in
+`livelingo/failover.py` sit in front of STT and translation:
+
+| Layer | Primary | Automatic fallback (default) |
+|-------|---------|------------------------------|
+| **STT** | Groq Whisper | Local faster-whisper (`STT_FALLBACK=local`) |
+| **Translation** | Groq LLM | Google Translate (`TRANSLATION_FALLBACK=google`) |
+
+- Transient errors (timeout, 429, DNS/network): up to `FAILOVER_MAX_RETRIES` on
+  the primary, then secondary. A **circuit breaker** stops hammering a dead
+  primary for `CIRCUIT_COOLDOWN_S` seconds.
+- Permanent errors (401 / bad model 404): open the circuit; use secondary only.
+- Boot self-test failure no longer exits the app if a fallback exists.
+- Local Whisper can warm in a background thread (`STT_WARMUP_LOCAL=true`) so the
+  first mid-session fallback does not wait on a cold model load (processor
+  thread only; TUI stays responsive).
+- System panel: rate-limited `[ha] …` lines when a fallback or restore happens.
+
+**Limits:** airplane mode / total offline still cannot translate (both LLM and
+Google need network). STT can continue via local Whisper. For a true offline
+translate path you need phrase-cache HITs or a future local LLM.
+
+Disable HA (not recommended for live sessions):
+
+```env
+STT_FALLBACK=none
+TRANSLATION_FALLBACK=none
+```
 
 ---
 
@@ -393,13 +432,14 @@ With `UI_MODE=tui` (default) you get a Textual UI: log tabs, command field, fixe
 | **Novidades** | Project `CHANGELOG.md` (Markdown) |
 | **Lista de comandos** | Grouped command help in `SOURCE_LANG` |
 
-Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`═ ↕ captions ═`) to grow/shrink captions vs the middle log tabs. Between captions and tabs: compact **F2** bypass chip.
+Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`═ ↕ captions ═`) to grow/shrink captions vs the middle log tabs. Between captions and tabs: compact **F2** bypass chip and **F5** auto-scroll chip (both LC + VOZ).
 
 | Shortcut / command | Action |
 |--------------------|--------|
 | `F1` | Startup help → **Sistema** tab (opens that tab) |
 | `F3` | Cycle log tabs (Tradução → Sistema → Novidades → Lista de comandos) |
 | `F4` / `u` | Compact UI: hide command menu; keep command line (optional window height shrink) |
+| `F5` / click scroll chip | **Auto-scroll lock** for Tradução **LC + VOZ** — ON (green) follows new lines; OFF (amber) freezes the viewport while lines still append. Footer shows `Auto↓ ON` / `Auto↓ OFF`. `GG` still jumps once without re-enabling follow when OFF |
 | `Ctrl+C` | Copy selected log text |
 | `Ctrl+Shift+C` | Copy entire content of the **focused** log pane (on Tradução: LC or VOZ) |
 | `F2` / click bypass chip / `b` | **Voice bypass** — raw mic → CABLE without translation |
@@ -542,6 +582,7 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
     ├── capture.py      # mic -> audio chunks (energy VAD or fixed chunks)
     ├── transcribe.py   # local faster-whisper STT
     ├── groq_transcribe.py # Groq cloud Whisper STT (higher accuracy, optional)
+    ├── failover.py     # runtime HA: STT Groq→local, LLM→Google (circuit breaker)
     ├── translate.py    # deep-translator (Google) translation
     ├── llm.py          # Groq LLM translation (higher quality, optional)
     ├── synthesize.py   # edge-tts TTS -> numpy audio

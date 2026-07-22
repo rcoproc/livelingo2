@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+### Added
+
+- **F5 auto-scroll lock (TUI Tradução)** — toggles follow-to-bottom for **both** LC (left) and VOZ (right) panes. Default ON (green chip `F5 Auto↓ ON` + footer `Auto↓ ON`). OFF (amber chip + footer `Auto↓ OFF`) freezes the viewport so new lines / post-chunk / command output still append but **do not yank** the view. Click the chip (next to F2) or press **F5**. Explicit `GG`/`gf` still jumps once without re-enabling follow when OFF. Documented in command-help (all langs).
+- **Runtime provider failover / HA (P0)** — mid-session redundancy without killing the app:
+  - **STT:** Groq primary → **local faster-whisper** on timeout/429/network (`FailoverTranscriber`); optional background warm-up (`STT_WARMUP_LOCAL`).
+  - **Translation:** Groq LLM primary → **Google Translate** (`FailoverTranslator`); stream mid-fail uses full secondary text (safe for TTS).
+  - **Circuit breaker** skips a dead primary for a cooldown; permanent errors (401/404) do not hammer the API.
+  - Boot self-test failure **no longer `sys.exit`** when a fallback exists.
+  - Module: `livelingo/failover.py`. Config: `STT_FALLBACK`, `TRANSLATION_FALLBACK`, `FAILOVER_MAX_RETRIES`, `FAILOVER_RETRY_SLEEP_S`, `CIRCUIT_FAIL_THRESHOLD`, `CIRCUIT_COOLDOWN_S`, `STT_FALLBACK_WAIT_S`, `STT_WARMUP_LOCAL`, `FAILOVER_LOG` (see `.env.example`).
+  - System panel logs rate-limited `[ha] …` events.
+- **Tests** — `tests/test_failover.py` (classifier, circuit, STT/TR wrappers, helpers); smoke imports `livelingo.failover` + HA config attrs.
+
+### Changed
+
+- **`post_log` / VAD speak / `GG`** respect F5 state for Tradução panes (no forced scroll when auto-scroll is OFF).
+- **Help / F1 status lines** detect failover wrappers (LLM+Google / Groq+local HA badges).
+
 ## [1.0.0] - 2026-07-21
 
 First stable release of **LiveLingo2** (fork of [roirude/LiveLingo](https://github.com/roirude/LiveLingo)).

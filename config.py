@@ -152,6 +152,26 @@ GROQ_MODEL = _get_str("GROQ_MODEL", "llama-3.3-70b-versatile")
 # Seconds to wait for the LLM response before giving up on a chunk.
 LLM_TIMEOUT = _get_float("LLM_TIMEOUT", 15.0)
 
+# --------------------------------------------------------------------------- #
+# Provider failover / HA (runtime — no app exit on transient cloud failures)
+# --------------------------------------------------------------------------- #
+# STT: when primary (Groq) fails mid-session → local faster-whisper (or none).
+STT_FALLBACK = _get_str("STT_FALLBACK", "local").lower()
+# Translation: when primary (Groq LLM) fails → Google deep-translator (or none).
+TRANSLATION_FALLBACK = _get_str("TRANSLATION_FALLBACK", "google").lower()
+# Extra attempts on the *primary* only for transient errors (timeout/429/5xx).
+FAILOVER_MAX_RETRIES = _get_int("FAILOVER_MAX_RETRIES", 1)
+FAILOVER_RETRY_SLEEP_S = _get_float("FAILOVER_RETRY_SLEEP_S", 0.35)
+# Circuit breaker: after N failures, skip primary for COOLDOWN seconds.
+CIRCUIT_FAIL_THRESHOLD = _get_int("CIRCUIT_FAIL_THRESHOLD", 3)
+CIRCUIT_COOLDOWN_S = _get_float("CIRCUIT_COOLDOWN_S", 60.0)
+# Max seconds the processor may wait for local Whisper warm-up on STT fallback.
+STT_FALLBACK_WAIT_S = _get_float("STT_FALLBACK_WAIT_S", 8.0)
+# Pre-load local Whisper in a daemon thread when Groq is primary (no UI block).
+STT_WARMUP_LOCAL = _get_bool("STT_WARMUP_LOCAL", True)
+# Log failover / circuit events to the System panel (rate-limited).
+FAILOVER_LOG = _get_bool("FAILOVER_LOG", True)
+
 # Max estimated tokens of transcript per Groq request when generating the
 # share/export AI summary (`c`). Free-tier llama-3.1-8b-instant is often ~6k TPM;
 # default 4000 leaves room for system prompt + output. 0 = use built-in default.

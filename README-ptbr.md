@@ -49,6 +49,7 @@ O projeto é modular, com pipeline multi-thread:
 | `livelingo/capture.py` | Captura de áudio + VAD (detecção de voz) |
 | `livelingo/transcribe.py` | Whisper local (faster-whisper) |
 | `livelingo/groq_transcribe.py` | Whisper na nuvem Groq |
+| `livelingo/failover.py` | HA runtime: STT Groq→local, LLM→Google (circuit breaker) |
 | `livelingo/translate.py` | Google Translate (grátis) |
 | `livelingo/llm.py` | Tradução via LLM Groq (mais natural) |
 | `livelingo/synthesize.py` | Factory TTS (edge / Piper / hybrid) |
@@ -97,7 +98,7 @@ O projeto é modular, com pipeline multi-thread:
 | **Local** (`faster-whisper`) | Offline, usa CPU/GPU local |
 | **Auto** | Groq se tiver key, senão local |
 
-Se a key Groq ou a rede falharem na inicialização, o LiveLingo faz fallback automático para o Whisper local.
+Se a key Groq ou a rede falharem na **inicialização**, o LiveLingo faz fallback para o Whisper local. Com HA padrão, falhas **durante a sessão** (timeout / 429 / rede) também caem no Whisper local **sem fechar a app** — ver [Failover de provedores (HA)](#failover-de-provedores-ha).
 
 ### 3. Múltiplos motores de tradução
 
@@ -106,6 +107,8 @@ Se a key Groq ou a rede falharem na inicialização, o LiveLingo faz fallback au
 | **LLM Groq** (`llama-3.3-70b`) | Corrige erros de STT e traduz de forma natural |
 | **Google Translate** | Grátis, sem key, mais literal |
 | **Auto** | LLM se tiver `GROQ_API_KEY`, senão Google |
+
+Com HA padrão, se o LLM falhar **mid-session**, a tradução tenta **Google** automaticamente (ainda precisa de internet). Offline total (modo avião) derruba LLM **e** Google — o STT local pode continuar, a tradução cloud não.
 
 ### 4. Múltiplos motores de TTS
 
@@ -155,6 +158,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `cls1` / `cls2` | Limpar só **LC** (esquerda) / só **VOZ** (direita) |
 | `gg` / `GG` (ou `gt` / `gf`) | **Go top** / **Go bottom** — início ou fim do painel de log **focado** |
 | `u` / `F4` | **UI compacta** — oculta menu de comandos; linha de comando permanece |
+| `F5` / chip auto-scroll | **Trava auto-scroll** da Tradução **LC + VOZ** — ON (verde) segue o fim; OFF (âmbar) congela a vista (linhas ainda entram). Rodapé: `Auto↓ ON` / `Auto↓ OFF` |
 | `ld` | Listar dispositivos de áudio (`python list_devices.py`) no log |
 | `lav` | Listar todas as vozes edge-tts (`edge-tts --list-voices`) no log |
 | `lv` | Listar vozes filtradas (`en-US|en-GB|es-ES|es-MX|fr-FR`) no log |
@@ -163,7 +167,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
 
 **Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = ajuda agrupada.
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
@@ -316,6 +320,29 @@ TTS_HYBRID=false
 | Tradução | **Ainda precisa de internet** (Google) |
 
 > Tradução **100% offline** (LLM local, ex. Ollama) ainda **não está integrada** ao LiveLingo.
+> HIT no **phrase cache** (`PHRASE_CACHE=true`) pode evitar rede em frases já vistas.
+
+### Failover de provedores (HA)
+
+Wrappers em `livelingo/failover.py` mantêm a sessão viva se a nuvem falhar:
+
+| Camada | Primário | Fallback automático (padrão) |
+|--------|----------|------------------------------|
+| **STT** | Groq Whisper | faster-whisper local (`STT_FALLBACK=local`) |
+| **Tradução** | Groq LLM | Google Translate (`TRANSLATION_FALLBACK=google`) |
+
+- Erros transitórios (timeout, 429, DNS/rede): até `FAILOVER_MAX_RETRIES` no primário, depois secondary. **Circuit breaker** evita martelar API morta por `CIRCUIT_COOLDOWN_S` segundos.
+- Erros permanentes (401 / modelo 404): circuito aberto; só secondary.
+- Self-test no boot **não encerra** a app se existir fallback.
+- Whisper local pode aquecer em thread de fundo (`STT_WARMUP_LOCAL=true`).
+- Painel Sistema: linhas `[ha] …` com rate-limit.
+
+Desligar HA (não recomendado em sessão ao vivo):
+
+```env
+STT_FALLBACK=none
+TRANSLATION_FALLBACK=none
+```
 
 ### Perfil “máxima velocidade” (recomendado em chamadas)
 
@@ -550,6 +577,12 @@ notepad .env
 | `TRANSLATION_ENGINE` | `auto` | `auto`/`llm`/`google` |
 | `GROQ_API_KEY` | *(vazio)* | Key Groq gratuita → STT cloud + tradução LLM melhores |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Modelo Groq (`llama-3.1-8b-instant` = mais rápido) |
+| `STT_FALLBACK` | `local` | Falha STT Groq mid-session → Whisper local (`none` desliga) |
+| `TRANSLATION_FALLBACK` | `google` | Falha LLM mid-session → Google (`none` desliga) |
+| `CIRCUIT_FAIL_THRESHOLD` | `3` | Abre circuito após N falhas do primário |
+| `CIRCUIT_COOLDOWN_S` | `60` | Segundos antes de probe no primário de novo |
+| `STT_WARMUP_LOCAL` | `true` | Pré-carrega Whisper local em background se Groq é primário |
+| `FAILOVER_LOG` | `true` | Mensagens `[ha]` no painel Sistema (rate-limit) |
 
 > **Nota:** chaves como `TRANSLATION_STYLE` / `TRANSLATION_PROMPT` no `.env` **não são lidas** pelo código atual. Google usa só `SOURCE_LANG`/`TARGET_LANG`; o LLM usa o system prompt interno em `livelingo/llm.py`.
 
@@ -597,7 +630,7 @@ Ou use os atalhos: `livelingo.bat` (Windows) / `./livelingo.sh` (WSL/Linux).
 Por padrão (`UI_MODE=tui`) o LiveLingo sobe em **TUI Textual**:
 
 - **Cabeçalho de escuta fixo** — robô + `g(swap) SRC→TGT t(alvo)` + status de áudio
-- **Faixa Live Captions** (topo) redimensionável + chip **F2** bypass entre a faixa e as abas
+- **Faixa Live Captions** (topo) redimensionável + chips **F2** bypass e **F5** auto-scroll entre a faixa e as abas
 - **Quatro abas de log** — **Tradução** (split **LC | VOZ**, sash ║, Expandir no VOZ), **Sistema** (etapas, timings, F1), **Novidades** (`CHANGELOG.md`), **Lista de comandos**
 - **Menu de comandos** em largura total (pack; `u`/`F4` oculta o menu)
 - **Campo de comando** com borda própria, histórico `↑`/`↓` e barra de pipeline (Mic → STT → Trad → TTS → Out)
@@ -749,6 +782,7 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
     ├── capture.py         # mic → chunks de áudio (VAD ou fixo)
     ├── transcribe.py      # STT local faster-whisper
     ├── groq_transcribe.py # STT Groq cloud Whisper
+    ├── failover.py        # HA runtime: STT Groq→local, LLM→Google
     ├── stt_filter.py      # filtro de alucinações STT
     ├── translate.py       # tradução Google (deep-translator)
     ├── llm.py             # tradução LLM Groq + resumo + sinônimos
