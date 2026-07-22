@@ -1306,56 +1306,71 @@ def _voz_audio_line_width(n=None) -> int:
     return max(12, right_w - meta_indent)
 
 
-def _emit_audio_path_one_line(n, path, *, pending_write=False, panel="main"):
+def _emit_audio_path_one_line(n, path, *, pending_write=False, panel="app"):
     """
-    Emit ``audio: <full path>`` as **exactly one** physical line.
+    Emit audio file path with chunk reference.
 
-    - Full host path (no middle ``…``).
-    - No soft wrap into a second line (uses full content width, not the
-      narrow VOZ rail budget).
-    - Right-aligned within the log content area (grows left if long).
-    ``n`` is kept for API symmetry with other VOZ meta helpers.
+    TUI default: **Sistema** panel — e.g. ``[Chunk 12] audio: C:\\…\\chunk_12.wav``
+    so the Tradução tab stays translation-only.
+    Classic terminal: yellow line under the chunk (same text).
     """
-    del n  # geometry uses full width; chunk prefix not on audio line
     lines = format_audio_lines(path, pending_write=pending_write)
     pad, content_w, _lw, _rw, _ls, _rs = _rail_geometry(margin=3)
+    prefix = f"[Chunk {n}] " if n is not None else ""
     with _print_lock:
         for text in lines:
             text = (text or "").strip()
             if not text:
                 continue
-            # Right-align inside content width when it fits; never truncate.
-            if content_w > 0 and len(text) < content_w:
-                text = (" " * (content_w - len(text))) + text
-            head = pad  # full width available (not right-rail-only)
+            # Prefer basename + full path for clarity on Sistema
+            try:
+                import os
+
+                base = os.path.basename(str(path).replace("\\", "/"))
+            except Exception:
+                base = ""
+            if base and "audio:" in text.lower() and base not in text:
+                # audio: fullpath → keep fullpath; also explicit file tag
+                line = f"{prefix}{text}"
+            else:
+                line = f"{prefix}{text}"
             if _log_sink is not None:
                 e = _rich_escape
+                # Sistema: chunk ref + path (no right-align padding clutter)
                 _emit(
-                    "rich",
-                    f"{head}[bold yellow]{e(text)}[/]",
-                    panel=panel,
+                    "dim",
+                    f"{e(line)}",
+                    panel=panel if panel else "app",
                 )
+                # Extra clear line: file name only with chunk
+                if base:
+                    _emit(
+                        "dim",
+                        f"{prefix}arquivo: {e(base)}",
+                        panel=panel if panel else "app",
+                    )
             else:
+                # Classic: one yellow line with chunk prefix
                 print(
                     "\r\033[K"
-                    + head
+                    + pad
                     + Fore.YELLOW
                     + Style.BRIGHT
-                    + text
+                    + line
                     + Style.RESET_ALL
                 )
 
 
 def print_audio_ref(n, path, indent=None, pending_write=False):
-    """Print full audio path under a VOZ chunk — one line, right-aligned.
-
-    No path → silent (no “not generated yet” line).
-    """
+    """Print full audio path for chunk N on Sistema (TUI) / under chunk (classic)."""
     del indent  # geometry owns indent
     if not path or not str(path).strip():
         return
-    _emit_audio_path_one_line(n, path, pending_write=pending_write, panel="main")
-    _emit_chunk_blank()
+    # TUI → Sistema; classic → terminal under chunk
+    panel = "app" if _log_sink is not None else "main"
+    _emit_audio_path_one_line(n, path, pending_write=pending_write, panel=panel)
+    if _log_sink is None:
+        _emit_chunk_blank()
 
 
 def format_timing_line(timings, extra=None, at=None, include_clock=True):
@@ -1404,17 +1419,15 @@ def chunk_timings(
     n, timings, extra=None, at=None, audio_path=None, audio_pending=False
 ):
     """
-    Meta under a live VOZ chunk:
+    Meta for a live VOZ chunk:
 
-    Tradução (main):
-        <blank where timing sat>
-        audio: …
-        <blank>
+    Tradução (main): blank separators only (Heard/Translated stay clean).
 
-    Sistema (app) in TUI — classic keeps dim lines under the chunk:
-        timing: STT … | translate … | TTS …
-        (sound OFF …)          # if extra
-        gravado: YYYY-MM-DD …
+    Sistema (app) in TUI:
+        [Chunk N] timing: STT … | translate … | TTS …
+        [Chunk N] gravado: …
+        [Chunk N] audio: C:\\…\\chunk_N.wav
+        [Chunk N] arquivo: chunk_N.wav
     """
     # Timing body without clock; extra as its own line (clearer on Sistema)
     timing = format_timing_line(timings, extra=None, at=None, include_clock=False)
@@ -1442,17 +1455,18 @@ def chunk_timings(
             _emit_voz_meta_lines(n, meta, style="dim", panel="main")
 
     if audio_path is not None and str(audio_path).strip():
+        # File path + chunk ref → Sistema only (TUI); classic under chunk
+        panel = "app" if _log_sink is not None else "main"
         _emit_audio_path_one_line(
             n,
             audio_path,
             pending_write=bool(audio_pending),
-            panel="main",
+            panel=panel,
         )
-        # Blank after audio on Tradução (only when a path was printed)
-        _emit_chunk_blank()
-    else:
-        # No audio line — still separate chunks with a blank on Tradução
-        _emit_chunk_blank()
+        if _log_sink is None:
+            _emit_chunk_blank()
+    # Separate VOZ chunks on Tradução
+    _emit_chunk_blank()
 
 
 def chunk_stream_start(n, heard):

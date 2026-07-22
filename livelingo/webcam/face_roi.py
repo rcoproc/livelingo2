@@ -113,10 +113,23 @@ class FaceMouthROI:
     ):
         self.pad_ratio = float(pad_ratio)
         self.feather_px = max(1, int(feather_px))
+        self._max_faces = int(max_faces)
+        self._refine_landmarks = bool(refine_landmarks)
+        self._min_detection_confidence = float(min_detection_confidence)
+        self._min_tracking_confidence = float(min_tracking_confidence)
+        # Lazy-load mediapipe/cv2 on first process() — avoids hard crash on some
+        # Windows/Python builds when importing mediapipe at construction time
+        # (COM/matplotlib teardown), and keeps heuristic tests import-free.
         self._mp = None
         self._mesh = None
         self._cv2 = None
         self._err: Optional[str] = None
+        self._init_attempted = False
+
+    def _ensure_mesh(self) -> None:
+        if self._init_attempted:
+            return
+        self._init_attempted = True
         try:
             import cv2  # noqa: F401
             import mediapipe as mp
@@ -125,20 +138,23 @@ class FaceMouthROI:
             self._mp = mp
             self._mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=False,
-                max_num_faces=max_faces,
-                refine_landmarks=refine_landmarks,
-                min_detection_confidence=min_detection_confidence,
-                min_tracking_confidence=min_tracking_confidence,
+                max_num_faces=self._max_faces,
+                refine_landmarks=self._refine_landmarks,
+                min_detection_confidence=self._min_detection_confidence,
+                min_tracking_confidence=self._min_tracking_confidence,
             )
         except Exception as exc:
             self._err = str(exc)
+            self._mesh = None
 
     @property
     def available(self) -> bool:
+        self._ensure_mesh()
         return self._mesh is not None
 
     @property
     def error(self) -> Optional[str]:
+        self._ensure_mesh()
         return self._err
 
     def close(self) -> None:
@@ -217,6 +233,7 @@ class FaceMouthROI:
 
     def process(self, frame_bgr: np.ndarray) -> MouthROI:
         h, w = frame_bgr.shape[:2]
+        self._ensure_mesh()
         if self._mesh is None or self._cv2 is None or self._mp is None:
             return self._heuristic_mouth_roi(frame_bgr)
 
@@ -577,10 +594,11 @@ class FaceMouthROI:
             # Sample: for y above yu2 use pixels from original upper lip band
             # for y below yl2 use lower lip band; between = cavity
 
-            # Colors for cavity from original mid line (darken slightly)
+            # Colors for cavity from original mid line (neutral darken — no red cast)
             my = int(np.clip(round(mid), 0, h_img - 1))
             base_c = src[my, x].astype(np.float32)
-            cavity = base_c * np.array([0.35, 0.28, 0.32], dtype=np.float32)  # darken BGR
+            # Uniform scale keeps hue; old [0.35,0.28,0.32] crushed G → lipstick red
+            cavity = base_c * 0.32
             cavity = np.clip(cavity, 8, 80)
 
             y0 = max(y_min, int(np.floor(yu2 - 4)))
@@ -613,10 +631,6 @@ class FaceMouthROI:
                             np.float32
                         )
                     col = (1.0 - edge_a) * lip + edge_a * cavity
-                    # Slight teeth hint when open is large
-                    if amt > 0.45 and 0.25 < u < 0.45:
-                        teeth = np.array([200, 200, 210], dtype=np.float32)
-                        col = 0.55 * col + 0.45 * teeth
                     out[y, x] = col.clip(0, 255).astype(np.uint8)
 
         return out

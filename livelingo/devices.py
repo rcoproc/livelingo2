@@ -75,6 +75,39 @@ def device_name(index):
         return f"#{index}"
 
 
+def is_cable_like_output(index) -> bool:
+    """True if device looks like VB-Cable *playback* (would leak into Teams mic)."""
+    if index is None:
+        return False
+    try:
+        name = (device_name(index) or "").lower()
+    except Exception:
+        return False
+    # Playback side apps write to; Teams then hears via "CABLE Output"
+    hints = (
+        "cable input",
+        "vb-audio virtual cable",
+        "vb-audio point",
+        "cable-a input",
+        "cable-b input",
+        "voicemeeter input",  # also a virtual path into calls
+    )
+    return any(h in name for h in hints)
+
+
+def resolve_monitor_output(spec="", *, exclude_index=None):
+    """
+    Resolve headphones for monitor/cue.
+
+    If ``spec`` is set (e.g. ``\"13\"``), use that device only — never silently
+    fall back to another index (was sending cue to device 1 instead of 13).
+    """
+    from .monitor_cue import resolve_headphones
+
+    idx, _name = resolve_headphones(spec, cable_index=exclude_index)
+    return idx
+
+
 def _matches_kind(dev, kind):
     if kind == "input":
         return dev["max_input_channels"] >= 1

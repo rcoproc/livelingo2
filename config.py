@@ -28,25 +28,42 @@ load_dotenv()
 # --------------------------------------------------------------------------- #
 # Small typed helpers so .env strings become the right Python types.
 # --------------------------------------------------------------------------- #
+def _strip_env_comment(value: str) -> str:
+    """Strip inline # comments from .env values (e.g. MONITOR_DEVICE=13 # fone)."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if "#" in text:
+        text = text.split("#", 1)[0].strip()
+    return text
+
+
 def _get_str(name, default):
     value = os.getenv(name)
-    if value is None or value.strip() == "":
+    if value is None:
         return default
-    return value.strip()
+    text = _strip_env_comment(value)
+    if text == "":
+        return default
+    return text
 
 
 def _get_int(name, default):
     value = os.getenv(name)
+    text = _strip_env_comment(value) if value not in (None, "") else ""
     try:
-        return int(value) if value not in (None, "") else default
+        return int(text) if text != "" else default
     except ValueError:
         return default
 
 
 def _get_float(name, default):
     value = os.getenv(name)
+    text = _strip_env_comment(value) if value not in (None, "") else ""
     try:
-        return float(value) if value not in (None, "") else default
+        return float(text) if text != "" else default
     except ValueError:
         return default
 
@@ -55,7 +72,8 @@ def _get_bool(name, default):
     value = os.getenv(name)
     if value in (None, ""):
         return default
-    return value.strip().lower() in ("1", "true", "yes", "on", "y")
+    text = _strip_env_comment(value).lower()
+    return text in ("1", "true", "yes", "on", "y")
 
 
 # --------------------------------------------------------------------------- #
@@ -282,8 +300,15 @@ OUTPUT_DEVICE = _get_str("OUTPUT_DEVICE", "CABLE Input")
 MONITOR_PLAYBACK = _get_bool("MONITOR_PLAYBACK", False)
 
 # Which device the monitor copy plays on (index or name substring). Leave empty
-# to use the system default output. Only used when MONITOR_PLAYBACK is True.
+# to use the system default output. Used when MONITOR_PLAYBACK and/or TTS cue.
 MONITOR_DEVICE = _get_str("MONITOR_DEVICE", "")
+
+# Soft beep on MONITOR_DEVICE ~1s before TTS hits Cable (not on Teams mic).
+TTS_MONITOR_CUE = _get_bool("TTS_MONITOR_CUE", True)
+TTS_MONITOR_CUE_LEAD_S = _get_float("TTS_MONITOR_CUE_LEAD_S", 1.0)
+TTS_MONITOR_CUE_DURATION_S = _get_float("TTS_MONITOR_CUE_DURATION_S", 0.14)
+TTS_MONITOR_CUE_FREQ_HZ = _get_float("TTS_MONITOR_CUE_FREQ_HZ", 880.0)
+TTS_MONITOR_CUE_AMPLITUDE = _get_float("TTS_MONITOR_CUE_AMPLITUDE", 0.22)
 
 
 # --------------------------------------------------------------------------- #
@@ -477,6 +502,86 @@ LIVE_CAPTIONS_INVERT_LANGS = _get_bool("LIVE_CAPTIONS_INVERT_LANGS", True)
 # Optional explicit pair (overrides invert when both set), e.g. en / pt
 LIVE_CAPTIONS_SOURCE_LANG = _get_str("LIVE_CAPTIONS_SOURCE_LANG", "")
 LIVE_CAPTIONS_TARGET_LANG = _get_str("LIVE_CAPTIONS_TARGET_LANG", "")
+
+# --------------------------------------------------------------------------- #
+# Webcam lip-sync → virtual camera (optional; Teams/Meet)
+# --------------------------------------------------------------------------- #
+# Requires: pip install opencv-python mediapipe pyvirtualcam
+# Optional ONNX: onnxruntime-gpu (CUDA) or onnxruntime (CPU)
+# Drivers: OBS Virtual Cam (Windows/macOS) or v4l2loopback (Linux)
+# Runtime: [cam] toggle · [cam on|off|status]
+# Docs: docs/webcam-lipsync.md
+WEBCAM_ENABLED = _get_bool("WEBCAM_ENABLED", False)
+# Start already streaming to virtual cam (else wait for [cam on]).
+WEBCAM_START_ENABLED = _get_bool("WEBCAM_START_ENABLED", False)
+# Physical camera index for OpenCV VideoCapture.
+WEBCAM_DEVICE_INDEX = _get_int("WEBCAM_DEVICE_INDEX", 0)
+# 0 = keep camera native resolution.
+WEBCAM_WIDTH = _get_int("WEBCAM_WIDTH", 0)
+WEBCAM_HEIGHT = _get_int("WEBCAM_HEIGHT", 0)
+WEBCAM_FPS = _get_float("WEBCAM_FPS", 30.0)
+# Drop-old queues between capture / infer / emit (latency bound).
+WEBCAM_QUEUE_SIZE = _get_int("WEBCAM_QUEUE_SIZE", 2)
+# Lip engine: amplitude (CPU demo) | passthrough | onnx
+WEBCAM_LIP_ENGINE = _get_str("WEBCAM_LIP_ENGINE", "amplitude").lower()
+WEBCAM_AMP_MAX_OPEN_PX = _get_float("WEBCAM_AMP_MAX_OPEN_PX", 22.0)
+WEBCAM_AMP_SENSITIVITY = _get_float("WEBCAM_AMP_SENSITIVITY", 28.0)
+# When webcam streams, also turn LiveLingo sound ON (TTS → CABLE → Teams mic).
+WEBCAM_AUTO_SOUND = _get_bool("WEBCAM_AUTO_SOUND", True)
+# Path to ONNX export (Wav2Lip-style or custom NCHW face + audio).
+WEBCAM_ONNX_MODEL = _get_str("WEBCAM_ONNX_MODEL", "")
+WEBCAM_ONNX_INPUT_SIZE = _get_int("WEBCAM_ONNX_INPUT_SIZE", 96)
+WEBCAM_ONNX_FP16 = _get_bool("WEBCAM_ONNX_FP16", True)
+# Soft mouth mask / ROI padding.
+WEBCAM_ROI_PAD = _get_float("WEBCAM_ROI_PAD", 0.35)
+WEBCAM_FEATHER_PX = _get_int("WEBCAM_FEATHER_PX", 9)
+# TTS audio schedule fed from pipeline playback (Cable Out path).
+# Clips play out on a wall-clock timeline so mouth tracks TTS, not the
+# whole buffer dump (lip morph only while audio is "playing").
+WEBCAM_AUDIO_SR = _get_int("WEBCAM_AUDIO_SR", 24000)
+WEBCAM_AUDIO_RING_S = _get_float("WEBCAM_AUDIO_RING_S", 2.0)
+WEBCAM_AUDIO_WINDOW_S = _get_float("WEBCAM_AUDIO_WINDOW_S", 0.35)
+# Start morph this many seconds after push (Cable device open lag).
+WEBCAM_AUDIO_PLAY_DELAY_S = _get_float("WEBCAM_AUDIO_PLAY_DELAY_S", 0.08)
+# Debug overlay near mouth (off by default — avoids fake “transparency” look).
+WEBCAM_SYNC_MARKER = _get_bool("WEBCAM_SYNC_MARKER", False)
+# When true: mouth forced closed if no TTS; only opens while sound → Teams.
+# When false: idle shows natural webcam mouth (no force-close).
+WEBCAM_FORCE_CLOSED_IDLE = _get_bool("WEBCAM_FORCE_CLOSED_IDLE", True)
+# Auto-show closed photo while VAD hears speech (ignored after F10 manual mode).
+# F10 toggles manual ON/OFF; [cam closed auto] returns to VAD auto.
+WEBCAM_CLOSED_AUTO = _get_bool("WEBCAM_CLOSED_AUTO", True)
+# Closed-mouth photo template (best idle quality). Capture: [cam snap closed]
+# Leave empty to use defaults under .cache/webcam/
+WEBCAM_CLOSED_MOUTH_IMAGE = _get_str(
+    "WEBCAM_CLOSED_MOUTH_IMAGE", ".cache/webcam/closed_mouth.png"
+)
+WEBCAM_CLOSED_MOUTH_LANDMARKS = _get_str(
+    "WEBCAM_CLOSED_MOUTH_LANDMARKS", ".cache/webcam/closed_mouth.json"
+)
+# F10 / cam snap closed: full-face freeze plate (forehead→chin), not mouth-only.
+# scale 1.0 = tight face oval; 1.15 default pad; max ~1.45 (still leaves some BG).
+WEBCAM_TEMPLATE_REGION_SCALE = _get_float("WEBCAM_TEMPLATE_REGION_SCALE", 1.15)
+# Soft edge of face plate (px).
+WEBCAM_TEMPLATE_FEATHER_PX = _get_int("WEBCAM_TEMPLATE_FEATHER_PX", 24)
+# Mirror closed-mouth photo vs live frame. Default false (photo already matches
+# OpenCV capture). Set true only if left/right looks swapped in Teams.
+WEBCAM_TEMPLATE_FLIP_H = _get_bool("WEBCAM_TEMPLATE_FLIP_H", False)
+# Keep closed photo after VAD ends (mic lag / end-of-utterance). 1.5s default.
+WEBCAM_SPEECH_HANGOVER_S = _get_float("WEBCAM_SPEECH_HANGOVER_S", 1.5)
+# pyvirtualcam: empty = auto backend; Windows often "obs", Linux "v4l2loopback"
+WEBCAM_VCAM_BACKEND = _get_str("WEBCAM_VCAM_BACKEND", "")
+WEBCAM_VCAM_DEVICE = _get_str("WEBCAM_VCAM_DEVICE", "")
+# Force virtual-cam resolution (0 = 1280x720 default; physical frames are resized).
+# Even sizes work best with OBS Virtual Camera.
+WEBCAM_VCAM_WIDTH = _get_int("WEBCAM_VCAM_WIDTH", 1280)
+WEBCAM_VCAM_HEIGHT = _get_int("WEBCAM_VCAM_HEIGHT", 720)
+# Seconds before abandoning a hung pyvirtualcam.Camera() attempt (Windows/OBS).
+# 0 = open vcam on emit thread (recommended). >0 enables hang-guard worker
+# (only if Camera() freezes without OBS driver; avoid leaving zombie holders).
+WEBCAM_VCAM_OPEN_TIMEOUT_S = _get_float("WEBCAM_VCAM_OPEN_TIMEOUT_S", 0.0)
+# Open a local OpenCV preview window (debug; not Teams).
+WEBCAM_DEBUG_PREVIEW = _get_bool("WEBCAM_DEBUG_PREVIEW", False)
 
 # --------------------------------------------------------------------------- #
 # Debug / Verbose Mode

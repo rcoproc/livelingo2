@@ -2430,24 +2430,31 @@ class LiveLingoApp(App):
         border: round #c44dff;
     }
     /*
-     * F2 bypass — compact 1-row chip on #bypass-row (between Live Captions
-     * and the tab strip). Centered with equal flex pads ≈ above LC|VOZ sash.
-     * Do NOT mount into Tabs / TabbedContent (breaks log panes).
+     * F2 / F5 chips live on the *same row* as log tabs (#tabs-list), right side.
+     * Mounted in on_mount into ContentTabs > #tabs-list (not a separate #bypass-row —
+     * that wasted a full line above the tabs; see linha_sobrando.png).
      */
-    #bypass-row {
-        height: 1;
-        min-height: 1;
-        max-height: 1;
+    #log-tabs ContentTabs,
+    #log-tabs Tabs {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
         width: 1fr;
-        layout: horizontal;
-        background: $panel;
         padding: 0;
         margin: 0;
     }
-    #bypass-pad-l, #bypass-pad-r {
+    #log-tabs #tabs-list {
         width: 1fr;
-        min-width: 0;
         height: 1;
+        min-height: 1;
+        max-height: 1;
+        align: left middle;
+    }
+    #tabs-chip-spacer {
+        width: 1fr;
+        min-width: 1;
+        height: 1;
+        background: transparent;
     }
     #cmd-bypass {
         width: auto;
@@ -2481,7 +2488,7 @@ class LiveLingoApp(App):
         background: #38b05a;
     }
     /*
-     * F5 auto-scroll — chip next to F2 on #bypass-row.
+     * F5 auto-scroll — chip next to F2 on the tab bar (right of spacer).
      * Green = follow bottom (default); amber = locked (no yank on new lines).
      */
     #cmd-scroll {
@@ -2491,7 +2498,7 @@ class LiveLingoApp(App):
         height: 1;
         min-height: 1;
         max-height: 1;
-        margin: 0 0 0 1;
+        margin: 0 1 0 1;
         padding: 0 1;
         text-style: bold;
         content-align: center middle;
@@ -2615,6 +2622,13 @@ class LiveLingoApp(App):
             "f5",
             "toggle_trad_auto_scroll",
             "Auto↓ ON",
+            show=True,
+            priority=True,
+        ),
+        Binding(
+            "f10",
+            "toggle_closed_mouth",
+            "Boca calada",
             show=True,
             priority=True,
         ),
@@ -2788,22 +2802,8 @@ class LiveLingoApp(App):
         _cmds_label = _fi18n.get(
             "tab_commands", command_help.tab_title(_source_lang_code())
         )
-        # F2 + F5 chips: own row under captions / above tabs (never into Tabs)
-        with Horizontal(id="bypass-row"):
-            yield Static("", id="bypass-pad-l", markup=False)
-            yield Static(
-                _fi18n.get("bypass_off_label", "F2 Transl. audio"),
-                id="cmd-bypass",
-                classes="-off",
-                markup=False,
-            )
-            yield Static(
-                _fi18n.get("scroll_on_label", "F5 Auto↓ ON"),
-                id="cmd-scroll",
-                classes="-on",
-                markup=False,
-            )
-            yield Static("", id="bypass-pad-r", markup=False)
+        # F2 + F5 chips mount onto the tab bar in on_mount (same row as abas).
+        # Do not use a separate #bypass-row — it stole a full line above the logs.
         with TabbedContent(id="log-tabs", initial="tab-main"):
             with TabPane(_fi18n.get("tab_traducao", "Translation"), id="tab-main"):
                 with Vertical(id="trad-pane"):
@@ -2906,6 +2906,82 @@ class LiveLingoApp(App):
                 )
         yield Footer()
 
+    def _install_tab_bar_chips(self) -> None:
+        """
+        Put F2 / F5 on the same row as log tabs (right side of #tabs-list).
+
+        ContentTabs layout: Tabs > #tabs-scroll > #tabs-list-bar >
+        Horizontal#tabs-list (tab labels) + Underline. Chips join #tabs-list
+        so we free the old dedicated #bypass-row for log height.
+        """
+        if self.query("#cmd-bypass"):
+            return
+        tabs_list = None
+        for sel in (
+            "#log-tabs #tabs-list",
+            "#log-tabs ContentTabs #tabs-list",
+            "#log-tabs Tabs #tabs-list",
+        ):
+            try:
+                tabs_list = self.query_one(sel)
+                break
+            except Exception:
+                continue
+        if tabs_list is None:
+            return
+        fi = _footer_i18n()
+        try:
+            tabs_list.mount(
+                Static("", id="tabs-chip-spacer", markup=False),
+                Static(
+                    fi.get("bypass_off_label", "F2 Transl. audio"),
+                    id="cmd-bypass",
+                    classes="-off",
+                    markup=False,
+                ),
+                Static(
+                    fi.get("scroll_on_label", "F5 Auto↓ ON"),
+                    id="cmd-scroll",
+                    classes="-on",
+                    markup=False,
+                ),
+            )
+        except Exception:
+            # Fallback: mount on ContentTabs itself if #tabs-list rejects
+            try:
+                bar = self.query_one("#log-tabs ContentTabs")
+            except Exception:
+                try:
+                    bar = self.query_one("#log-tabs Tabs")
+                except Exception:
+                    return
+            try:
+                bar.mount(
+                    Static("", id="tabs-chip-spacer", markup=False),
+                    Static(
+                        fi.get("bypass_off_label", "F2 Transl. audio"),
+                        id="cmd-bypass",
+                        classes="-off",
+                        markup=False,
+                    ),
+                    Static(
+                        fi.get("scroll_on_label", "F5 Auto↓ ON"),
+                        id="cmd-scroll",
+                        classes="-on",
+                        markup=False,
+                    ),
+                )
+            except Exception:
+                return
+        try:
+            self._refresh_bypass_badge()
+        except Exception:
+            pass
+        try:
+            self._refresh_scroll_follow_ui()
+        except Exception:
+            pass
+
     def on_mount(self) -> None:
         ui_mod.set_log_sink(self._sink_from_worker)
         ui_mod.set_width_provider(self._log_content_width)
@@ -2923,6 +2999,14 @@ class LiveLingoApp(App):
         self._bind_caption_service()
         self._paint_captions_panel()
         self._paint_pipe_bar(force=True)
+        # F2/F5 on tab bar (same line as Tradução|Sistema|…) — free 1 log row
+        try:
+            self.call_after_refresh(self._install_tab_bar_chips)
+        except Exception:
+            try:
+                self._install_tab_bar_chips()
+            except Exception:
+                pass
         try:
             self._refresh_bypass_badge()
         except Exception:
@@ -3018,6 +3102,122 @@ class LiveLingoApp(App):
         try:
             if hasattr(self.pipeline, "is_passthrough_active"):
                 self._passthrough = bool(self.pipeline.is_passthrough_active())
+        except Exception:
+            pass
+        # Boot webcam at end of mount (sink already live). Sync start() only
+        # spawns threads; health report follows after capture/vcam settle.
+        try:
+            self._boot_webcam_if_needed()
+        except Exception as exc:
+            try:
+                self.post_log("warn", f"Webcam boot: {exc}", panel="app")
+            except Exception:
+                pass
+
+    def _boot_webcam_if_needed(self) -> None:
+        """
+        Start webcam after TUI log sink is active so vcam/capture logs show up.
+
+        Triggered when WEBCAM_START_ENABLED (pipeline._webcam_autostart) is true.
+        """
+        try:
+            svc = getattr(self.pipeline, "webcam_service", None)
+            if svc is None:
+                return
+            want = bool(getattr(self.pipeline, "_webcam_autostart", False))
+            if not want:
+                return
+            if not getattr(svc, "_started", False):
+                ok = svc.start()
+                if not ok:
+                    snap = {}
+                    try:
+                        snap = svc.snapshot() or {}
+                    except Exception:
+                        pass
+                    self.post_log(
+                        "error",
+                        f"Webcam start falhou: {snap.get('error') or '?'}",
+                        panel="app",
+                    )
+                    return
+            try:
+                svc.enable()
+            except Exception:
+                pass
+            # TTS→CABLE is independent of video; lips need the same samples as Teams.
+            try:
+                import config as _cfg
+
+                if bool(getattr(_cfg, "WEBCAM_AUTO_SOUND", True)):
+                    if not self.pipeline.is_sound_enabled():
+                        self.pipeline.set_sound_enabled(True)
+                        self._sound_on = True
+                        self.post_log(
+                            "success",
+                            "Som ON automático (WEBCAM_AUTO_SOUND) — "
+                            "TTS → CABLE · Teams mic = CABLE Output · [s] toggle",
+                            panel="app",
+                        )
+                        try:
+                            self.set_sound_on(True)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                self.post_log("warn", f"WEBCAM_AUTO_SOUND: {exc}", panel="app")
+            self.post_log(
+                "success",
+                "Webcam lip-sync ON (auto) — virtual cam · digite: cam status",
+                panel="app",
+            )
+            # Delayed health report (capture/vcam open async in worker threads)
+            self.set_timer(2.0, self._webcam_health_report)
+            self.set_timer(5.0, self._webcam_health_report)
+        except Exception as exc:
+            try:
+                self.post_log("warn", f"Webcam boot: {exc}", panel="app")
+            except Exception:
+                pass
+
+    def _webcam_health_report(self) -> None:
+        """Status line after auto-start so TUI shows vcam/cap reality."""
+        try:
+            svc = getattr(self.pipeline, "webcam_service", None)
+            if svc is None or not hasattr(svc, "snapshot"):
+                return
+            s = svc.snapshot() or {}
+            err = s.get("error") or "—"
+            line = (
+                f"CAM health: enabled={s.get('enabled')} "
+                f"vcam={s.get('vcam_ready')} cap_ok={s.get('capture_ok')} "
+                f"fps_out={s.get('fps_out')} sent={s.get('frames_sent')} "
+                f"backend={s.get('backend') or '—'} "
+                f"{s.get('width')}x{s.get('height')} err={err}"
+            )
+            kind = "success" if s.get("vcam_ready") and s.get("capture_ok") else "warn"
+            if s.get("error"):
+                kind = "error"
+            self.post_log(kind, line, panel="app")
+            if not s.get("vcam_ready"):
+                self.post_log(
+                    "warn",
+                    "vcam=false → OBS Studio: Start Virtual Camera 1×; "
+                    "pip install pyvirtualcam; depois [cam status]",
+                    panel="app",
+                )
+            if s.get("vcam_ready") and not s.get("capture_ok"):
+                self.post_log(
+                    "warn",
+                    "vcam OK mas capture falhou — Teams ainda pode ver placeholder. "
+                    "Feche cam física em outros apps.",
+                    panel="app",
+                )
+            if s.get("vcam_ready") and s.get("capture_ok"):
+                self.post_log(
+                    "info",
+                    "Teams → Câmera = OBS Virtual Camera (não a webcam do laptop).",
+                    panel="app",
+                )
         except Exception:
             pass
         self._cmd_tts_label = ""
@@ -4381,32 +4581,39 @@ class LiveLingoApp(App):
         self._toggle_trad_auto_scroll_from_ui()
 
     def _toggle_bypass_from_ui(self) -> None:
-        """Click / F2 / [b] on #cmd-bypass — voice bypass toggle. UI thread."""
+        """Click / F2 / [b]: cut Cable TTS (like [x]) + raw voice; again = normal."""
         try:
             active = bool(self.pipeline.toggle_voice_passthrough())
         except Exception as exc:
             try:
                 self.notify(f"[b]/F2 Bypass: {exc}", severity="error", timeout=4)
             except Exception:
-                self.post_log("error", f"[b]/F2 Bypass: {exc}")
+                self.post_log("error", f"[b]/F2 Bypass: {exc}", panel="app")
             return
         self.set_passthrough(active)
         t = _footer_i18n()
         if active:
+            # Always Sistema (#log-app) — keep VOZ free of routing tips
             self.post_log(
                 "warn",
-                "[b]/F2 BYPASS ON — "
-                + t.get("bypass_on_label", "F2 Sua Voz")
-                + " → saída direta (sem tradução).",
+                "[b]/F2 BYPASS ON — TTS no Cable cortado (como [x]); "
+                "sua voz vai direto ao CABLE/Teams (sem tradução). "
+                "Pressione [b] de novo para voltar ao normal.",
+                panel="app",
+            )
+            self.post_log(
+                "dim",
+                "  Dica: fale no idioma da call. "
+                "Mic do Teams = CABLE Output.",
+                panel="app",
             )
         else:
             self.post_log(
                 "success",
-                "[b]/F2 BYPASS OFF — "
-                + t.get("bypass_off_label", "F2 Audio Trad.")
-                + " retomado.",
+                "[b]/F2 BYPASS OFF — fluxo normal: escuta + tradução + TTS no Cable.",
+                panel="app",
             )
-            self.post_log("raw", "")  # blank line after bypass off
+            self.post_log("raw", "", panel="app")
         try:
             self._tick_status()
         except Exception:
@@ -4415,6 +4622,60 @@ class LiveLingoApp(App):
     def action_toggle_bypass(self) -> None:
         """Footer/F2: toggle voice bypass (same as click on white badge / [b])."""
         self._toggle_bypass_from_ui()
+
+    def action_toggle_closed_mouth(self) -> None:
+        """F10: toggle closed-mouth photo on virtual cam (manual, not VAD auto)."""
+        try:
+            svc = getattr(self.pipeline, "webcam_service", None)
+            if svc is None:
+                self.post_log(
+                    "warn",
+                    "Webcam indisponível — WEBCAM_ENABLED=true + [cam on]",
+                    panel="app",
+                )
+                return
+            if not getattr(svc, "_started", False):
+                if not svc.start():
+                    err = (svc.snapshot() or {}).get("error") or "?"
+                    self.post_log(
+                        "error", f"Webcam start falhou: {err}", panel="app"
+                    )
+                    return
+            if not svc.is_enabled():
+                svc.enable()
+            on, msg = svc.toggle_closed_mouth_manual()
+            snap = {}
+            try:
+                snap = svc.snapshot() or {}
+            except Exception:
+                pass
+            extra = (
+                f" | vcam={snap.get('vcam_ready')} "
+                f"tpl={snap.get('template_ok')} "
+                f"manual={snap.get('closed_manual_on')}"
+            )
+            self.post_log(
+                "success" if on else "info",
+                msg + extra,
+                panel="app",
+            )
+            if on and not snap.get("template_ok"):
+                self.post_log(
+                    "warn",
+                    "Sem template de boca — digite: cam snap closed",
+                    panel="app",
+                )
+            if on and not snap.get("vcam_ready"):
+                self.post_log(
+                    "warn",
+                    "vcam=false — Teams precisa de OBS Virtual Camera + [cam on]",
+                    panel="app",
+                )
+        except Exception as exc:
+            try:
+                self.post_log("error", f"F10 boca calada: {exc}", panel="app")
+            except Exception:
+                pass
 
     @on(events.Click, "#cmd-bypass")
     def on_bypass_badge_click(self, event: events.Click) -> None:

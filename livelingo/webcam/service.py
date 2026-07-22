@@ -38,13 +38,22 @@ from .face_roi import FaceMouthROI
 from .mouth_template import (
     ClosedMouthTemplateStore,
     align_and_blend,
+    compute_freeze_plate_geom,
     load_template,
     open_from_closed_template,
     save_template_from_frame,
 )
 
 def check_webcam_deps() -> dict:
-    """Return availability of optional packages (no side effects beyond import)."""
+    """
+    Return availability of optional packages.
+
+    Uses ``importlib.util.find_spec`` for heavy deps (esp. mediapipe) to avoid
+    native crashes during probe on some Windows/Python builds; full import still
+    happens when the webcam path actually starts.
+    """
+    import importlib.util
+
     out = {
         "cv2": False,
         "mediapipe": False,
@@ -52,30 +61,20 @@ def check_webcam_deps() -> dict:
         "onnxruntime": False,
         "errors": {},
     }
-    try:
-        import cv2  # noqa: F401
 
-        out["cv2"] = True
-    except Exception as exc:
-        out["errors"]["cv2"] = str(exc)
-    try:
-        import mediapipe  # noqa: F401
+    def _probe(name: str, key: str) -> None:
+        try:
+            if importlib.util.find_spec(name) is not None:
+                out[key] = True
+            else:
+                out["errors"][key] = f"{name} not installed"
+        except Exception as exc:
+            out["errors"][key] = str(exc)
 
-        out["mediapipe"] = True
-    except Exception as exc:
-        out["errors"]["mediapipe"] = str(exc)
-    try:
-        import pyvirtualcam  # noqa: F401
-
-        out["pyvirtualcam"] = True
-    except Exception as exc:
-        out["errors"]["pyvirtualcam"] = str(exc)
-    try:
-        import onnxruntime  # noqa: F401
-
-        out["onnxruntime"] = True
-    except Exception as exc:
-        out["errors"]["onnxruntime"] = str(exc)
+    _probe("cv2", "cv2")
+    _probe("mediapipe", "mediapipe")
+    _probe("pyvirtualcam", "pyvirtualcam")
+    _probe("onnxruntime", "onnxruntime")
     return out
 
 
@@ -86,6 +85,53 @@ def teams_setup_hint() -> str:
         "mic = CABLE Output | "
         "LiveLingo [s] ON + OUTPUT_DEVICE=CABLE Input"
     )
+
+
+def _windows_process_running(image_name: str) -> bool:
+    """True if a Windows process with this image name is running (best-effort)."""
+    if sys.platform != "win32":
+        return False
+    name = (image_name or "").strip().lower()
+    if not name:
+        return False
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/NH"],
+            text=True,
+            errors="ignore",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return name in (out or "").lower()
+    except Exception:
+        return False
+
+
+def obs_virtual_cam_conflict_hint() -> str:
+    """
+    Hint when pyvirtualcam cannot start OBS Virtual Camera.
+
+    OBS and pyvirtualcam are exclusive *producers* of the same device.
+    OBS may stay open for scenes, but Virtual Camera must be STOPPED while
+    LiveLingo owns the feed.
+    """
+    parts = [
+        "OBS Virtual Camera is exclusive: only ONE app can *output* to it.",
+        "In OBS: click 'Stop Virtual Camera' (Tools / controls) - do NOT leave it started.",
+        "OBS app may stay open; only the virtual-cam button must be OFF.",
+        "First-time setup: Start Virtual Camera once (as Admin) to register the driver, "
+        "then Stop it, then run LiveLingo.",
+        "Close other producers (Snap Camera, ManyCam, old LiveLingo).",
+        "Windows Privacy -> Camera -> allow desktop apps.",
+        'Test: python -c "import pyvirtualcam;c=pyvirtualcam.Camera(640,480,30);print(c.device);c.close()"',
+    ]
+    if _windows_process_running("obs64.exe") or _windows_process_running("obs32.exe"):
+        parts.insert(
+            0,
+            "OBS is running now - most common fail: Virtual Camera still STARTED in OBS.",
+        )
+    return " ".join(parts)
 
 
 @dataclass
@@ -483,32 +529,58 @@ class WebcamLipSyncService:
                 mp_ok = (
                     roi.landmarks_xy is not None and roi.landmarks_xy.shape[0] >= 100
                 )
-                # Draw LARGE freeze plate (what will be blended from the photo)
+                # Full-face freeze region (same geom as F10 align_and_blend)
                 color = (0, 220, 0) if mp_ok else (0, 180, 255)
                 scale = float(
-                    getattr(self.cfg, "WEBCAM_TEMPLATE_REGION_SCALE", 2.4) or 2.4
+                    getattr(self.cfg, "WEBCAM_TEMPLATE_REGION_SCALE", 1.15) or 1.15
                 )
-                ax = max(28, int((roi.mouth_w or 40) * 0.95 * scale))
-                ay = max(
-                    32,
-                    int(max((roi.mouth_h or 12) * 3.5, (roi.mouth_w or 40) * 0.55) * scale),
+                geom = compute_freeze_plate_geom(
+                    h,
+                    w,
+                    roi.landmarks_xy if mp_ok else None,
+                    int(roi.mouth_cx),
+                    int(roi.mouth_cy),
+                    int(roi.mouth_w or 40),
+                    int(roi.mouth_h or 12),
+                    region_scale=scale,
                 )
-                cy_e = min(h - 1, roi.mouth_cy + int(ay * 0.12))
-                cv2.ellipse(
-                    vis,
-                    (roi.mouth_cx, cy_e),
-                    (ax, ay),
-                    0,
-                    0,
-                    360,
-                    color,
-                    2,
-                    cv2.LINE_AA,
-                )
+                fcx, fcy = geom.center
+                ax, ay = geom.axes
+                if geom.contour is not None and len(geom.contour) >= 6:
+                    try:
+                        hull = cv2.convexHull(geom.contour)
+                        cv2.polylines(
+                            vis, [hull], True, color, 2, cv2.LINE_AA
+                        )
+                    except Exception:
+                        cv2.ellipse(
+                            vis,
+                            (fcx, fcy),
+                            (ax, ay),
+                            0,
+                            0,
+                            360,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                        )
+                else:
+                    cv2.ellipse(
+                        vis,
+                        (fcx, fcy),
+                        (ax, ay),
+                        0,
+                        0,
+                        360,
+                        color,
+                        2,
+                        cv2.LINE_AA,
+                    )
                 cv2.circle(vis, (roi.mouth_cx, roi.mouth_cy), 4, color, -1)
+                cv2.circle(vis, (fcx, fcy), 3, (0, 255, 255), -1)
                 lines = [
                     "Feche a boca | SPACE/ENTER=salvar | ESC=cancelar",
-                    f"Area CONGELADA (elipse) | MediaPipe={'OK' if mp_ok else 'nao'}",
+                    f"Area CONGELADA = ROSTO INTEIRO (F10) | MP={'OK' if mp_ok else 'nao'}",
                     "Auto-save ~3s com face estavel...",
                 ]
                 if not self.roi.available:
@@ -877,12 +949,22 @@ class WebcamLipSyncService:
 
     def _try_open_one_vcam(self, kwargs: dict, timeout_s: float = 6.0):
         """
-        Open pyvirtualcam.Camera with a timeout.
+        Open ``pyvirtualcam.Camera`` on the *current* thread when possible.
 
-        On Windows without OBS Virtual Camera, Camera() can hang indefinitely
-        instead of raising — that left vcam=False with err=— forever.
+        Nested open-threads are dangerous on Windows: a timed-out worker can
+        still finish later and hold OBS Virtual Camera exclusively, so every
+        later attempt fails with ``virtual camera output could not be started``.
+
+        Timeout (``WEBCAM_VCAM_OPEN_TIMEOUT_S`` > 0) still uses a worker, but a
+        hang aborts the whole open sequence (no more size/backend retries while
+        a zombie may own the device).
         """
         import pyvirtualcam
+
+        timeout_s = float(timeout_s or 0.0)
+        # Direct open is reliable when the driver is registered (normal case).
+        if timeout_s <= 0:
+            return pyvirtualcam.Camera(**kwargs)
 
         box: dict = {"cam": None, "exc": None}
 
@@ -894,15 +976,15 @@ class WebcamLipSyncService:
 
         t = threading.Thread(target=_worker, name="vcam-open", daemon=True)
         t.start()
-        t.join(timeout=max(1.0, float(timeout_s)))
+        t.join(timeout=max(1.0, timeout_s))
         if t.is_alive():
-            # Thread is stuck in native code; we cannot kill it safely.
-            # Abandon this attempt and try next backend (zombie thread may linger).
+            # Cannot kill native code. Do NOT start more open attempts.
             raise TimeoutError(
                 f"pyvirtualcam.Camera hung >{timeout_s:.0f}s "
                 f"(backend={kwargs.get('backend') or 'auto'} "
                 f"{kwargs.get('width')}x{kwargs.get('height')}). "
-                "Install OBS Studio and Start Virtual Camera once."
+                "Install OBS Studio, Start Virtual Camera once (register driver), "
+                "then Stop it. Restart LiveLingo if a previous open hung."
             )
         if box["exc"] is not None:
             raise box["exc"]
@@ -911,18 +993,23 @@ class WebcamLipSyncService:
         return box["cam"]
 
     def _open_vcam(self, w: int, h: int, fps: float):
-        """Try sizes/backends/formats; each open attempt has a timeout."""
+        """
+        Try a *small* set of size/backend/format combos.
+
+        OBS Virtual Camera allows only one producer. Rapid multi-format storms
+        + abandoned timeout threads used to leave the device locked.
+        """
         import pyvirtualcam  # noqa: F401
         from pyvirtualcam import PixelFormat
 
         device = (getattr(self.cfg, "WEBCAM_VCAM_DEVICE", "") or "").strip() or None
         configured = (getattr(self.cfg, "WEBCAM_VCAM_BACKEND", "") or "").strip() or None
-        timeout_s = float(getattr(self.cfg, "WEBCAM_VCAM_OPEN_TIMEOUT_S", 6.0) or 6.0)
+        # Default 0 = open on emit thread (no nested worker). Set >0 only if
+        # opens hang without the OBS driver registered.
+        timeout_s = float(getattr(self.cfg, "WEBCAM_VCAM_OPEN_TIMEOUT_S", 0.0) or 0.0)
 
-        # Platform backends only — forcing "obs" on Linux/WSL → KeyError.
         backends: List[Optional[str]] = []
         if configured:
-            # Ignore OBS backend when not on Windows/macOS
             if configured == "obs" and sys.platform not in ("win32", "darwin"):
                 self._log(
                     f"Ignoring WEBCAM_VCAM_BACKEND=obs on {sys.platform} "
@@ -940,21 +1027,18 @@ class WebcamLipSyncService:
         if None not in backends:
             backends.append(None)  # auto last
 
-        # Capture is often 640x480 — try that first, then HD.
+        # Prefer native capture size / configured vcam size, then 640x480 fallback.
         sizes: List[Tuple[int, int]] = []
         primary = (self._even(w, 1280), self._even(h, 720))
-        for pair in (
-            primary,
-            (640, 480),
-            (1280, 720),
-            (960, 540),
-            (800, 600),
-        ):
+        for pair in (primary, (640, 480), (1280, 720)):
             if pair not in sizes:
                 sizes.append(pair)
 
-        formats = [PixelFormat.BGR, PixelFormat.RGB]
+        # RGB is pyvirtualcam default; try BGR second (OpenCV native).
+        formats = [PixelFormat.RGB, PixelFormat.BGR]
         errors: List[str] = []
+        exclusive_hits = 0
+
         for be in backends:
             for sw, sh in sizes:
                 for fmt in formats:
@@ -974,23 +1058,51 @@ class WebcamLipSyncService:
                         kwargs["backend"] = be
                     if device:
                         kwargs["device"] = device
-                    try:
-                        cam = self._try_open_one_vcam(kwargs, timeout_s=timeout_s)
-                        be_name = str(getattr(cam, "backend", None) or be or "auto")
-                        dev_name = getattr(cam, "device", device)
-                        self._log(
-                            f"Virtual cam OPEN: {sw}x{sh} @ {fps:g} FPS "
-                            f"backend={be_name} fmt={fmt_name} device={dev_name!r}"
-                        )
-                        self._log(
-                            ">>> No Teams: escolha a câmera "
-                            f"{dev_name!r} (OBS Virtual Camera) — NÃO a webcam física."
-                        )
-                        return cam, be_name, fmt, sw, sh
-                    except Exception as exc:
-                        errors.append(f"{label}: {exc}")
-                        self._log(f"vcam try fail {label}: {exc}")
-        raise RuntimeError(" | ".join(errors[:12]) + (" …" if len(errors) > 12 else ""))
+
+                    # Brief re-try on exclusive-lock failures (OBS just stopped, etc.)
+                    last_exc: Optional[BaseException] = None
+                    for attempt in range(3):
+                        if self._stop.is_set():
+                            raise RuntimeError("stopped during vcam open")
+                        try:
+                            cam = self._try_open_one_vcam(
+                                kwargs, timeout_s=timeout_s
+                            )
+                            be_name = str(
+                                getattr(cam, "backend", None) or be or "auto"
+                            )
+                            dev_name = getattr(cam, "device", device)
+                            self._log(
+                                f"Virtual cam OPEN: {sw}x{sh} @ {fps:g} FPS "
+                                f"backend={be_name} fmt={fmt_name} "
+                                f"device={dev_name!r}"
+                            )
+                            self._log(
+                                ">>> No Teams: escolha a câmera "
+                                f"{dev_name!r} (OBS Virtual Camera) — "
+                                "NÃO a webcam física."
+                            )
+                            return cam, be_name, fmt, sw, sh
+                        except TimeoutError:
+                            # Hang: do not try more combos (zombie may hold device).
+                            raise
+                        except Exception as exc:
+                            last_exc = exc
+                            msg = str(exc).lower()
+                            if "could not be started" in msg or "already" in msg:
+                                exclusive_hits += 1
+                                if attempt < 2:
+                                    time.sleep(0.4 * (attempt + 1))
+                                    continue
+                            break
+
+                    errors.append(f"{label}: {last_exc}")
+                    self._log(f"vcam try fail {label}: {last_exc}")
+
+        detail = " | ".join(errors[:8]) + (" …" if len(errors) > 8 else "")
+        if exclusive_hits:
+            detail = f"{obs_virtual_cam_conflict_hint()} Detail: {detail}"
+        raise RuntimeError(detail)
 
     def _placeholder_frame(self, h: int, w: int) -> np.ndarray:
         """Dark frame so Teams shows *something* while waiting for capture."""
@@ -1168,12 +1280,12 @@ class WebcamLipSyncService:
                             roi_use,
                             tpl,
                             feather_px=int(
-                                getattr(self.cfg, "WEBCAM_TEMPLATE_FEATHER_PX", 28)
-                                or 28
+                                getattr(self.cfg, "WEBCAM_TEMPLATE_FEATHER_PX", 24)
+                                or 24
                             ),
                             region_scale=float(
-                                getattr(self.cfg, "WEBCAM_TEMPLATE_REGION_SCALE", 2.6)
-                                or 2.6
+                                getattr(self.cfg, "WEBCAM_TEMPLATE_REGION_SCALE", 1.15)
+                                or 1.15
                             ),
                             flip_h=self._template_flip_h,
                         )
@@ -1216,9 +1328,12 @@ class WebcamLipSyncService:
     # ------------------------------------------------------------------ #
     def _emit_loop(self) -> None:
         """
-        Open the virtual camera *immediately* when enabled (fixed size), then
-        push frames. Waiting for physical capture first hid failures under TUI
-        and left Teams with no device / black feed.
+        Open virtual cam when enabled, push frames, **retry** on open failure.
+
+        Waiting for physical capture first hid failures under TUI and left
+        Teams with no device. A permanent ``return`` after one failed open also
+        left ``vcam=False`` forever until full app restart — now we re-open
+        while enabled (e.g. after user stops OBS Virtual Camera).
         """
         self._set_emit_phase("emit_start")
         try:
@@ -1234,140 +1349,178 @@ class WebcamLipSyncService:
 
         target_fps = float(getattr(self.cfg, "WEBCAM_FPS", 30) or 30)
         debug_preview = bool(getattr(self.cfg, "WEBCAM_DEBUG_PREVIEW", False))
-        w, h = self._vcam_size()
+        want_w, want_h = self._vcam_size()
 
-        # Wait until enabled so we don't hold the virtual cam while idle.
-        self._set_emit_phase("wait_enable")
-        while not self._stop.is_set() and not self._enabled.is_set():
-            time.sleep(0.05)
-        if self._stop.is_set():
-            self._set_emit_phase("stopped")
-            return
+        while not self._stop.is_set():
+            # Wait until enabled so we don't hold the virtual cam while idle.
+            self._set_emit_phase("wait_enable")
+            self._vcam_ready.clear()
+            while not self._stop.is_set() and not self._enabled.is_set():
+                time.sleep(0.05)
+            if self._stop.is_set():
+                break
 
-        self._log(f"Opening virtual cam (target {w}x{h} @ {target_fps:g} FPS)…")
-        self._set_emit_phase("opening_vcam")
-        try:
-            cam, be_name, pixel_fmt, w, h = self._open_vcam(w, h, target_fps)
-        except Exception as exc:
-            self._set_emit_phase("failed")
-            msg = str(exc)
-            hint = (
-                "Virtual cam open failed. "
-                "cap_ok=true means physical cam is fine — only the *virtual* device failed. "
+            self._log(
+                f"Opening virtual cam (target {want_w}x{want_h} @ "
+                f"{target_fps:g} FPS)…"
             )
-            if "could not be started" in msg.lower() or "obs" in msg.lower():
-                hint += (
-                    "Windows FIX: (1) Install OBS from obsproject.com "
-                    "(2) Run OBS as Admin once (3) Start Virtual Camera "
-                    "(registers driver) (4) Stop Virtual Camera + quit OBS "
-                    "(5) Windows Privacy→Camera→allow desktop apps "
-                    "(6) retry. Test: python -c \"import pyvirtualcam;"
-                    "c=pyvirtualcam.Camera(640,480,30,backend='obs');print(c.device)\". "
+            self._set_emit_phase("opening_vcam")
+            cam = None
+            try:
+                cam, be_name, pixel_fmt, w, h = self._open_vcam(
+                    want_w, want_h, target_fps
                 )
-            if "unitycapture" in msg.lower() or "no camera registered" in msg.lower():
-                hint += "Unity Capture not installed — use OBS instead. "
-            hint += f"Detail: {msg[:500]}  |  docs/webcam-lipsync.md"
-            self._set_error(hint)
-            return
+            except Exception as exc:
+                self._set_emit_phase("failed")
+                msg = str(exc)
+                hint = (
+                    "Virtual cam open failed. "
+                    "cap_ok=true means physical cam is fine — only the "
+                    "*virtual* device failed. "
+                )
+                low = msg.lower()
+                if (
+                    "could not be started" in low
+                    or "obs" in low
+                    or "exclusive" in low
+                ):
+                    hint += obs_virtual_cam_conflict_hint() + " "
+                if "unitycapture" in low or "no camera registered" in low:
+                    hint += "Unity Capture not installed — use OBS instead. "
+                # Avoid duplicating a long Detail: already in RuntimeError body.
+                if "Detail:" not in msg:
+                    hint += f"Detail: {msg[:400]} "
+                else:
+                    hint += msg[:700] + " "
+                hint += "| docs/webcam-lipsync.md"
+                self._set_error(hint)
+                self._log(
+                    "vcam open failed — will retry in ~2.5s while [cam] is ON. "
+                    "Stop Virtual Camera inside OBS if it is running."
+                )
+                # Retry while still enabled (user may fix OBS mid-session).
+                for _ in range(25):
+                    if self._stop.is_set() or not self._enabled.is_set():
+                        break
+                    time.sleep(0.1)
+                continue
 
-        need_rgb = pixel_fmt == PixelFormat.RGB
-        with self._status_lock:
-            self._status.backend = be_name
-            self._status.width = w
-            self._status.height = h
-        self._vcam_ready.set()
-        self._set_emit_phase("live")
-        self._log(teams_setup_hint())
-
-        last = self._placeholder_frame(h, w)
-        n = 0
-        t0 = time.perf_counter()
-        logged_live = False
-
-        def _to_vcam(frame_bgr: np.ndarray) -> np.ndarray:
-            import cv2
-
-            if frame_bgr is None or frame_bgr.size == 0:
-                return last
-            out = frame_bgr
-            if out.shape[0] != h or out.shape[1] != w:
-                out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
-            if need_rgb:
-                out = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-            return out
-
-        try:
-            cam.send(_to_vcam(last) if need_rgb else last)
-            cam.sleep_until_next_frame()
-            self._frames_sent = 1
+            need_rgb = pixel_fmt == PixelFormat.RGB
             with self._status_lock:
-                self._status.frames_sent = self._frames_sent
+                self._status.backend = be_name
+                self._status.width = w
+                self._status.height = h
+                self._status.error = None
+            self._vcam_ready.set()
+            self._set_emit_phase("live")
+            self._log(teams_setup_hint())
 
-            while not self._stop.is_set():
-                if not self._enabled.is_set():
-                    # Hold last frame so Meet/Teams still sees a frozen image
+            last = self._placeholder_frame(h, w)
+            n = 0
+            t0 = time.perf_counter()
+            logged_live = False
+            reopen = False
+
+            def _to_vcam(frame_bgr: np.ndarray) -> np.ndarray:
+                import cv2
+
+                if frame_bgr is None or frame_bgr.size == 0:
+                    return last
+                out = frame_bgr
+                if out.shape[0] != h or out.shape[1] != w:
+                    out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
+                if need_rgb:
+                    out = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+                return out
+
+            try:
+                cam.send(_to_vcam(last) if need_rgb else last)
+                cam.sleep_until_next_frame()
+                self._frames_sent = 1
+                with self._status_lock:
+                    self._status.frames_sent = self._frames_sent
+
+                while not self._stop.is_set():
+                    if not self._enabled.is_set():
+                        # Release vcam when disabled so OBS/other apps can use it.
+                        # (Frozen last-frame hold kept exclusive lock forever.)
+                        self._log(
+                            "Webcam disabled — closing virtual cam "
+                            "(re-opens on [cam on])."
+                        )
+                        break
+                    try:
+                        pkt = self._q_out.get(timeout=1.0 / max(1.0, target_fps))
+                        if pkt is None:
+                            break
+                        last = pkt.frame_bgr
+                        if not logged_live:
+                            logged_live = True
+                            self._log(
+                                f"Virtual cam LIVE — frames flowing "
+                                f"({last.shape[1]}x{last.shape[0]} → {w}x{h}). "
+                                "Teams camera = OBS Virtual Camera."
+                            )
+                    except queue.Empty:
+                        pass  # re-send last (placeholder or freeze)
+
                     try:
                         cam.send(_to_vcam(last))
                         cam.sleep_until_next_frame()
-                    except Exception:
-                        time.sleep(0.03)
-                    continue
-                try:
-                    pkt = self._q_out.get(timeout=1.0 / max(1.0, target_fps))
-                    if pkt is None:
+                        if debug_preview:
+                            try:
+                                import cv2
+
+                                prev = last
+                                if prev.shape[0] != h or prev.shape[1] != w:
+                                    prev = cv2.resize(prev, (w, h))
+                                cv2.imshow("LiveLingo webcam (debug)", prev)
+                                cv2.waitKey(1)
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        self._set_error(f"vcam send: {exc}")
+                        self._log(f"vcam send failed — will re-open: {exc}")
+                        reopen = True
                         break
-                    last = pkt.frame_bgr
-                    if not logged_live:
-                        logged_live = True
-                        self._log(
-                            f"Virtual cam LIVE — frames flowing "
-                            f"({last.shape[1]}x{last.shape[0]} → {w}x{h}). "
-                            "Teams camera = OBS Virtual Camera."
-                        )
-                except queue.Empty:
-                    pass  # re-send last (placeholder or freeze)
+                    self._frames_sent += 1
+                    n += 1
+                    if n % 30 == 0:
+                        dt = time.perf_counter() - t0
+                        if dt > 0:
+                            with self._status_lock:
+                                self._status.fps_out = n / dt
+                                self._status.frames_sent = self._frames_sent
+                        n = 0
+                        t0 = time.perf_counter()
+            finally:
+                self._vcam_ready.clear()
+                with self._status_lock:
+                    self._status.backend = ""
+                    self._status.fps_out = 0.0
+                if debug_preview:
+                    try:
+                        import cv2
 
-                try:
-                    cam.send(_to_vcam(last))
-                    cam.sleep_until_next_frame()
-                    if debug_preview:
-                        try:
-                            import cv2
+                        cv2.destroyWindow("LiveLingo webcam (debug)")
+                    except Exception:
+                        pass
+                if cam is not None:
+                    try:
+                        cam.close()
+                    except Exception:
+                        pass
+                    cam = None
+                # Give Windows/OBS a beat to release shared memory.
+                time.sleep(0.25)
 
-                            prev = last
-                            if prev.shape[0] != h or prev.shape[1] != w:
-                                prev = cv2.resize(prev, (w, h))
-                            cv2.imshow("LiveLingo webcam (debug)", prev)
-                            cv2.waitKey(1)
-                        except Exception:
-                            pass
-                except Exception as exc:
-                    self._set_error(f"vcam send: {exc}")
-                    time.sleep(0.05)
-                    continue
-                self._frames_sent += 1
-                n += 1
-                if n % 30 == 0:
-                    dt = time.perf_counter() - t0
-                    if dt > 0:
-                        with self._status_lock:
-                            self._status.fps_out = n / dt
-                            self._status.frames_sent = self._frames_sent
-                    n = 0
-                    t0 = time.perf_counter()
-        finally:
-            self._vcam_ready.clear()
-            if debug_preview:
-                try:
-                    import cv2
+            if self._stop.is_set():
+                break
+            if reopen:
+                continue
+            # Disabled: loop back to wait_enable.
 
-                    cv2.destroyWindow("LiveLingo webcam (debug)")
-                except Exception:
-                    pass
-            try:
-                cam.close()
-            except Exception:
-                pass
+        self._set_emit_phase("stopped")
 
 
 def build_webcam_service(config, log=print) -> Optional[WebcamLipSyncService]:

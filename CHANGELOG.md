@@ -7,22 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
-### Added
+## [1.2.1] - 2026-07-22
 
-- **F5 auto-scroll lock (TUI Tradução)** — toggles follow-to-bottom for **both** LC (left) and VOZ (right) panes. Default ON (green chip `F5 Auto↓ ON` + footer `Auto↓ ON`). OFF (amber chip + footer `Auto↓ OFF`) freezes the viewport so new lines / post-chunk / command output still append but **do not yank** the view. Click the chip (next to F2) or press **F5**. Explicit `GG`/`gf` still jumps once without re-enabling follow when OFF. Documented in command-help (all langs).
-- **Runtime provider failover / HA (P0)** — mid-session redundancy without killing the app:
-  - **STT:** Groq primary → **local faster-whisper** on timeout/429/network (`FailoverTranscriber`); optional background warm-up (`STT_WARMUP_LOCAL`).
-  - **Translation:** Groq LLM primary → **Google Translate** (`FailoverTranslator`); stream mid-fail uses full secondary text (safe for TTS).
-  - **Circuit breaker** skips a dead primary for a cooldown; permanent errors (401/404) do not hammer the API.
-  - Boot self-test failure **no longer `sys.exit`** when a fallback exists.
-  - Module: `livelingo/failover.py`. Config: `STT_FALLBACK`, `TRANSLATION_FALLBACK`, `FAILOVER_MAX_RETRIES`, `FAILOVER_RETRY_SLEEP_S`, `CIRCUIT_FAIL_THRESHOLD`, `CIRCUIT_COOLDOWN_S`, `STT_FALLBACK_WAIT_S`, `STT_WARMUP_LOCAL`, `FAILOVER_LOG` (see `.env.example`).
-  - System panel logs rate-limited `[ha] …` events.
-- **Tests** — `tests/test_failover.py` (classifier, circuit, STT/TR wrappers, helpers); smoke imports `livelingo.failover` + HA config attrs.
+Tag: [`v1.2.1`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1).
+
+**Highlights:** webcam/TUI day-to-day polish after v1.1.0 — reliable **OBS Virtual Camera** open, **full-face F10 freeze**, cleaner TUI tab bar (F2/F5), bypass tips on **Sistema**, no procedural teeth paint, safer MediaPipe probe on Windows.
+
+### Fixed
+
+- **OBS Virtual Camera open** — exclusive producer lock (Stop Virtual Camera in OBS
+  while LiveLingo streams); open vcam on the emit thread (no nested open zombies);
+  retry while `[cam on]`; release vcam on disable; clearer Windows/OBS conflict hints.
+- **Closed-mouth / F10 plate size** — freeze plate is **full face** (MediaPipe face
+  oval or mouth-anchored ellipse forehead→chin), not a tiny mouth-only oval and not
+  a full-frame rectangular paste. Snap preview (`cam snap closed`) draws the same
+  region. Soft feather. Config: `WEBCAM_TEMPLATE_REGION_SCALE` (default `1.15`),
+  `WEBCAM_TEMPLATE_FEATHER_PX` (24).
+- **F10 / color cast** — luminance-only color match on template blend (no per-channel
+  BGR scale → no “lipstick” red mouth).
+- **Bypass `[b]` / F2 messages** — ON/OFF tips and errors route to the **Sistema**
+  panel (`panel=app`), not VOZ/Tradução.
+- **Webcam deps probe / FaceMouthROI** — lazy MediaPipe init; `check_webcam_deps`
+  uses `importlib.util.find_spec` (avoids native crash on some Windows/Python builds
+  when probing mediapipe at import time).
 
 ### Changed
 
-- **`post_log` / VAD speak / `GG`** respect F5 state for Tradução panes (no forced scroll when auto-scroll is OFF).
+- **TUI F2 + F5 chips** — on the **same row as log tabs** (right side of `#tabs-list`).
+  Removed dedicated `#bypass-row` that wasted a line above the logs.
+- **Webcam open morph** — gentle lip warp only; **procedural virtual teeth paint
+  removed** (poor position/quality). `WEBCAM_TEETH_*` config dropped.
+- **Local STT first boot** — docs note that `WHISPER_MODEL=large-v3-turbo` on CPU
+  blocks startup on Hugging Face download + load (prefer `small` for daily use).
+
+### Docs
+
+- README (EN/pt-BR): full-face freeze + `cam snap closed` steps; F2/F5 on tab bar;
+  OBS exclusive-producer checklist; local Whisper `.env` notes.
+- `docs/webcam-lipsync.md`: plate scale defaults, full-face behavior, OBS stop/start.
+
+## [1.1.0] - 2026-07-22
+
+Tag: [`v1.1.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.1.0).
+
+**Highlights:** optional **webcam lip-sync → OBS Virtual Camera** so Teams sees your face with a closed mouth while you speak the source language and lip motion only while translated TTS plays on VB-Cable; **OBS Studio required** for the virtual camera driver; pre-TTS cue on headphones only; voice bypass `[b]` hard-cuts Cable TTS like `[x]`; F5 auto-scroll lock; runtime provider failover (HA).
+
+### Added
+
+- **Webcam lip-sync → virtual camera (optional)** — modular package `livelingo/webcam/`:
+  capture (OpenCV) → MediaPipe mouth ROI + feathered mask → pluggable engine
+  (`amplitude` CPU demo / `passthrough` / `onnx` CUDA|TRT|CPU) → `pyvirtualcam`
+  (**OBS Virtual Camera** on Windows). TTS audio ring fed from the pipeline
+  Cable-Out path (not loopback). 3-thread drop-old queues for low latency.
+  Config `WEBCAM_*`; commands `[cam]` / `[cam on|off|status|snap closed|closed]`.
+  Full guide: [`docs/webcam-lipsync.md`](docs/webcam-lipsync.md).
+- **OBS Studio Virtual Camera (required for Teams video)** — install
+  [OBS Studio](https://obsproject.com/), start **Virtual Camera** once (registers
+  the Windows driver), then stop/quit OBS so LiveLingo can open the same device.
+  Teams **Camera** = **OBS Virtual Camera**; Teams **Microphone** = **CABLE Output**.
+  Video and audio stay separate: virtual cam = face only; VB-Cable = translated speech.
+  Optional deps: `requirements-webcam.txt` (`opencv-python`, `mediapipe`, `pyvirtualcam`).
+- **Closed-mouth photo template** — `cam snap closed` (or preview capture) stores a
+  face plate under `.cache/webcam/`; soft warp/blend while you speak on the mic (VAD)
+  so Teams does not see source-language lip motion. Hangover
+  `WEBCAM_SPEECH_HANGOVER_S` (default 1.5s). **F10** / `cam closed` manual toggle;
+  `cam closed auto` returns to VAD-driven mode.
+- **Pre-TTS cue (headphones only)** — soft double-beep on `MONITOR_DEVICE` ~1s
+  before translated TTS hits Cable/Teams (`TTS_MONITOR_CUE*`). Never written to
+  CABLE Input. Cable stream is paused for the lead window so the bip cannot leak
+  into the call.
+- **F5 auto-scroll lock (TUI Tradução)** — toggles follow-to-bottom for **both** LC
+  (left) and VOZ (right) panes. Default ON (green chip + footer `Auto↓ ON`). OFF
+  freezes the viewport while lines still append. Click the chip or press **F5**.
+  Documented in command-help (all langs).
+- **Runtime provider failover / HA** — mid-session redundancy without killing the app:
+  - **STT:** Groq primary → **local faster-whisper** on timeout/429/network.
+  - **Translation:** Groq LLM primary → **Google Translate**.
+  - Circuit breaker + config: `STT_FALLBACK`, `TRANSLATION_FALLBACK`,
+    `FAILOVER_*`, `CIRCUIT_*`, `STT_WARMUP_LOCAL`, `FAILOVER_LOG` (see `.env.example`).
+  - Module: `livelingo/failover.py`. System panel logs rate-limited `[ha] …` events.
+- **Sistema log: chunk audio paths** — WAV path lines on the **Sistema** tab with
+  `[Chunk N]` prefix for replay/debug.
+- **Tests** — `tests/test_failover.py`, `tests/test_mouth_template.py`,
+  `tests/test_webcam_audio_ring.py`; smoke imports for failover + webcam modules.
+
+### Changed
+
+- **Voice bypass `[b]` / F2** — first press behaves like `[x]` on Cable (suppress +
+  force-interrupt + drain queue + close Player), then raw mic → CABLE without
+  STT/translate. Second press leaves bypass and resumes listen/translate/TTS.
+  In-flight chunk workers no longer re-arm TTS suppress while bypass owns Cable
+  (fixes translation audio leaking into Teams during bypass).
+- **Webcam → Teams reliability** — open virtual cam even if physical capture is
+  slow/failed (placeholder); Windows `CAP_DSHOW`/`MSMF` fallbacks; try `obs`
+  backend; richer `[cam status]` (`cap_ok`, `vcam`, `frames_sent`, `audio_rms`);
+  loud missing-deps warn + Teams checklist (OBS cam + CABLE mic + `[s]`).
+- **Player / monitor routing** — `MONITOR_PLAYBACK=false` (default) keeps full TTS
+  on Cable only; monitor stream is not opened for cue-only setups. Pre-TTS cue
+  uses a dedicated headphones OutputStream (`livelingo/monitor_cue.py`).
+- **`post_log` / VAD speak / `GG`** respect F5 state for Tradução panes.
 - **Help / F1 status lines** detect failover wrappers (LLM+Google / Groq+local HA badges).
+
+### Docs
+
+- README (EN) and README-ptbr: OBS Virtual Camera prerequisite, Teams camera+mic
+  dual-device table, webcam install (`requirements-webcam.txt`), `[cam]` / F10
+  commands, link to `docs/webcam-lipsync.md`.
 
 ## [1.0.0] - 2026-07-21
 
@@ -47,7 +137,9 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 - **Log sink panels** — `ui` now routes `main` | `lc` | `app` (`_normalize_panel`; aliases: `captions`/`livecaptions` → `lc`, `sistema`/`system` → `app`).
 - **LiveCaptions final pairs** — `live_caption_block` / LC commit fallback emit to `panel="lc"` (no longer pollute VOZ).
 - **Audio path lines** — empty / missing WAV no longer prints “not generated yet — use r / rN” or a second missing line; omit the line when path is empty (sound OFF / TTS skipped); known path still prints full `audio:` even if file not on disk yet.
-- **Bypass badge (TUI)** — compact **F2** chip on its own row between Live Captions strip and log tabs (not beside the command box). Click / **F2** / `[b]` still toggle voice bypass. Full-log copy remains **Ctrl+Shift+C** only.
+- **Bypass badge (TUI)** — compact **F2** chip (with **F5** auto-scroll) on the
+  **log tabs row** (right side; not a separate strip above the tabs). Click /
+  **F2** / `[b]` still toggle voice bypass. Full-log copy remains **Ctrl+Shift+C** only.
 - **UI language codes** — `SOURCE_LANG` aliases `br` / `bra` map to `pt` for TUI chrome / audio i18n labels.
 
 ### Added
@@ -235,6 +327,7 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
 
-[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.1.0
 [1.0.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0
 [0.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v0.1.0

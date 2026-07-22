@@ -18,6 +18,7 @@ CORE_MODULES = [
     "livelingo.llm",
     "livelingo.groq_transcribe",
     "livelingo.failover",
+    "livelingo.webcam",
     "livelingo.stt_filter",
     "livelingo.synonyms",
     "livelingo.synthesis_error",
@@ -69,6 +70,8 @@ def test_config_has_essential_attrs():
         "TRANSLATION_FALLBACK",
         "CIRCUIT_FAIL_THRESHOLD",
         "FAILOVER_MAX_RETRIES",
+        "WEBCAM_ENABLED",
+        "WEBCAM_LIP_ENGINE",
     ):
         assert hasattr(cfg, name), f"config missing {name}"
 

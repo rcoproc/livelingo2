@@ -36,6 +36,57 @@ _AFFINE_IDX = (
     _LIP_LOWER,
 )
 
+# MediaPipe Face Mesh face-oval (silhouette) — full-face freeze plate / F10.
+# https://github.com/google/mediapipe/blob/master/mediapipe/python/solutions/face_mesh_connections.py
+FACE_OVAL_IDX = (
+    10,
+    338,
+    297,
+    332,
+    284,
+    251,
+    389,
+    356,
+    454,
+    323,
+    361,
+    288,
+    397,
+    365,
+    379,
+    378,
+    400,
+    377,
+    152,
+    148,
+    176,
+    149,
+    150,
+    136,
+    172,
+    58,
+    132,
+    93,
+    234,
+    127,
+    162,
+    21,
+    54,
+    103,
+    67,
+    109,
+)
+
+
+@dataclass
+class FreezePlateGeom:
+    """Geometry for F10 / snap-closed full-face freeze region."""
+
+    center: Tuple[int, int]  # (cx, cy)
+    axes: Tuple[int, int]  # (half_w, half_h) for ellipse draw
+    contour: Optional[np.ndarray] = None  # Nx1x2 int32 polygon (optional)
+    mode: str = "face"  # face | mouth
+
 
 @dataclass
 class MouthTemplate:
@@ -246,6 +297,81 @@ def load_template(
         return None
 
 
+def compute_freeze_plate_geom(
+    h: int,
+    w: int,
+    landmarks: Optional[np.ndarray],
+    mouth_cx: int,
+    mouth_cy: int,
+    mouth_w: int,
+    mouth_h: int = 12,
+    *,
+    region_scale: float = 1.15,
+) -> FreezePlateGeom:
+    """
+    Full-face freeze geometry for F10 / ``cam snap closed`` overlay.
+
+    Prefer MediaPipe face-oval; fallback ellipse from mouth size covering
+    forehead → chin (user request: freeze whole face, not mouth-only oval).
+    """
+    scale = float(np.clip(float(region_scale) if region_scale else 1.15, 0.9, 1.45))
+    mw = max(24, int(mouth_w or 40))
+    mh = max(10, int(mouth_h or 12))
+    mcx = int(np.clip(mouth_cx, 0, max(0, w - 1)))
+    mcy = int(np.clip(mouth_cy, 0, max(0, h - 1)))
+
+    # --- Face oval from landmarks (must be larger than mouth — reject garbage) ---
+    if landmarks is not None and landmarks.shape[0] > max(FACE_OVAL_IDX):
+        try:
+            oval = landmarks[list(FACE_OVAL_IDX)].astype(np.float32)
+            if oval.shape[0] >= 8:
+                ow = float(oval[:, 0].max() - oval[:, 0].min())
+                oh = float(oval[:, 1].max() - oval[:, 1].min())
+                # Real face oval is much larger than lip width; tiny cloud = bad mesh
+                if ow >= mw * 1.15 and oh >= mw * 1.0:
+                    center = oval.mean(axis=0)
+                    expanded = center + (oval - center) * scale
+                    xs = expanded[:, 0]
+                    ys = expanded[:, 1]
+                    x0, x1 = float(np.percentile(xs, 2)), float(np.percentile(xs, 98))
+                    y0, y1 = float(np.percentile(ys, 2)), float(np.percentile(ys, 98))
+                    fcx = int(round(0.5 * (x0 + x1)))
+                    fcy = int(round(0.5 * (y0 + y1)))
+                    half_w = 0.5 * (x1 - x0)
+                    half_h = 0.5 * (y1 - y0)
+                    half_w = float(np.clip(half_w, mw * 1.0, w * 0.48))
+                    half_h = float(np.clip(half_h, mw * 1.2, h * 0.48))
+                    fcx = int(np.clip(fcx, int(half_w) + 2, w - int(half_w) - 2))
+                    fcy = int(np.clip(fcy, int(half_h) + 2, h - int(half_h) - 2))
+                    contour = expanded.reshape(-1, 1, 2).astype(np.int32)
+                    return FreezePlateGeom(
+                        center=(fcx, fcy),
+                        axes=(
+                            max(40, int(round(half_w))),
+                            max(55, int(round(half_h))),
+                        ),
+                        contour=contour,
+                        mode="face",
+                    )
+        except Exception:
+            pass
+
+    # --- Fallback: full-face ellipse from mouth metrics (always large enough) ---
+    # ~2.2× mouth width, ~2.9× mouth width tall; center shifted up (eyes/forehead)
+    half_w = float(np.clip(mw * 1.15 * scale, 70.0, w * 0.40))
+    half_h = float(np.clip(mw * 1.40 * scale + mh * 0.8, 95.0, h * 0.42))
+    fcx = mcx
+    fcy = int(round(mcy - half_h * 0.28))
+    fcx = int(np.clip(fcx, int(half_w) + 2, w - int(half_w) - 2))
+    fcy = int(np.clip(fcy, int(half_h) + 2, h - int(half_h) - 2))
+    return FreezePlateGeom(
+        center=(fcx, fcy),
+        axes=(max(40, int(round(half_w))), max(55, int(round(half_h)))),
+        contour=None,
+        mode="face",
+    )
+
+
 def _lower_face_mask(
     h: int,
     w: int,
@@ -255,101 +381,58 @@ def _lower_face_mask(
     mouth_w: int,
     mouth_h: int,
     *,
-    region_scale: float = 2.4,
-    feather_px: int = 40,
+    region_scale: float = 1.15,
+    feather_px: int = 24,
 ) -> np.ndarray:
     """
-    Boxy plate centered on the **mouth** (cheeks + chin).
+    Soft full-face plate for F10 freeze (face oval + feather).
 
-    Primary geometry uses mouth_cx/cy/w/h from the live ROI (always valid).
-    Landmarks only *expand* the box if they look consistent — never shrink
-    the plate off the mouth (that bug left alpha=0 on the lips).
+    Covers forehead → chin (not mouth-only). Caps keep a bit of background
+    visible so the plate is not a full-frame rectangle.
     """
     import cv2
 
     mask = np.zeros((h, w), dtype=np.uint8)
-    scale = max(1.2, float(region_scale))
-    mw = max(28, int(mouth_w or 40))
-    mh = max(12, int(mouth_h or 12))
-    feather = max(10, int(feather_px))
-    cx = int(np.clip(cx, 0, w - 1))
-    cy = int(np.clip(cy, 0, h - 1))
+    feather = max(8, min(48, int(feather_px)))
+    geom = compute_freeze_plate_geom(
+        h,
+        w,
+        landmarks,
+        cx,
+        cy,
+        mouth_w,
+        mouth_h,
+        region_scale=region_scale,
+    )
+    fcx, fcy = geom.center
+    ax, ay = geom.axes
 
-    # --- Base plate: tall enough to cover under-nose → chin (not a thin strip) ---
-    # Use mouth WIDTH as vertical scale too — mouth_h alone is often ~30px (too short)
-    half_w = max(48.0, mw * 0.95 * scale)
-    half_up = max(28.0, mw * 0.35 * scale)  # up toward nose base
-    half_dn = max(55.0, mw * 0.55 * scale + mh * 2.0)  # down to chin
-    x0 = float(cx) - half_w
-    x1 = float(cx) + half_w
-    y0 = float(cy) - half_up
-    y1 = float(cy) + half_dn
-
-    # Expand with outer-lip ring if near mouth (width/height refine)
-    if landmarks is not None and landmarks.shape[0] > max(OUTER_LIP_IDX):
+    if geom.contour is not None and len(geom.contour) >= 6:
         try:
-            outer = landmarks[list(OUTER_LIP_IDX)].astype(np.float32)
-            near = []
-            for px, py in outer:
-                if abs(px - cx) < half_w * 1.5 and abs(py - cy) < half_dn * 1.4:
-                    near.append((px, py))
-            if len(near) >= 4:
-                arr = np.asarray(near, dtype=np.float32)
-                lx0, lx1 = float(arr[:, 0].min()), float(arr[:, 0].max())
-                ly0, ly1 = float(arr[:, 1].min()), float(arr[:, 1].max())
-                pad_x = max(12.0, (lx1 - lx0) * 0.4)
-                pad_up = max(18.0, (ly1 - ly0) * 0.9)
-                pad_dn = max(28.0, (ly1 - ly0) * 1.6)
-                x0 = min(x0, lx0 - pad_x)
-                x1 = max(x1, lx1 + pad_x)
-                y0 = min(y0, ly0 - pad_up)
-                y1 = max(y1, ly1 + pad_dn)
+            # Filled convex hull of face oval (smooth silhouette)
+            hull = cv2.convexHull(geom.contour)
+            cv2.fillConvexPoly(mask, hull, 255, cv2.LINE_AA)
         except Exception:
-            pass
+            cv2.ellipse(mask, (fcx, fcy), (ax, ay), 0, 0, 360, 255, -1, cv2.LINE_AA)
+    else:
+        cv2.ellipse(mask, (fcx, fcy), (ax, ay), 0, 0, 360, 255, -1, cv2.LINE_AA)
 
-    # Keep plate on lower face only (not hair)
-    y0 = max(y0, h * 0.28)
-    y0 = min(y0, float(cy) - 16.0)  # always some solid above lips
-    y1 = max(y1, float(cy) + 40.0)
-
-    xi0 = int(max(0, np.floor(x0)))
-    yi0 = int(max(0, np.floor(y0)))
-    xi1 = int(min(w, np.ceil(x1)))
-    yi1 = int(min(h, np.ceil(y1)))
-    if xi1 <= xi0 + 4 or yi1 <= yi0 + 4:
-        # Last resort: fixed box on mouth
-        xi0 = max(0, cx - 60)
-        xi1 = min(w, cx + 60)
-        yi0 = max(0, cy - 30)
-        yi1 = min(h, cy + 70)
-
-    cv2.rectangle(mask, (xi0, yi0), (xi1, yi1), 255, -1)
-    corner = max(3, min(10, int(min(xi1 - xi0, yi1 - yi0) * 0.05)))
-    if corner > 2:
-        k = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (corner * 2 + 1, corner * 2 + 1)
-        )
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    # Solid core so center of face never drops alpha
+    core = max(16, min(ax, ay) // 3)
+    cv2.circle(mask, (fcx, fcy), core, 255, -1, cv2.LINE_AA)
 
     if int(mask.max()) == 0:
         return np.zeros((h, w), dtype=np.float32)
 
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    ramp = max(4.0, float(feather) * 0.32)
+    ramp = max(4.0, float(feather) * 0.45)
     soft = np.clip(dist / ramp, 0.0, 1.0).astype(np.float32)
-    k = max(3, min(9, (feather // 8) * 2 + 1))
+    k = max(3, min(15, (feather // 5) * 2 + 1))
     if k % 2 == 0:
         k += 1
     soft = cv2.GaussianBlur(soft, (k, k), 0)
     soft = np.clip(soft, 0.0, 1.0)
     soft[mask == 0] = 0.0
-    # Guarantee mouth center is fully frozen
-    if 0 <= cy < h and 0 <= cx < w and soft[cy, cx] < 0.85:
-        soft[cy, cx] = 1.0
-        # small solid disk on mouth
-        cv2.circle(soft, (cx, cy), max(12, mw // 4), 1.0, -1)
-        soft = np.clip(soft, 0.0, 1.0)
-        soft[mask == 0] = 0.0
     return soft
 
 
@@ -358,16 +441,16 @@ def align_and_blend(
     live_roi: MouthROI,
     template: MouthTemplate,
     *,
-    feather_px: int = 36,
-    region_scale: float = 2.4,
+    feather_px: int = 24,
+    region_scale: float = 1.15,
     color_match: bool = True,
     flip_h: bool = False,
 ) -> np.ndarray:
     """
-    Freeze a *large* closed-mouth plate from the photo onto the live frame.
+    Freeze the **full face** from the closed-mouth photo onto the live frame (F10).
 
-    Soft edges blend into the live background so the patch doesn't look
-    pasted. Core region stays fully from the photo (hides speaking motion).
+    Soft-feathered face oval (not mouth-only). Anchored by mouth center/width so
+    the whole head tracks the live pose.
 
     ``flip_h``: mirror the template first (use when Teams view is mirrored
     vs the OpenCV capture used at snap time).
@@ -389,13 +472,12 @@ def align_and_blend(
     h, w = out.shape[:2]
     src = template.image_bgr
 
-    # Uniform scale from mouth WIDTH only (mouth_h is tiny → was squashing ~50%).
-    # Skip multi-point affine: bad jaw landmarks compress the face vertically.
+    # Uniform scale from mouth WIDTH (stable anchor for full-face plate).
     M = None
     try:
         tw = float(template.mouth_w or 40)
         lw = float(live_roi.mouth_w or 40)
-        s = float(np.clip(lw / max(8.0, tw), 0.85, 1.25))
+        s = float(np.clip(lw / max(8.0, tw), 0.80, 1.35))
         tx = float(live_roi.mouth_cx) - s * float(template.mouth_cx or 0)
         ty = float(live_roi.mouth_cy) - s * float(template.mouth_cy or 0)
         M = np.array([[s, 0.0, tx], [0.0, s, ty]], dtype=np.float64)
@@ -425,25 +507,38 @@ def align_and_blend(
         feather_px=feather_px,
     )
 
-    # Color match: core mean + edge ring (reduces halo at feather boundary)
+    # Color match: *luminance only*. Per-channel BGR scale (old code) over-boosted
+    # R vs G/B under mixed lighting → fake "lipstick" / red mouth (see boca-aberta).
     if color_match and float(alpha.max()) > 0.05:
         try:
             core = alpha > 0.65
             ring = (alpha > 0.12) & (alpha < 0.55)
             if int(core.sum()) > 80:
-                live_mean = out[core].astype(np.float32).mean(axis=0)
-                warp_mean = warped[core].astype(np.float32).mean(axis=0)
-                scale = (live_mean + 1.0) / (warp_mean + 1.0)
-                scale = np.clip(scale, 0.82, 1.22)
-                warped_f = warped.astype(np.float32) * scale.reshape(1, 1, 3)
-                # Nudge ring toward live skin tone
+                live_px = out[core].astype(np.float32)
+                warp_px = warped[core].astype(np.float32)
+                # Rec.601 luma on BGR order
+                def _luma(px: np.ndarray) -> float:
+                    return float(
+                        0.114 * px[:, 0].mean()
+                        + 0.587 * px[:, 1].mean()
+                        + 0.299 * px[:, 2].mean()
+                    )
+
+                live_lum = _luma(live_px)
+                warp_lum = _luma(warp_px)
+                scale = (live_lum + 1.0) / (warp_lum + 1.0)
+                scale = float(np.clip(scale, 0.88, 1.14))
+                warped_f = warped.astype(np.float32) * scale
+                # Edge: mild brightness nudge only (no chroma pull → no lipstick)
                 if int(ring.sum()) > 40:
-                    live_r = out[ring].astype(np.float32).mean(axis=0)
-                    warp_r = warped_f[ring].mean(axis=0)
-                    delta = (live_r - warp_r) * 0.45
-                    # Apply delta only where alpha is mid (edges)
-                    edge_w = np.clip((0.55 - np.abs(alpha - 0.35)) / 0.35, 0.0, 1.0)
-                    warped_f = warped_f + delta.reshape(1, 1, 3) * edge_w[:, :, None]
+                    live_r = out[ring].astype(np.float32)
+                    warp_r = warped_f[ring]
+                    d_lum = _luma(live_r) - _luma(warp_r)
+                    d_lum = float(np.clip(d_lum * 0.35, -18.0, 18.0))
+                    edge_w = np.clip(
+                        (0.55 - np.abs(alpha - 0.35)) / 0.35, 0.0, 1.0
+                    ).astype(np.float32)
+                    warped_f = warped_f + d_lum * edge_w[:, :, None]
                 warped = np.clip(warped_f, 0, 255).astype(np.uint8)
         except Exception:
             pass
@@ -460,10 +555,10 @@ def open_from_closed_template(
     open_amt: float,
 ) -> np.ndarray:
     """
-    From the frozen closed plate, open lips gently ∝ open_amt.
+    From the closed base, open lips gently ∝ open_amt (warp only).
 
-    Operates only on a tight lip band *inside* the large frozen region so
-    cheeks/chin stay from the photo.
+    Operates on a tight lip band. No procedural teeth paint (removed —
+    looked poorly positioned / low quality).
     """
     try:
         import cv2
@@ -495,9 +590,9 @@ def open_from_closed_template(
     map_x = np.tile(np.arange(cw, dtype=np.float32), (ch, 1))
     ys = np.arange(ch, dtype=np.float32)
     scale = 1.0 + 0.65 * amt
-    dy = amt * max(5.0, lip_w * 0.15)
+    dy = amt * max(5.0, lip_w * 0.18)
     src_y = mid + (ys - mid) / scale
-    src_y = src_y + np.where(ys > mid, dy * 0.4, -dy * 0.2)
+    src_y = src_y + np.where(ys > mid, dy * 0.4, -dy * 0.22)
     map_y = np.tile(src_y.reshape(-1, 1), (1, cw)).astype(np.float32)
     opened = cv2.remap(
         crop,
@@ -515,15 +610,16 @@ def open_from_closed_template(
     ).astype(np.float32)
     a = np.clip(a, 0.0, 1.0)
 
-    if amt > 0.2:
-        ax = max(2.5, lip_w * 0.18)
-        ay = max(1.0, 1.0 + amt * min(6.0, lip_w * 0.08))
+    # Soft neutral darken in the lip gap only (no red cast, no teeth paint)
+    if amt > 0.18:
+        ax = max(2.5, lip_w * 0.16)
+        ay = max(1.2, 1.2 + amt * min(6.0, lip_w * 0.09))
         ca = np.exp(
             -(((xx - (cx - x0)) / ax) ** 2 + ((yy - mid) / max(ay, 1.0)) ** 2)
         ).astype(np.float32)
-        ca = np.clip(ca * (0.12 + 0.2 * amt), 0.0, 0.35)
+        ca = np.clip(ca * (0.08 + 0.14 * amt), 0.0, 0.28)
         opened = (
-            opened.astype(np.float32) * (1.0 - 0.5 * ca[:, :, None])
+            opened.astype(np.float32) * (1.0 - 0.40 * ca[:, :, None])
         ).clip(0, 255).astype(np.uint8)
 
     a3 = a[:, :, None]

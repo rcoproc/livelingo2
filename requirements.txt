@@ -64,3 +64,12 @@ nltk>=3.8
 # --- Optional: Piper local TTS (TTS_ENGINE=piper in .env) ---
 # piper-tts>=1.2.0
 # onnxruntime>=1.17.0
+
+# --- Optional: Webcam lip-sync → virtual camera (WEBCAM_ENABLED=true) ---
+# Prefer:  pip install -r requirements-webcam.txt
+# opencv-python>=4.8
+# mediapipe>=0.10.9
+# pyvirtualcam>=0.11.0
+# onnxruntime-gpu>=1.17.0   # or onnxruntime for CPU-only ONNX lip model
+# Docs: docs/webcam-lipsync.md · runtime: [cam] / [cam on|off|status]
+# Teams: camera=OBS Virtual Camera · mic=CABLE Output · LiveLingo [s] ON
