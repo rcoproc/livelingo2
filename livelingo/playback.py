@@ -70,7 +70,6 @@ class Player:
                 )
                 self._monitor_stream.start()
 
-
     def interrupt(self):
         """Stop the current playback as soon as possible (thread-safe)."""
         self._interrupt.set()
@@ -167,6 +166,13 @@ class Player:
                         )
             return
 
+        # Pre-TTS cue calls pause_main_output() → stream.abort(). Ensure live
+        # before write; otherwise play() returns instantly and escuta re-arms
+        # while the user still hears nothing / mid-glitch.
+        try:
+            self.resume_main_output()
+        except Exception:
+            pass
         self._write_stream(self._stream, audio)
         # Full TTS on headphones only when MONITOR_PLAYBACK (not cue-only)
         if (

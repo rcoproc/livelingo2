@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 # CI/dev: requirements-dev installs opencv-python-headless. Skip cleanly if missing.
-pytest.importorskip("cv2", reason="opencv required (pip install opencv-python-headless)")
+pytest.importorskip(
+    "cv2", reason="opencv required (pip install opencv-python-headless)"
+)
 
 from livelingo.webcam.face_roi import MouthROI
 from livelingo.webcam.mouth_template import (
@@ -180,7 +182,11 @@ def test_save_allows_heuristic_empty_landmarks(tmp_path: Path):
     img_p = tmp_path / "h.png"
     lm_p = tmp_path / "h.json"
     ok, msg = save_template_from_frame(
-        frame, roi, image_path=str(img_p), landmarks_path=str(lm_p), allow_heuristic=True
+        frame,
+        roi,
+        image_path=str(img_p),
+        landmarks_path=str(lm_p),
+        allow_heuristic=True,
     )
     assert ok, msg
     assert "sem MediaPipe" in msg or img_p.is_file()

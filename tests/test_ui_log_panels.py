@@ -103,6 +103,79 @@ def test_format_audio_lines_pending_write_shows_path(tmp_path):
     assert "audio:" in lines[0]
 
 
+def test_format_timing_line_includes_engine_and_first_chunk_ms():
+    from livelingo import ui
+
+    line = ui.format_timing_line(
+        {
+            "stt": 0.5,
+            "translate": 0.2,
+            "tts": 1.2,
+            "tts_engine": "piper",
+            "tts_voice": "en_US-lessac-low",
+            "tts_first_ms": 58,
+            "total": 1.9,
+        },
+        include_clock=False,
+    )
+    assert "engine=piper(en_US-lessac-low)" in line
+    assert "first_chunk 58ms" in line
+    assert "TTS 1.20s" in line
+
+
+def test_format_sistema_status_shape(monkeypatch):
+    import config as cfg
+    from livelingo import ui
+
+    monkeypatch.setattr(cfg, "SOURCE_LANG", "pt", raising=False)
+    monkeypatch.setattr(cfg, "TARGET_LANG", "en", raising=False)
+    monkeypatch.setattr(cfg, "TTS_ENGINE", "hybrid", raising=False)
+    monkeypatch.setattr(cfg, "PIPER_VOICE", "auto:en", raising=False)
+
+    class _Pipe:
+        def is_sound_enabled(self):
+            return True
+
+        def is_mic_muted(self):
+            return True
+
+    line = ui.format_sistema_status(_Pipe())
+    assert "Languages: pt -> en" in line
+    assert "TTS: hybrid" in line
+    assert "Sound: ON" in line
+    assert "Mic: MUTED" in line
+
+
+def test_begin_chunk_sistema_clears_app_and_prints_status(monkeypatch):
+    """Each chunk: clear Sistema, keep status, then chunk header."""
+    from livelingo import ui
+
+    captured: list[tuple[str, str, str]] = []
+
+    def sink(kind, text, panel="main"):
+        captured.append((kind, text, panel))
+
+    class _Pipe:
+        def is_sound_enabled(self):
+            return False
+
+        def is_mic_muted(self):
+            return False
+
+    prev = ui.get_log_sink()
+    try:
+        ui.set_log_sink(sink)
+        ui.begin_chunk_sistema(7, pipeline=_Pipe())
+    finally:
+        ui.set_log_sink(prev)
+
+    assert any(k == "clear" and p == "app" for k, _, p in captured), captured
+    assert any(
+        p == "app" and "Languages:" in t and "Mic:" in t for _, t, p in captured
+    ), captured
+    assert any(p == "app" and "[chunk 7]" in t for _, t, p in captured), captured
+
+
 def test_live_caption_block_emits_to_lc_panel():
     captured: list[tuple[str, str, str]] = []
 

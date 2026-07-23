@@ -166,23 +166,28 @@ def audio_rms(audio):
     return float(np.sqrt(np.mean(np.square(block))))
 
 
-def should_discard_transcript(audio, text, config=None):
+def transcript_discard_reason(audio, text, config=None):
     """
-    Discard STT output that is likely a silence hallucination.
+    Why STT text should be dropped, or None to keep.
 
-    Uses phrase blocklist plus optional low-energy + short-text heuristics.
+    Phrase blocklist (goodbye / legenda por / …) always applies.
+
+    Low-energy heuristic is **strict** — only near-silence + ultra-short text
+    (1–2 words). Quiet real speech like "E aí, vai encarar?" (4 words) must
+    never die here: older defaults (max_words=6, max_sec=2.5, rms=0.01) ate
+    short PT/EN clauses on soft USB mics.
     """
     if config is not None and not getattr(config, "STT_HALLUCINATION_FILTER", True):
-        return False
+        return None
 
     text = (text or "").strip()
     if not text:
-        return True
+        return "texto vazio"
     if is_hallucination(text):
-        return True
+        return "frase de alucinação (blocklist)"
 
     if audio is None or not isinstance(audio, np.ndarray):
-        return False
+        return None
 
     rms = audio_rms(audio)
     words = len(text.split())
@@ -190,11 +195,37 @@ def should_discard_transcript(audio, text, config=None):
         getattr(config, "SAMPLE_RATE", 16000) if config else 16000
     )
 
-    min_rms = getattr(config, "STT_MIN_RMS", 0.010) if config else 0.010
-    max_words = getattr(config, "STT_LOW_ENERGY_MAX_WORDS", 6) if config else 6
-    max_duration = getattr(config, "STT_LOW_ENERGY_MAX_SEC", 2.5) if config else 2.5
+    # Real multi-word speech / questions — never energy-drop
+    if words >= 3:
+        return None
+    if any(ch in text for ch in "?!¿¡"):
+        return None
+    if len(text) >= 18:
+        return None
+
+    min_rms = float(getattr(config, "STT_MIN_RMS", 0.004) or 0.004) if config else 0.004
+    max_words = (
+        int(getattr(config, "STT_LOW_ENERGY_MAX_WORDS", 2) or 2) if config else 2
+    )
+    max_duration = (
+        float(getattr(config, "STT_LOW_ENERGY_MAX_SEC", 1.2) or 1.2) if config else 1.2
+    )
+    max_words = max(1, min(6, max_words))
+    max_duration = max(0.4, min(3.0, max_duration))
 
     if rms < min_rms and duration < max_duration and words <= max_words:
-        return True
+        return (
+            f"baixa energia (rms={rms:.4f}<{min_rms:.3f}, "
+            f"{words} palavra(s), {duration:.1f}s)"
+        )
 
-    return False
+    return None
+
+
+def should_discard_transcript(audio, text, config=None):
+    """
+    Discard STT output that is likely a silence hallucination.
+
+    Uses phrase blocklist plus optional low-energy + short-text heuristics.
+    """
+    return transcript_discard_reason(audio, text, config) is not None
