@@ -203,16 +203,12 @@ def transcript_discard_reason(audio, text, config=None):
     if len(text) >= 18:
         return None
 
-    min_rms = (
-        float(getattr(config, "STT_MIN_RMS", 0.004) or 0.004) if config else 0.004
-    )
+    min_rms = float(getattr(config, "STT_MIN_RMS", 0.004) or 0.004) if config else 0.004
     max_words = (
         int(getattr(config, "STT_LOW_ENERGY_MAX_WORDS", 2) or 2) if config else 2
     )
     max_duration = (
-        float(getattr(config, "STT_LOW_ENERGY_MAX_SEC", 1.2) or 1.2)
-        if config
-        else 1.2
+        float(getattr(config, "STT_LOW_ENERGY_MAX_SEC", 1.2) or 1.2) if config else 1.2
     )
     max_words = max(1, min(6, max_words))
     max_duration = max(0.4, min(3.0, max_duration))

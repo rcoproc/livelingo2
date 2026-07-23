@@ -70,7 +70,6 @@ class Player:
                 )
                 self._monitor_stream.start()
 
-
     def interrupt(self):
         """Stop the current playback as soon as possible (thread-safe)."""
         self._interrupt.set()

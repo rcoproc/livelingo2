@@ -3276,7 +3276,11 @@ class LiveLingoApp(App):
         except Exception:
             pass
         try:
-            should = bool(p.capture_should_run()) if hasattr(p, "capture_should_run") else True
+            should = (
+                bool(p.capture_should_run())
+                if hasattr(p, "capture_should_run")
+                else True
+            )
         except Exception:
             should = True
 
@@ -3570,8 +3574,10 @@ class LiveLingoApp(App):
 
         title_bits = ["Live Captions", f"{src_l}→{tgt_l}"]
         running = bool(d.get("running"))
-        if paused or status == "paused" or (
-            not running and status in ("idle", "stopped", "")
+        if (
+            paused
+            or status == "paused"
+            or (not running and status in ("idle", "stopped", ""))
         ):
             title_bits.append("OFF")
         elif status == "translating":
@@ -4134,7 +4140,9 @@ class LiveLingoApp(App):
             self._set_log_auto_scroll(log, False)
             return
         try:
-            log.auto_scroll = True if (not is_trad or self._trad_auto_scroll_enabled()) else False
+            log.auto_scroll = (
+                True if (not is_trad or self._trad_auto_scroll_enabled()) else False
+            )
         except Exception:
             pass
         if is_trad and not self._trad_auto_scroll_enabled() and not force:
@@ -4391,7 +4399,10 @@ class LiveLingoApp(App):
             return
         # TTS playing: force play visual (don't show soft Mic ready)
         try:
-            if hasattr(self.pipeline, "is_output_playing") and self.pipeline.is_output_playing():
+            if (
+                hasattr(self.pipeline, "is_output_playing")
+                and self.pipeline.is_output_playing()
+            ):
                 pulse_on = (self._frame_i % 2) == 0
                 ad = "●" if pulse_on else "◉"
                 markup = (
@@ -4913,9 +4924,7 @@ class LiveLingoApp(App):
             # Re-enabling: jump both panes to end so live follow is useful.
             for panel in ("main", "lc"):
                 try:
-                    self._follow_log_bottom(
-                        self._resolve_log_widget(panel), force=True
-                    )
+                    self._follow_log_bottom(self._resolve_log_widget(panel), force=True)
                 except Exception:
                     pass
             # force=True left auto_scroll True; re-apply F5 ON flags.
@@ -4992,8 +5001,7 @@ class LiveLingoApp(App):
                     )
                     self.post_log(
                         "dim",
-                        "  Dica: fale no idioma da call. "
-                        "Mic do Teams = CABLE Output.",
+                        "  Dica: fale no idioma da call. Mic do Teams = CABLE Output.",
                         panel="app",
                     )
                 else:
@@ -5044,9 +5052,7 @@ class LiveLingoApp(App):
             if not getattr(svc, "_started", False):
                 if not svc.start():
                     err = (svc.snapshot() or {}).get("error") or "?"
-                    self.post_log(
-                        "error", f"Webcam start falhou: {err}", panel="app"
-                    )
+                    self.post_log("error", f"Webcam start falhou: {err}", panel="app")
                     return
             if not svc.is_enabled():
                 svc.enable()
@@ -5098,9 +5104,7 @@ class LiveLingoApp(App):
             if not getattr(svc, "_started", False):
                 if not svc.start():
                     err = (svc.snapshot() or {}).get("error") or "?"
-                    self.post_log(
-                        "error", f"Webcam start falhou: {err}", panel="app"
-                    )
+                    self.post_log("error", f"Webcam start falhou: {err}", panel="app")
                     return
             if not svc.is_enabled():
                 svc.enable()

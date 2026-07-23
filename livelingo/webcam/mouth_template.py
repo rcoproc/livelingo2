@@ -19,11 +19,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .face_roi import (
-    OUTER_LIP_IDX,
     _LIP_LEFT,
     _LIP_LOWER,
     _LIP_RIGHT,
     _LIP_UPPER,
+    OUTER_LIP_IDX,
     FaceMouthROI,
     MouthROI,
 )
@@ -515,6 +515,7 @@ def align_and_blend(
             if int(core.sum()) > 80:
                 live_px = out[core].astype(np.float32)
                 warp_px = warped[core].astype(np.float32)
+
                 # Rec.601 luma on BGR order
                 def _luma(px: np.ndarray) -> float:
                     return float(
@@ -653,9 +654,9 @@ def open_from_closed_template(
     yy, xx = np.mgrid[0:ch, 0:cw].astype(np.float32)
     lx = max(8.0, lip_w * 0.45)
     ly = max(5.0, half_h * 0.4)
-    a = np.exp(
-        -(((xx - (cx - x0)) / lx) ** 2 + ((yy - mid) / ly) ** 2)
-    ).astype(np.float32)
+    a = np.exp(-(((xx - (cx - x0)) / lx) ** 2 + ((yy - mid) / ly) ** 2)).astype(
+        np.float32
+    )
     a = np.clip(a, 0.0, 1.0)
 
     # Soft neutral darken in the lip gap only (no red cast, no teeth paint)
@@ -667,8 +668,10 @@ def open_from_closed_template(
         ).astype(np.float32)
         ca = np.clip(ca * (0.08 + 0.14 * amt), 0.0, 0.28)
         opened = (
-            opened.astype(np.float32) * (1.0 - 0.40 * ca[:, :, None])
-        ).clip(0, 255).astype(np.uint8)
+            (opened.astype(np.float32) * (1.0 - 0.40 * ca[:, :, None]))
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
 
     a3 = a[:, :, None]
     blended = opened.astype(np.float32) * a3 + crop.astype(np.float32) * (1.0 - a3)

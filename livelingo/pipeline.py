@@ -1219,9 +1219,7 @@ class Pipeline:
             if hangover_ms <= 0:
                 self._capture_hangover_until = 0.0
             else:
-                self._capture_hangover_until = time.monotonic() + (
-                    hangover_ms / 1000.0
-                )
+                self._capture_hangover_until = time.monotonic() + (hangover_ms / 1000.0)
                 try:
                     ui.set_tts_playing(True, detail=" (cauda…)")
                 except Exception:
@@ -1293,9 +1291,7 @@ class Pipeline:
         if self._is_tts_output_blocked():
             # Cable owned by bypass, or [x]/sound-off — never mix TTS in
             return
-        self.playback_queue.put(
-            (audio, sample_rate, interruptible, bool(pre_tts_cue))
-        )
+        self.playback_queue.put((audio, sample_rate, interruptible, bool(pre_tts_cue)))
         # Webcam lip-sync: feed the same TTS waveform that will hit Cable Out.
         try:
             cam = getattr(self, "webcam_service", None)
@@ -2432,9 +2428,7 @@ class Pipeline:
             sample_rate = sample_rate_
             do_cue = pre_tts_cue_remaining
             pre_tts_cue_remaining = False
-            self._enqueue_playback(
-                audio, sample_rate_, False, pre_tts_cue=do_cue
-            )
+            self._enqueue_playback(audio, sample_rate_, False, pre_tts_cue=do_cue)
 
         will_synthesize = sound_on or (sound_off and not self._skip_tts_when_muted())
         if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):

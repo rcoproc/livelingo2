@@ -548,8 +548,8 @@ def _print_f1_help(pipeline=None):
     from livelingo.failover import (
         FailoverTranscriber,
         FailoverTranslator,
-        translator_uses_llm,
         transcriber_uses_groq,
+        translator_uses_llm,
     )
 
     tr = getattr(pipeline, "translator", None) if pipeline is not None else None
@@ -880,7 +880,7 @@ def _build_transcriber():
     Local model warms in a daemon thread so mid-session Groq outages do not
     block the UI; processor waits at most STT_FALLBACK_WAIT_S on fallback path.
     """
-    from livelingo.failover import FailoverTranscriber, classify_error, ErrorKind
+    from livelingo.failover import ErrorKind, FailoverTranscriber, classify_error
 
     _warn_stt_prompt_language_mismatch()
 
@@ -1020,13 +1020,7 @@ def _print_swap_lang_menu_line(pipeline=None, pending_new_pair=None):
     if ui.get_log_sink() is not None:
         ui.dim(text.lstrip(), panel="app")
         return
-    print(
-        "\r\033[K"
-        + Fore.YELLOW
-        + Style.BRIGHT
-        + text
-        + Style.RESET_ALL
-    )
+    print("\r\033[K" + Fore.YELLOW + Style.BRIGHT + text + Style.RESET_ALL)
 
 
 def _print_menu(pipeline=None):
@@ -1066,8 +1060,8 @@ def _print_menu(pipeline=None):
         from livelingo.failover import (
             FailoverTranscriber,
             FailoverTranslator,
-            translator_uses_llm,
             transcriber_uses_groq,
+            translator_uses_llm,
         )
 
         if translator_uses_llm(pipeline.translator):
@@ -2042,9 +2036,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             # Refresh menu line so it shows pending target pair.
             _print_swap_lang_menu_line(pipeline, pending_new_pair=info.get("new_pair"))
         elif status == "cancelled_pending":
-            msg = (
-                f"[g]  Swap pendente cancelado — permanece {info['old_pair']}"
-            )
+            msg = f"[g]  Swap pendente cancelado — permanece {info['old_pair']}"
             if g_panel == "app":
                 ui.warn(msg, indent=3, panel="app")
             else:
@@ -2199,8 +2191,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 panel="app",
             )
             ui.dim(
-                "  Dica: fale no idioma da call. "
-                "Mic do Teams = CABLE Output.",
+                "  Dica: fale no idioma da call. Mic do Teams = CABLE Output.",
                 indent=3,
                 panel="app",
             )
@@ -2238,9 +2229,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             try:
                 if hasattr(indicator, "set_force_soft_listen"):
                     if hasattr(indicator, "call_from_thread"):
-                        indicator.call_from_thread(
-                            indicator.set_force_soft_listen, on
-                        )
+                        indicator.call_from_thread(indicator.set_force_soft_listen, on)
                     else:
                         indicator.set_force_soft_listen(on)
             except Exception:
@@ -3416,11 +3405,21 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 indent=3,
                 panel="app",
             )
-    elif cmd == "sub" or cmd.startswith("sub ") or cmd in (
-        "subtitle",
-        "subtitles",
-        "legenda",
-    ) or (cmd.startswith("subtitle ") or cmd.startswith("subtitles ") or cmd.startswith("legenda ")):
+    elif (
+        cmd == "sub"
+        or cmd.startswith("sub ")
+        or cmd
+        in (
+            "subtitle",
+            "subtitles",
+            "legenda",
+        )
+        or (
+            cmd.startswith("subtitle ")
+            or cmd.startswith("subtitles ")
+            or cmd.startswith("legenda ")
+        )
+    ):
         # Burn-in TARGET on virtual cam (`u` is compact UI — use [sub] here).
         # Aliases: sub | subtitle | subtitles | legenda · on|off · cam sub …
         svc = getattr(pipeline, "webcam_service", None)
@@ -3519,9 +3518,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         def _cam_teams_hint():
             from livelingo.webcam.service import teams_setup_hint
 
-            sound_on = bool(
-                getattr(pipeline, "is_sound_enabled", lambda: False)()
-            )
+            sound_on = bool(getattr(pipeline, "is_sound_enabled", lambda: False)())
             _cam_info(teams_setup_hint())
             if not sound_on:
                 _cam_warn(
@@ -3710,9 +3707,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 (_cam_ok if on else _cam_info)(msg)
         elif sub in ("status", "st", "?"):
             snap = svc.snapshot()
-            sound_on = bool(
-                getattr(pipeline, "is_sound_enabled", lambda: False)()
-            )
+            sound_on = bool(getattr(pipeline, "is_sound_enabled", lambda: False)())
             _cam_info(
                 f"CAM running={snap.get('running')} enabled={snap.get('enabled')} "
                 f"engine={snap.get('engine')} face={snap.get('face_ok')} "
@@ -3842,11 +3837,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 )
         elif sub in ("status", "st", "?"):
             snap = svc.snapshot()
-            on_off = (
-                "ON"
-                if snap.get("running") and not snap.get("paused")
-                else "OFF"
-            )
+            on_off = "ON" if snap.get("running") and not snap.get("paused") else "OFF"
             ui.info(
                 f"LC {on_off} status={snap.get('status')} "
                 f"paused={snap.get('paused')} running={snap.get('running')} "
@@ -4385,18 +4376,14 @@ def main():
             mon_spec = str(getattr(cfg, "MONITOR_DEVICE", "") or "").strip()
             from livelingo.monitor_cue import resolve_headphones
 
-            monitor_idx, mon_name = resolve_headphones(
-                mon_spec, cable_index=out_idx
-            )
+            monitor_idx, mon_name = resolve_headphones(mon_spec, cable_index=out_idx)
             if monitor_idx is None:
                 _log_warn(
                     f"Monitor/cue: {mon_name}. "
                     "Defina MONITOR_DEVICE=13 (índice do fone em list_devices.py)."
                 )
             elif cfg.MONITOR_PLAYBACK:
-                _log_info(
-                    f"Monitor playback ON -> [{monitor_idx}] {mon_name}"
-                )
+                _log_info(f"Monitor playback ON -> [{monitor_idx}] {mon_name}")
             elif getattr(cfg, "TTS_MONITOR_CUE", True):
                 _log_info(
                     f"TTS cue → fone [{monitor_idx}] {mon_name} "
@@ -4539,9 +4526,7 @@ def main():
                         pipeline=pipeline,
                     )
                     pipeline.caption_service = caption_service
-                    auto_lc = bool(
-                        getattr(cfg, "LIVE_CAPTIONS_START_ON_LAUNCH", False)
-                    )
+                    auto_lc = bool(getattr(cfg, "LIVE_CAPTIONS_START_ON_LAUNCH", False))
                     if auto_lc:
                         caption_service.start()
                     try:

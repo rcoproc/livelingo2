@@ -215,7 +215,7 @@ class AudioRingBuffer:
         # Relative energy 0..1 then soft expand for visibility
         rel = float(np.clip(rms / peak, 0.0, 1.0))
         # Speech often sits mid-range — curve boosts mid levels
-        curved = float(rel ** 0.65)
+        curved = float(rel**0.65)
         amt = float(np.clip(curved * (float(sensitivity) / 18.0), 0.0, 1.0))
         # Floor while there is real signal so lips keep moving on quiet phonemes
         if rms > peak * 0.02 and 0.0 < amt < 0.18:

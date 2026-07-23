@@ -338,7 +338,9 @@ class FaceMouthROI:
             try:
                 import cv2
 
-                mouth_bgr = cv2.resize(mouth_bgr, (mw, mh), interpolation=cv2.INTER_LINEAR)
+                mouth_bgr = cv2.resize(
+                    mouth_bgr, (mw, mh), interpolation=cv2.INTER_LINEAR
+                )
             except Exception:
                 return out
         if use_soft_mask:
@@ -347,10 +349,9 @@ class FaceMouthROI:
                 alpha3 = alpha[:, :, None]
             else:
                 alpha3 = alpha
-            blended = (
-                mouth_bgr.astype(np.float32) * alpha3
-                + region.astype(np.float32) * (1.0 - alpha3)
-            )
+            blended = mouth_bgr.astype(np.float32) * alpha3 + region.astype(
+                np.float32
+            ) * (1.0 - alpha3)
             out[y0:y1, x0:x1] = blended.clip(0, 255).astype(np.uint8)
         else:
             out[y0:y1, x0:x1] = mouth_bgr
@@ -386,6 +387,7 @@ class FaceMouthROI:
             lower = pts[lo_idx].astype(np.float32)
             upper = upper[np.argsort(upper[:, 0])]
             lower = lower[np.argsort(lower[:, 0])]
+
             # Dedup x
             def _dedup(arr):
                 xs, ys = [], []
@@ -395,7 +397,9 @@ class FaceMouthROI:
                     else:
                         xs.append(float(x))
                         ys.append(float(y))
-                return np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.float32)
+                return np.asarray(xs, dtype=np.float32), np.asarray(
+                    ys, dtype=np.float32
+                )
 
             return _dedup(upper), _dedup(lower)
         except Exception:
@@ -657,7 +661,11 @@ class FaceMouthROI:
             return out
         # Soft cavity only (no solid fill on whole face)
         overlay = out.copy()
-        dark = (int(30 + 10 * (1 - amt)), int(22 + 8 * (1 - amt)), int(35 + 10 * (1 - amt)))
+        dark = (
+            int(30 + 10 * (1 - amt)),
+            int(22 + 8 * (1 - amt)),
+            int(35 + 10 * (1 - amt)),
+        )
         cv2.ellipse(overlay, (cx, cy), (ax, ay), 0, 0, 360, dark, -1, cv2.LINE_AA)
         # Soft mask
         mask = np.zeros((h, w), dtype=np.float32)
@@ -665,9 +673,11 @@ class FaceMouthROI:
         mask = cv2.GaussianBlur(mask, (5, 5), 0)
         mask = np.clip(mask * (0.4 + 0.45 * amt), 0.0, 0.75)
         a3 = mask[:, :, None]
-        out = (overlay.astype(np.float32) * a3 + out.astype(np.float32) * (1.0 - a3)).clip(
-            0, 255
-        ).astype(np.uint8)
+        out = (
+            (overlay.astype(np.float32) * a3 + out.astype(np.float32) * (1.0 - a3))
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
         # Slight vertical expand of a tight band
         half_w = ax + 4
         half_h = max(8, int(ay * 3 + 6))
@@ -684,17 +694,28 @@ class FaceMouthROI:
         src_y = mid + (ys - mid) / scale
         map_y = np.tile(src_y.reshape(-1, 1), (1, cw)).astype(np.float32)
         warped = cv2.remap(
-            crop, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+            crop,
+            map_x,
+            map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
         )
         yy, xx = np.mgrid[0:ch, 0:cw].astype(np.float32)
         a = np.exp(
-            -(((xx - (cx - x0)) / max(6, ax * 1.1)) ** 2 + ((yy - mid) / max(4, half_h * 0.5)) ** 2)
+            -(
+                ((xx - (cx - x0)) / max(6, ax * 1.1)) ** 2
+                + ((yy - mid) / max(4, half_h * 0.5)) ** 2
+            )
         ).astype(np.float32)
         a = np.clip(a * 0.85, 0, 1)
         out[y0:y1, x0:x1] = (
-            warped.astype(np.float32) * a[:, :, None]
-            + crop.astype(np.float32) * (1.0 - a[:, :, None])
-        ).clip(0, 255).astype(np.uint8)
+            (
+                warped.astype(np.float32) * a[:, :, None]
+                + crop.astype(np.float32) * (1.0 - a[:, :, None])
+            )
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
         return out
 
     @staticmethod
@@ -757,7 +778,9 @@ class FaceMouthROI:
         bar_y1 = min(h - 4, bar_y0 + 8)
         bar_x0 = bx0
         bar_x1 = bx1
-        cv2.rectangle(out, (bar_x0, bar_y0), (bar_x1, bar_y1), (60, 60, 60), 1, cv2.LINE_AA)
+        cv2.rectangle(
+            out, (bar_x0, bar_y0), (bar_x1, bar_y1), (60, 60, 60), 1, cv2.LINE_AA
+        )
         if active and amt > 0.02:
             fill_w = max(2, int((bar_x1 - bar_x0) * amt))
             color = (40, int(180 + 75 * amt), int(80 + 175 * amt))

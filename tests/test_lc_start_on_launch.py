@@ -86,9 +86,7 @@ def test_pipe_lc_chip_off_when_paused_or_idle():
             if status == "error" and has_text and running and not paused:
                 return True
             return False
-        if status in ("running", "translating", "starting") or (
-            running and not paused
-        ):
+        if status in ("running", "translating", "starting") or (running and not paused):
             return True
         if has_text and running and not paused:
             return True

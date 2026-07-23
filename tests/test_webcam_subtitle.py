@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from livelingo.webcam.subtitle import draw_subtitle_burnin, _wrap_text_lines
+from livelingo.webcam.subtitle import _wrap_text_lines, draw_subtitle_burnin
 
 
 def test_draw_empty_text_returns_copy_shape():
@@ -32,9 +32,14 @@ def test_draw_target_changes_bottom_region():
     )
     assert out.shape == frame.shape
     # Footer band changed; top of frame untouched
-    assert float(np.abs(out[-40:].astype(np.int16) - frame[-40:].astype(np.int16)).mean()) > 2.0
+    assert (
+        float(np.abs(out[-40:].astype(np.int16) - frame[-40:].astype(np.int16)).mean())
+        > 2.0
+    )
     top = out[:40, :, :]
-    assert float(np.abs(top.astype(np.int16) - frame[:40].astype(np.int16)).mean()) < 1.0
+    assert (
+        float(np.abs(top.astype(np.int16) - frame[:40].astype(np.int16)).mean()) < 1.0
+    )
 
 
 def test_caption_flush_footer_not_mid_frame():
@@ -96,9 +101,9 @@ def test_mirror_h_flips_subtitle_bar():
     band = mirrored[-60:].copy()
     # H-flip full frame band back — should be closer to plain band
     unflip = cv2.flip(band, 1)
-    assert float(np.mean(np.abs(unflip.astype(np.int16) - plain[-60:].astype(np.int16)))) < float(
-        np.mean(np.abs(band.astype(np.int16) - plain[-60:].astype(np.int16)))
-    )
+    assert float(
+        np.mean(np.abs(unflip.astype(np.int16) - plain[-60:].astype(np.int16)))
+    ) < float(np.mean(np.abs(band.astype(np.int16) - plain[-60:].astype(np.int16))))
 
 
 def test_wrap_respects_max_lines():

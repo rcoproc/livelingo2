@@ -52,6 +52,7 @@ from .mouth_template import (
     save_template_from_frame,
 )
 
+
 def check_webcam_deps() -> dict:
     """
     Return availability of optional packages.
@@ -223,9 +224,7 @@ class WebcamLipSyncService:
                 "(only while mic listening, off during TTS)"
             )
         # Mirror template vs live (Teams often looks flipped vs OpenCV)
-        self._template_flip_h = bool(
-            getattr(config, "WEBCAM_TEMPLATE_FLIP_H", False)
-        )
+        self._template_flip_h = bool(getattr(config, "WEBCAM_TEMPLATE_FLIP_H", False))
         # VAD: True only while mic is *hearing speech* (not just unmuted)
         self._vad_speech = threading.Event()
         self._vad_lock = threading.Lock()
@@ -275,9 +274,7 @@ class WebcamLipSyncService:
             getattr(config, "WEBCAM_SUBTITLE_BLUR_PX", 21) or 0
         )
         # Default True: Teams/OBS often mirror vcam → bare putText reads R→L
-        self._subtitle_mirror_h = bool(
-            getattr(config, "WEBCAM_SUBTITLE_MIRROR", True)
-        )
+        self._subtitle_mirror_h = bool(getattr(config, "WEBCAM_SUBTITLE_MIRROR", True))
 
         qsize = max(1, int(getattr(config, "WEBCAM_QUEUE_SIZE", 2) or 2))
         self._q_cap: queue.Queue = queue.Queue(maxsize=qsize)
@@ -320,7 +317,9 @@ class WebcamLipSyncService:
         self._capture_failed.clear()
         self._vcam_ready.clear()
         self._threads = [
-            threading.Thread(target=self._capture_loop, name="cam-capture", daemon=True),
+            threading.Thread(
+                target=self._capture_loop, name="cam-capture", daemon=True
+            ),
             threading.Thread(target=self._infer_loop, name="cam-infer", daemon=True),
             threading.Thread(target=self._emit_loop, name="cam-emit", daemon=True),
         ]
@@ -488,8 +487,14 @@ class WebcamLipSyncService:
         except Exception:
             pass
         if on:
-            extra = f' · last="{preview}…"' if len(preview) >= 60 else (
-                f' · last="{preview}"' if preview else " · (aguarde próxima tradução)"
+            extra = (
+                f' · last="{preview}…"'
+                if len(preview) >= 60
+                else (
+                    f' · last="{preview}"'
+                    if preview
+                    else " · (aguarde próxima tradução)"
+                )
             )
             return True, (
                 f"Legenda vcam ON (TARGET burn-in){extra}. "
@@ -583,7 +588,9 @@ class WebcamLipSyncService:
         if frame is None:
             with self._last_frame_lock:
                 frame = (
-                    None if self._last_frame_bgr is None else self._last_frame_bgr.copy()
+                    None
+                    if self._last_frame_bgr is None
+                    else self._last_frame_bgr.copy()
                 )
             if frame is None:
                 return (
@@ -720,9 +727,7 @@ class WebcamLipSyncService:
                 if geom.contour is not None and len(geom.contour) >= 6:
                     try:
                         hull = cv2.convexHull(geom.contour)
-                        cv2.polylines(
-                            vis, [hull], True, color, 2, cv2.LINE_AA
-                        )
+                        cv2.polylines(vis, [hull], True, color, 2, cv2.LINE_AA)
                     except Exception:
                         cv2.ellipse(
                             vis,
@@ -879,18 +884,14 @@ class WebcamLipSyncService:
             self._closed_apply_fail = 0
         if on:
             if not self._template_store.loaded:
-                return True, (
-                    f"Boca calada ON gen={gen} — sem foto: [cam snap closed]"
-                )
+                return True, (f"Boca calada ON gen={gen} — sem foto: [cam snap closed]")
             if not self.is_enabled() or not self._started:
                 return True, (
                     f"Boca calada ON gen={gen} — ative [cam on] + Teams=OBS Virtual Cam"
                 )
             snap = self.snapshot()
             if not snap.get("vcam_ready"):
-                return True, (
-                    f"Boca calada ON gen={gen} — vcam=false; [cam status]"
-                )
+                return True, (f"Boca calada ON gen={gen} — vcam=false; [cam status]")
             return True, (
                 f"Boca calada ON gen={gen} — foto no rosto | "
                 f"tpl={self._template_store.path() or 'ok'} | F10 tira"
@@ -948,18 +949,14 @@ class WebcamLipSyncService:
                 self._closed_manual_on = False
         if on:
             if not self._template_store.loaded:
-                return True, (
-                    f"Tela closed ON gen={gen} — sem foto: [cam snap closed]"
-                )
+                return True, (f"Tela closed ON gen={gen} — sem foto: [cam snap closed]")
             if not self.is_enabled() or not self._started:
                 return True, (
                     f"Tela closed ON gen={gen} — ative [cam on] + Teams=OBS Virtual Cam"
                 )
             snap = self.snapshot()
             if not snap.get("vcam_ready"):
-                return True, (
-                    f"Tela closed ON gen={gen} — vcam=false; [cam status]"
-                )
+                return True, (f"Tela closed ON gen={gen} — vcam=false; [cam status]")
             return True, (
                 f"Tela closed ON gen={gen} — foto INTEIRA no vídeo "
                 f"(sem live) | tpl={self._template_store.path() or 'ok'} | F11 tira"
@@ -1245,7 +1242,9 @@ class WebcamLipSyncService:
         from pyvirtualcam import PixelFormat
 
         device = (getattr(self.cfg, "WEBCAM_VCAM_DEVICE", "") or "").strip() or None
-        configured = (getattr(self.cfg, "WEBCAM_VCAM_BACKEND", "") or "").strip() or None
+        configured = (
+            getattr(self.cfg, "WEBCAM_VCAM_BACKEND", "") or ""
+        ).strip() or None
         # Default 0 = open on emit thread (no nested worker). Set >0 only if
         # opens hang without the OBS driver registered.
         timeout_s = float(getattr(self.cfg, "WEBCAM_VCAM_OPEN_TIMEOUT_S", 0.0) or 0.0)
@@ -1307,12 +1306,8 @@ class WebcamLipSyncService:
                         if self._stop.is_set():
                             raise RuntimeError("stopped during vcam open")
                         try:
-                            cam = self._try_open_one_vcam(
-                                kwargs, timeout_s=timeout_s
-                            )
-                            be_name = str(
-                                getattr(cam, "backend", None) or be or "auto"
-                            )
+                            cam = self._try_open_one_vcam(kwargs, timeout_s=timeout_s)
+                            be_name = str(getattr(cam, "backend", None) or be or "auto")
                             dev_name = getattr(cam, "device", device)
                             self._log(
                                 f"Virtual cam OPEN: {sw}x{sh} @ {fps:g} FPS "
@@ -1459,9 +1454,7 @@ class WebcamLipSyncService:
                     fail_reads = 0
                     self._put_drop_old(
                         self._q_cap,
-                        _FramePacket(
-                            frame_bgr=frame, t_capture=time.perf_counter()
-                        ),
+                        _FramePacket(frame_bgr=frame, t_capture=time.perf_counter()),
                     )
                     n += 1
                     if n % 30 == 0:
@@ -1483,8 +1476,7 @@ class WebcamLipSyncService:
                     self._status.fps_cap = 0.0
                 if not self._stop.is_set():
                     self._log(
-                        "Capture released — webcam física livre "
-                        "([cam on] reabre)."
+                        "Capture released — webcam física livre ([cam on] reabre)."
                     )
                 # Brief settle so Windows can hand the device to another app.
                 time.sleep(0.15)
@@ -1645,8 +1637,7 @@ class WebcamLipSyncService:
                 break
 
             self._log(
-                f"Opening virtual cam (target {want_w}x{want_h} @ "
-                f"{target_fps:g} FPS)…"
+                f"Opening virtual cam (target {want_w}x{want_h} @ {target_fps:g} FPS)…"
             )
             self._set_emit_phase("opening_vcam")
             cam = None
@@ -1663,11 +1654,7 @@ class WebcamLipSyncService:
                     "*virtual* device failed. "
                 )
                 low = msg.lower()
-                if (
-                    "could not be started" in low
-                    or "obs" in low
-                    or "exclusive" in low
-                ):
+                if "could not be started" in low or "obs" in low or "exclusive" in low:
                     hint += obs_virtual_cam_conflict_hint() + " "
                 if "unitycapture" in low or "no camera registered" in low:
                     hint += "Unity Capture not installed — use OBS instead. "
