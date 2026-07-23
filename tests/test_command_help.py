@@ -27,6 +27,20 @@ def test_build_commands_markdown_en_has_core_commands():
     assert "##" in md
 
 
+def test_build_commands_markdown_includes_n_force_and_sub():
+    """v1.2.2: capital [N] force soft-listen + [sub] vcam burn-in."""
+    md_en = build_commands_markdown("en")
+    assert "`[N]`" in md_en or "[N]" in md_en
+    assert "soft-listen" in md_en.lower() or "soft listen" in md_en.lower()
+    assert "`[sub]`" in md_en or "[sub]" in md_en
+    assert "burn-in" in md_en.lower() or "target" in md_en.lower()
+
+    md_pt = build_commands_markdown("pt-BR")
+    assert "escuta forçada" in md_pt.lower()
+    assert "`[sub]`" in md_pt or "[sub]" in md_pt
+    assert "legenda" in md_pt.lower() or "burn-in" in md_pt.lower()
+
+
 def test_build_commands_markdown_includes_cls_sides():
     """Tradução split: cls clears all; cls1=LC left; cls2=VOZ right."""
     md_en = build_commands_markdown("en")

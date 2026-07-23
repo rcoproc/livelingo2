@@ -1015,12 +1015,16 @@ def _swap_lang_menu_line(pipeline=None, pending_new_pair=None):
 
 
 def _print_swap_lang_menu_line(pipeline=None, pending_new_pair=None):
-    """Print/refresh the yellow [g] swap line with the current language pair."""
+    """Print/refresh the yellow [g] swap line (Sistema in TUI; classic terminal)."""
+    text = _swap_lang_menu_line(pipeline, pending_new_pair=pending_new_pair)
+    if ui.get_log_sink() is not None:
+        ui.dim(text.lstrip(), panel="app")
+        return
     print(
         "\r\033[K"
         + Fore.YELLOW
         + Style.BRIGHT
-        + _swap_lang_menu_line(pipeline, pending_new_pair=pending_new_pair)
+        + text
         + Style.RESET_ALL
     )
 
@@ -1031,23 +1035,18 @@ def _print_menu(pipeline=None):
     margin = 3
     pad = " " * margin
 
-    # TUI: compact help into the scrollable log (no full-screen redraw).
+    # TUI: only sticky Languages|TTS|Sound|Mic on Sistema (no command cheat-sheet —
+    # footer already lists cmds; Pair line is redundant with status).
     if ui.get_log_sink() is not None:
-        sound = "ON" if pipeline and pipeline.is_sound_enabled() else "OFF"
-        mic = "MUTED" if pipeline and pipeline.is_mic_muted() else "LIVE"
-        ui.info(
-            f"Languages: {cfg.SOURCE_LANG} -> {cfg.TARGET_LANG} | "
-            f"TTS: {_tts_menu_label()} | Sound: {sound} | Mic: {mic}"
-        )
-        ui.dim(
-            "Sentence: e/eN enew d/dN f/fN F l lo lt lc cls/cls1/cls2 gg/GG gt/gf c | "
-            "Audio: r/rN rs/rsN s n b x a/aN p/pN ld lav lv ctts | "
-            "Idiom: g t o | Cache: pc | Session: v m u(compact) q"
-        )
-        if pipeline is not None:
-            ui.success(
-                f"Pair {pipeline.language_pair_label()} · "
-                f"áudio {'ON' if pipeline.is_sound_enabled() else 'OFF [s]'}"
+        try:
+            ui.print_sistema_status(pipeline)
+        except Exception:
+            sound = "ON" if pipeline and pipeline.is_sound_enabled() else "OFF"
+            mic = "MUTED" if pipeline and pipeline.is_mic_muted() else "LIVE"
+            ui.info(
+                f"Languages: {cfg.SOURCE_LANG} -> {cfg.TARGET_LANG} | "
+                f"TTS: {_tts_menu_label()} | Sound: {sound} | Mic: {mic}",
+                panel="app",
             )
         return
 
@@ -1374,6 +1373,7 @@ def _input_loop(pipeline, synonym_lookup, indicator=None):
       r       -> Replay last chunk (synthesize TTS if no WAV from sound-OFF)
       r<num>  -> Replay chunk <num> (e.g. r5, r99); generate audio if missing
       n       -> Mute/unmute Windows mic (Core Audio) + app capture gate
+      N       -> Force soft-listen (yellow borders; low-energy VAD; not mute)
       g       -> Swap SOURCE ↔ TARGET languages (fast path mid-listen)
       t       -> Change TARGET language only (prompt EN/IT/ES/…)
       a / aN  -> Copy chunk audio file path to clipboard
@@ -1994,21 +1994,22 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         enabled = pipeline.toggle_sound()
         if indicator is not None:
             indicator.set_sound_on(enabled)
+        # Feedback only on Sistema (not VOZ — keeps Heard/Translated clean)
         if enabled:
             ui.success(
                 "Sound ON — próximas traduções tocam ao vivo. "
                 "Use [r] / [rN] para ouvir chunks sem áudio (gera TTS se faltar).",
                 indent=3,
+                panel="app",
             )
         else:
             ui.warn(
                 "Sound OFF — só texto (TTS omitido se TTS_SKIP_WHEN_MUTED). "
                 "Pressione [s] para ouvir de novo, ou [r]/[rN] para um chunk.",
                 indent=3,
+                panel="app",
             )
         _print_menu(pipeline)
-        # Blank line after "Pair … · áudio ON/OFF [s]"
-        ui.raw("")
     elif cmd == "pc" or cmd.startswith("pc "):
         # Phrase translation cache control / review / backup
         _dispatch_phrase_cache_cmd(pipeline, raw_cmd, cmd)
@@ -2016,48 +2017,76 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         info = pipeline.request_language_swap()
         status = info.get("status")
         g_pad = "   "  # 3-char left margin (align with menu)
+        # All [g] feedback → Sistema in TUI (VOZ stays phrases only)
+        g_panel = "app" if ui.get_log_sink() is not None else "main"
         if status == "deferred":
-            print(
-                "\r\033[K"
-                + Fore.YELLOW
-                + Style.BRIGHT
-                + f"{g_pad}[g]  Swap agendado: {info['old_pair']}  ⇒  {info['new_pair']}   "
-                f"(termina a frase/tradução em curso, depois inverte)" + Style.RESET_ALL
+            msg = (
+                f"[g]  Swap agendado: {info['old_pair']}  ⇒  {info['new_pair']}   "
+                f"(termina a frase/tradução em curso, depois inverte)"
             )
+            if g_panel == "app":
+                ui.warn(msg, indent=3, panel="app")
+            else:
+                print(
+                    "\r\033[K"
+                    + Fore.YELLOW
+                    + Style.BRIGHT
+                    + f"{g_pad}{msg}"
+                    + Style.RESET_ALL
+                )
             ui.info(
                 "A frase atual NÃO será perdida — o idioma só muda após o processamento.",
                 indent=3,
+                panel=g_panel,
             )
             # Refresh menu line so it shows pending target pair.
             _print_swap_lang_menu_line(pipeline, pending_new_pair=info.get("new_pair"))
         elif status == "cancelled_pending":
-            print(
-                "\r\033[K"
-                + Fore.YELLOW
-                + Style.BRIGHT
-                + f"{g_pad}[g]  Swap pendente cancelado — permanece {info['old_pair']}"
-                + Style.RESET_ALL
+            msg = (
+                f"[g]  Swap pendente cancelado — permanece {info['old_pair']}"
             )
+            if g_panel == "app":
+                ui.warn(msg, indent=3, panel="app")
+            else:
+                print(
+                    "\r\033[K"
+                    + Fore.YELLOW
+                    + Style.BRIGHT
+                    + f"{g_pad}{msg}"
+                    + Style.RESET_ALL
+                )
             _print_swap_lang_menu_line(pipeline)
         else:
             # Applied immediately (pipeline idle) — full menu refresh with new pair.
             src = info.get("source") or cfg.SOURCE_LANG
             tgt = info.get("target") or cfg.TARGET_LANG
             voice = info.get("voice") or cfg.TTS_VOICE
-            print(
-                "\r\033[K"
-                + Fore.YELLOW
-                + Style.BRIGHT
-                + f"{g_pad}[g]  Idiomas: {info['old_pair']}  ⇒  {info['new_pair']}   "
-                f"(STT={src} · TTS voice={voice})" + Style.RESET_ALL
+            msg = (
+                f"[g]  Idiomas: {info['old_pair']}  ⇒  {info['new_pair']}   "
+                f"(STT={src} · TTS voice={voice})"
             )
+            if g_panel == "app":
+                ui.success(msg, indent=3, panel="app")
+            else:
+                print(
+                    "\r\033[K"
+                    + Fore.YELLOW
+                    + Style.BRIGHT
+                    + f"{g_pad}{msg}"
+                    + Style.RESET_ALL
+                )
             for w in info.get("warnings") or []:
-                ui.warn(w, indent=3)
-            _warn_stt_prompt_language_mismatch()
+                ui.warn(w, indent=3, panel=g_panel)
+            if g_panel == "app":
+                with ui.log_panel("app"):
+                    _warn_stt_prompt_language_mismatch()
+            else:
+                _warn_stt_prompt_language_mismatch()
             ui.info(
                 f"Fale {str(src).upper()} agora — os outros ouvem {str(tgt).upper()}. "
                 f"Histórico antigo não é re-traduzido.",
                 indent=3,
+                panel=g_panel,
             )
             _print_menu(pipeline)
             # TUI footer follows new SOURCE_LANG immediately
@@ -2192,8 +2221,64 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         indicator.set_passthrough(active)
             except Exception:
                 pass
+    elif (raw_cmd or "").strip() in ("N", "[N]"):
+        # Capital N only: force soft-listen (low-energy VAD + yellow borders).
+        # Lowercase [n] remains mic mute — do not confuse the two.
+        on = pipeline.toggle_force_soft_listen()
+        if indicator is not None:
+            try:
+                # Unmute TUI modal if we opened the gate
+                if on and hasattr(indicator, "set_mic_muted"):
+                    try:
+                        indicator.set_mic_muted(False)
+                    except TypeError:
+                        indicator.set_mic_muted(False, mic_name="")
+            except Exception:
+                pass
+            try:
+                if hasattr(indicator, "set_force_soft_listen"):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(
+                            indicator.set_force_soft_listen, on
+                        )
+                    else:
+                        indicator.set_force_soft_listen(on)
+            except Exception:
+                pass
+        if on:
+            ui.success(
+                "[N] Escuta forçada ON — bordas amarelas · "
+                "aceita voz baixa (sem precisar tom alto). "
+                "[N] de novo desliga · [n] = mute mic.",
+                indent=3,
+                panel="app",
+            )
+        else:
+            ui.info(
+                "[N] Escuta forçada OFF — VAD normal (energia). "
+                "Bordas amarelas desligadas.",
+                indent=3,
+                panel="app",
+            )
     elif cmd == "n":
         muted, os_ok, mic_name = pipeline.toggle_mic()
+        # Leaving mute while force-listen was on keeps soft VAD; mute clears it.
+        if muted:
+            try:
+                if pipeline.is_force_soft_listen():
+                    pipeline.set_force_soft_listen(False)
+            except Exception:
+                pass
+            if indicator is not None and hasattr(indicator, "set_force_soft_listen"):
+                try:
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(
+                            indicator.set_force_soft_listen, False
+                        )
+                    else:
+                        indicator.set_force_soft_listen(False)
+                except Exception:
+                    pass
         if indicator is not None:
             # TUI: set_mic_muted(True) opens centered red mute modal (only [n] exits).
             set_muted = getattr(indicator, "set_mic_muted", None)
@@ -2212,28 +2297,33 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             if os_ok:
                 ui.warn(
                     f"Mic MUTED (Windows): '{mic_name}'. "
-                    f"Popup vermelho na TUI — pressione [n] para desmutar."
+                    f"Popup vermelho na TUI — pressione [n] para desmutar.",
+                    panel="app",
                 )
             else:
                 ui.warn(
                     f"Mic MUTED (app only — OS mute falhou): '{mic_name}'. "
-                    f"Popup na TUI — pressione [n] para reativar."
+                    f"Popup na TUI — pressione [n] para reativar.",
+                    panel="app",
                 )
-            ui.dim("  (modo leitura: sem animação de escuta até o mic LIVE)")
+            ui.dim(
+                "  (modo leitura: sem animação de escuta até o mic LIVE)",
+                panel="app",
+            )
         else:
             if os_ok:
                 ui.success(
                     f"Mic LIVE (Windows): '{mic_name}'. "
-                    f"Escuta ativa retomada. Pode falar."
+                    f"Escuta ativa retomada. Pode falar.",
+                    panel="app",
                 )
             else:
                 ui.success(
                     f"Mic LIVE (app gate): '{mic_name}'. "
-                    f"Escuta ativa retomada. Confira o mute no tray se não ouvir."
+                    f"Escuta ativa retomada. Confira o mute no tray se não ouvir.",
+                    panel="app",
                 )
         _print_menu(pipeline)
-        # Blank line after "Pair … · áudio ON/OFF [s]"
-        ui.raw("")
     elif cmd == "x":
         if pipeline.stop_playback():
             ui.info(
@@ -3319,12 +3409,56 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 else:
                     indicator.toggle_compact_ui()
             except Exception as exc:
-                ui.warn(f"UI compacta falhou: {exc}", indent=3)
+                ui.warn(f"UI compacta falhou: {exc}", indent=3, panel="app")
         else:
             ui.warn(
                 "Comando [u]/compact só funciona no modo TUI (UI_MODE=tui).",
                 indent=3,
+                panel="app",
             )
+    elif cmd == "sub" or cmd.startswith("sub ") or cmd in (
+        "subtitle",
+        "subtitles",
+        "legenda",
+    ) or (cmd.startswith("subtitle ") or cmd.startswith("subtitles ") or cmd.startswith("legenda ")):
+        # Burn-in TARGET on virtual cam (`u` is compact UI — use [sub] here).
+        # Aliases: sub | subtitle | subtitles | legenda · on|off · cam sub …
+        svc = getattr(pipeline, "webcam_service", None)
+        parts = (raw_cmd or cmd or "").strip().split(None, 1)
+        action = (parts[1] if len(parts) > 1 else "").strip().lower()
+        if svc is None:
+            ui.warn(
+                "Legenda vcam indisponível — WEBCAM_ENABLED=true + "
+                "pip install opencv-python mediapipe pyvirtualcam.",
+                indent=3,
+                panel="app",
+            )
+        elif action in ("on", "1", "true", "enable"):
+            on, msg = svc.set_subtitle_enabled(True)
+            (ui.success if on else ui.info)(msg, indent=3, panel="app")
+        elif action in ("off", "0", "false", "disable"):
+            on, msg = svc.set_subtitle_enabled(False)
+            ui.info(msg, indent=3, panel="app")
+        elif action in ("clear", "cls", "x"):
+            try:
+                svc.clear_subtitle_text()
+            except Exception:
+                pass
+            ui.info("Texto TARGET da legenda vcam limpo.", indent=3, panel="app")
+        elif action in ("status", "st", "?"):
+            on = bool(svc.is_subtitle_enabled())
+            snap = svc.snapshot() if hasattr(svc, "snapshot") else {}
+            preview = (snap.get("subtitle_text") or "")[:80]
+            ui.info(
+                f"Legenda vcam: {'ON' if on else 'OFF'} · "
+                f"hold={getattr(cfg, 'WEBCAM_SUBTITLE_HOLD_S', 12)}s · "
+                f'text="{preview or "—"}"',
+                indent=3,
+                panel="app",
+            )
+        else:
+            on, msg = svc.toggle_subtitle()
+            (ui.success if on else ui.info)(msg, indent=3, panel="app")
     elif (
         cmd == "cam"
         or cmd.startswith("cam ")
@@ -3545,6 +3679,35 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 )
             else:
                 _cam_err(msg)
+        elif sub in (
+            "sub",
+            "sub on",
+            "sub off",
+            "subtitle",
+            "subtitle on",
+            "subtitle off",
+            "subtitles",
+            "subtitles on",
+            "subtitles off",
+            "legend",
+            "legend on",
+            "legend off",
+            "legenda",
+            "legenda on",
+            "legenda off",
+        ):
+            # Burn-in TARGET text on OBS Virtual Cam frames (not Teams CC)
+            parts = sub.split()
+            action = parts[-1] if len(parts) > 1 else "toggle"
+            if action in ("on", "1", "true"):
+                on, msg = svc.set_subtitle_enabled(True)
+                _cam_ok(msg) if on else _cam_info(msg)
+            elif action in ("off", "0", "false"):
+                on, msg = svc.set_subtitle_enabled(False)
+                _cam_info(msg)
+            else:
+                on, msg = svc.toggle_subtitle()
+                (_cam_ok if on else _cam_info)(msg)
         elif sub in ("status", "st", "?"):
             snap = svc.snapshot()
             sound_on = bool(
@@ -3560,6 +3723,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 f"tts={snap.get('audio_playing')} rms={snap.get('audio_rms')} "
                 f"tpl={snap.get('template_ok')} vad={snap.get('vad_speech')} "
                 f"marker={snap.get('sync_marker')} sound={sound_on} "
+                f"sub={snap.get('subtitle')} "
                 f"out={getattr(cfg, 'OUTPUT_DEVICE', '?')} "
                 f"{snap.get('width')}x{snap.get('height')} "
                 f"backend={snap.get('backend') or '—'} "
@@ -4331,13 +4495,17 @@ def main():
         def _on_deferred_language_swap(src, tgt, voice):
             """UI when a scheduled [g] actually applies after the current phrase."""
             pair = f"{str(src).upper()} → {str(tgt).upper()}"
+            g_panel = "app" if ui.get_log_sink() is not None else "main"
             ui.success(
                 f"[g] Swap aplicado: {pair}   (STT={src} · TTS={voice})",
                 indent=3,
+                panel=g_panel,
             )
             ui.info(
-                f"Fale {str(src).upper()} agora — os outros ouvem {str(tgt).upper()}.",
+                f"Fale {str(src).upper()} agora — os outros ouvem {str(tgt).upper()}. "
+                f"Histórico antigo não é re-traduzido.",
                 indent=3,
+                panel=g_panel,
             )
             # Footer menu + placeholder follow new SOURCE_LANG
             app = tui_holder.get("app")

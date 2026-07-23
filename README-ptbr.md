@@ -11,7 +11,7 @@
 
 **LiveLingo2** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
 
-**Release atual: [v1.2.1](CHANGELOG.md#121---2026-07-22)** — polish webcam/TUI sobre a v1.1.0: **OBS Virtual Camera** estável, **F10 congela rosto inteiro**, chips F2/F5 na barra de abas, dicas de bypass na aba **Sistema**, notas de STT local. Completo: [`CHANGELOG.md`](CHANGELOG.md).
+**Release atual: [v1.2.2](CHANGELOG.md#122---2026-07-23)** — **escuta estável** após TTS, **LiveCaptions off** no boot, **`[N]` escuta forçada** (voz baixa + bordas amarelas), **F11 tela closed inteira**, **legenda burn-in** na vcam (`[sub]`), **Sistema** limpo por chunk + timings TTS (engine/first_chunk). Completo: [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
   <img src="docs/screenshots/live_lingo1.png" alt="LiveLingo2 TUI — layout clássico com menu de comandos e status de áudio" width="900" />
@@ -152,11 +152,14 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `s` | **Sound ON/OFF** — ligar/desligar áudio da tradução (texto continua) |
 | `g` | **Swap idiomas** — inverte `SOURCE ↔ TARGET` (STT + tradução + voz TTS) |
 | `t` / `t EN` | **TARGET** — muda só o idioma alvo (códigos em **CAIXA ALTA**; aceita one-liner) |
-| `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura do app |
+| `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura (**só n minúsculo**) |
+| `N` | **Escuta forçada** — **N maiúsculo** só: bordas amarelas; VAD aceita **voz baixa**; **N** de novo = VAD normal |
 | `b` / `bypass` | **Bypass de voz** — 1ª tecla corta TTS no Cable (como `[x]`) e envia mic cru → CABLE **sem** tradução; 2ª tecla retoma escuta/tradução/TTS |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync → **OBS Virtual Camera** (requer `requirements-webcam.txt` + OBS) |
-| `cam snap closed` | **Captura / atualiza** a **foto do rosto inteiro** (boca fechada) usada pelo F10. Preview mostra a elipse de congelamento. Aliases: `cam snap`, `cam snapshot closed` |
-| `cam closed` / **F10** | Congela/descongela o **rosto inteiro** da foto (**não** recaptura — use `cam snap closed`) |
+| `cam snap closed` | **Captura / atualiza** a **foto do rosto inteiro** (boca fechada) usada por F10/F11. Preview mostra a elipse de congelamento. Aliases: `cam snap`, `cam snapshot closed` |
+| `cam closed` / **F10** | Congela/descongela a **placa de rosto** da foto (**não** recaptura — use `cam snap closed`) |
+| `cam full` / **F11** | Congela o **frame inteiro** da vcam com a foto closed (**não** maximiza a TUI). Outro F11 = ao vivo |
+| `sub` / `sub on` / `sub off` / `cam sub` | **Legenda burn-in TARGET** no rodapé da vcam (pixels — não é CC do Teams). Padrão OFF; fica até a próxima tradução ou `sub off` |
 | `x` | Interromper leitura TTS em andamento |
 | `o` | Buscar sinônimos / significado de palavra |
 | `l` | Listar mensagens da sessão (timing, timestamp, comentários `#id`) |
@@ -176,7 +179,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F10`** = mostra/esconde a foto de boca fechada (para **atualizar** a imagem: `cam snap closed`); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F10`** = placa de rosto closed; **`F11`** = freeze full-frame da foto closed (não maximiza TUI); **`N`** = escuta forçada (voz baixa); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
 
 **Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = ajuda agrupada.
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
@@ -214,15 +217,16 @@ MONITOR_DEVICE=18          # índice dos fones — bip pré-TTS só aí (nunca C
 TTS_MONITOR_CUE=true
 ```
 
-Comandos: `cam on` · `cam snap closed` (foto de fundo) · `cam status` (`vcam=true`) · **F10** / `cam closed`.  
+Comandos: `cam on` · `cam snap closed` (foto de fundo) · `cam status` (`vcam=true`) · **F10** / `cam closed` · **F11** / `cam full` · **`sub`** (legenda TARGET na vcam).
 
 ##### Gerar / atualizar a foto de rosto inteiro (`cam snap closed`)
 
 A câmera virtual **congela o rosto inteiro** (elipse testa→queixo) a partir de uma
 **foto com a boca fechada**, fundida no vídeo ao vivo, enquanto você fala no idioma
 de origem — o Teams não vê a boca se mexendo em `SOURCE_LANG`. **F10** só
-mostra/esconde a placa; **não** recaptura. **Não** há pintura procedural de dentes
-(removida).
+mostra/esconde a **placa de rosto**; **F11** congela o **frame inteiro** com a foto
+closed. **Não** recaptura com F10/F11 — use `cam snap closed`. **Não** há pintura
+procedural de dentes (removida). Foto closed é **só manual** (sem auto no VAD).
 
 1. `WEBCAM_ENABLED=true` e **`cam on`** (ou `WEBCAM_START_ENABLED=true`).
 2. Olhe para a câmera com a **boca fechada** (mesma luz/ângulo da call).
@@ -238,10 +242,19 @@ mostra/esconde a placa; **não** recaptura. **Não** há pintura procedural de d
    .cache/webcam/closed_mouth.png
    .cache/webcam/closed_mouth.json
    ```
-6. **`cam status`** → `tpl=true`. Alternar: **F10** / `cam closed` · `cam closed auto` (VAD).
+6. **`cam status`** → `tpl=true`. Alternar placa: **F10** / `cam closed`. Full-frame:
+   **F11** / `cam full`.
 
 Tamanho da placa: `WEBCAM_TEMPLATE_REGION_SCALE` (padrão `1.15`) ·
 `WEBCAM_TEMPLATE_FEATHER_PX` (padrão `24`).
+
+**Legendas burn-in (v1.2.2):** `[sub on]` desenha o **TARGET** no rodapé fosco da
+vcam (pixels no Teams, não CC). Config: `WEBCAM_SUBTITLE=false`,
+`WEBCAM_SUBTITLE_MIRROR=true`, `WEBCAM_SUBTITLE_HOLD_S=0` (sem auto-hide).
+
+**Escuta pós-TTS (v1.2.2):** o mic só reabre quando o áudio no Cable termina (ou `[x]`),
+com hangover curto para o eco do TTS não re-disparar STT. Voz baixa? Pressione **`N`**.
+LiveCaptions **não** inicia sozinho — use `lc on` / `lc off`.
 
 **OBS:** com LiveLingo streaming, use **Stop Virtual Camera** no OBS (produtor
 exclusivo). No Teams, câmera = **OBS Virtual Camera**.
@@ -936,7 +949,7 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
     ├── devices.py         # descoberta de dispositivos
     ├── db.py              # persistência SQLite
     ├── ui.py              # banner, cores, status no terminal
-    └── webcam/            # lip-sync opcional → OBS Virtual Camera
+    └── webcam/            # lip-sync opcional → OBS Virtual Camera (+ legenda burn-in)
 ```
 
 ### Dependências

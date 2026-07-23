@@ -67,6 +67,8 @@ class Recorder:
         # PortAudio overflow) but never emitted as speech chunks.
         self._capture_enabled = threading.Event()
         self._capture_enabled.set()
+        # [N] force soft-listen: accept low-energy speech (not only loud voice).
+        self._force_soft_listen = threading.Event()
         # Drop in-progress VAD utterance immediately (language swap [g], etc.).
         self._abort_utterance = threading.Event()
         # [b]/F2 bypass: release InputStream so passthrough can open the mic
@@ -137,9 +139,20 @@ class Recorder:
                 )
 
     def _block_is_speech(self, block, in_speech=False):
-        if self._silero is not None:
+        if self._silero is not None and not self._force_soft_listen.is_set():
             return self._silero.is_speech(block)
         threshold = float(self.cfg.SILENCE_THRESHOLD)
+        # [N] force soft-listen: ignore loud-voice requirement (very low bar)
+        if self._force_soft_listen.is_set():
+            fl_scale = float(
+                getattr(self.cfg, "FORCE_LISTEN_THRESHOLD_SCALE", 0.12) or 0.12
+            )
+            fl_scale = min(0.5, max(0.02, fl_scale))
+            threshold *= fl_scale
+            if in_speech:
+                hangover = getattr(self.cfg, "VAD_SPEECH_HANGOVER", 0.65)
+                threshold *= min(1.0, float(hangover) * 0.85)
+            return _rms(block) > threshold
         if in_speech:
             # Hysteresis: stay in "speech" through brief dips between words/sentences.
             hangover = getattr(self.cfg, "VAD_SPEECH_HANGOVER", 0.65)
@@ -239,6 +252,16 @@ class Recorder:
 
     def is_capture_enabled(self) -> bool:
         return self._capture_enabled.is_set()
+
+    def set_force_soft_listen(self, enabled: bool) -> None:
+        """[N] mode: VAD very sensitive to soft / low-volume speech."""
+        if enabled:
+            self._force_soft_listen.set()
+        else:
+            self._force_soft_listen.clear()
+
+    def is_force_soft_listen(self) -> bool:
+        return self._force_soft_listen.is_set()
 
     def suspend_stream(self, wait_s: float = 0.5) -> bool:
         """Release the PortAudio InputStream (for [b]/F2 voice bypass).
@@ -443,14 +466,21 @@ class Recorder:
                         continue
 
             loud = self._block_is_speech(block, in_speech=in_speech)
+            need_onset = self.onset_blocks
+            if self._force_soft_listen.is_set():
+                need_onset = max(
+                    1,
+                    int(getattr(self.cfg, "FORCE_LISTEN_ONSET_BLOCKS", 1) or 1),
+                )
 
             if not in_speech:
                 preroll.append(block)
                 if loud:
                     # Sustained energy so fan/keyboard noise does not start speech.
+                    # [N] force soft-listen: fewer blocks (soft / low voice).
                     onset_count += 1
                     onset_quiet = 0
-                    if onset_count >= self.onset_blocks:
+                    if onset_count >= need_onset:
                         in_speech = True
                         onset_count = 0
                         onset_quiet = 0

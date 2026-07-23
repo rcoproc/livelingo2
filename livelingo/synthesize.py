@@ -190,11 +190,18 @@ def resolve_edge_voice(voice_id: str, online: bool = False, timeout: float = 3.0
 
 
 class Synthesizer:
+    engine_name = "edge"
+
     def __init__(self, config):
         self.cfg = config
         self.voice = config.TTS_VOICE
         self.rate = config.TTS_RATE
         self.volume = config.TTS_VOLUME
+        self.engine_name = "edge"
+
+    @property
+    def voice_label(self):
+        return str(self.voice or "")
 
     def set_voice(self, voice_id):
         """Change Edge voice after language swap ([g])."""

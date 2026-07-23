@@ -353,6 +353,11 @@ VAD_ONSET_GAP_BLOCKS = _get_int("VAD_ONSET_GAP_BLOCKS", 4)
 # Not "intonation" — pure energy. 0.5 ≈ twice as sensitive at onset vs mid-speech.
 VAD_ONSET_THRESHOLD_SCALE = _get_float("VAD_ONSET_THRESHOLD_SCALE", 0.50)
 
+# [N] force soft-listen: very low energy bar (voice volume independent).
+# Multiplies SILENCE_THRESHOLD (smaller = more sensitive). Toggle with capital N.
+FORCE_LISTEN_THRESHOLD_SCALE = _get_float("FORCE_LISTEN_THRESHOLD_SCALE", 0.12)
+FORCE_LISTEN_ONSET_BLOCKS = _get_int("FORCE_LISTEN_ONSET_BLOCKS", 1)
+
 # Base silence (seconds) before a chunk ends. Adaptive VAD scales this up while
 # you keep talking (long monologues tolerate longer pauses between paragraphs).
 # 2.0–2.5 recommended for natural long phrases; 1.2 felt too eager mid-comma.
@@ -559,9 +564,9 @@ WEBCAM_SYNC_MARKER = _get_bool("WEBCAM_SYNC_MARKER", False)
 # When true: mouth forced closed if no TTS; only opens while sound → Teams.
 # When false: idle shows natural webcam mouth (no force-close).
 WEBCAM_FORCE_CLOSED_IDLE = _get_bool("WEBCAM_FORCE_CLOSED_IDLE", True)
-# Auto-show closed photo while VAD hears speech (ignored after F10 manual mode).
-# F10 toggles manual ON/OFF; [cam closed auto] returns to VAD auto.
-WEBCAM_CLOSED_AUTO = _get_bool("WEBCAM_CLOSED_AUTO", True)
+# Legacy: VAD auto closed-photo is disabled (always off). Closed image only via
+# F10 (face plate) / F11 (full-frame). Kept for [cam closed auto] no-op status.
+WEBCAM_CLOSED_AUTO = _get_bool("WEBCAM_CLOSED_AUTO", False)
 # Closed-mouth photo template (best idle quality). Capture: [cam snap closed]
 # Leave empty to use defaults under .cache/webcam/
 WEBCAM_CLOSED_MOUTH_IMAGE = _get_str(
@@ -593,6 +598,25 @@ WEBCAM_VCAM_HEIGHT = _get_int("WEBCAM_VCAM_HEIGHT", 720)
 WEBCAM_VCAM_OPEN_TIMEOUT_S = _get_float("WEBCAM_VCAM_OPEN_TIMEOUT_S", 0.0)
 # Open a local OpenCV preview window (debug; not Teams).
 WEBCAM_DEBUG_PREVIEW = _get_bool("WEBCAM_DEBUG_PREVIEW", False)
+# Burn-in TARGET (translated) text on virtual-cam frames (pixels only — not CC).
+# Toggle live: [sub] / [sub on|off] or [cam sub on|off]. Default OFF.
+WEBCAM_SUBTITLE = _get_bool("WEBCAM_SUBTITLE", False)
+# Hold timer disabled by default (0): caption stays until [sub off] or next TARGET.
+# Values >0 re-enable auto-hide after N seconds (optional).
+WEBCAM_SUBTITLE_HOLD_S = _get_float("WEBCAM_SUBTITLE_HOLD_S", 0.0)
+# Max wrap lines for current caption only (never stacks previous captions).
+WEBCAM_SUBTITLE_MAX_LINES = _get_int("WEBCAM_SUBTITLE_MAX_LINES", 2)
+# 0 = auto scale from frame width.
+WEBCAM_SUBTITLE_FONT_SCALE = _get_float("WEBCAM_SUBTITLE_FONT_SCALE", 0.0)
+# Pixels from image bottom edge (0–4 = colado no rodapé).
+WEBCAM_SUBTITLE_MARGIN_BOTTOM = _get_int("WEBCAM_SUBTITLE_MARGIN_BOTTOM", 2)
+# Dark veil over frosted video (0.4–0.55 typical; not solid black).
+WEBCAM_SUBTITLE_BAR_ALPHA = _get_float("WEBCAM_SUBTITLE_BAR_ALPHA", 0.48)
+# Gaussian blur kernel on the footer strip (odd px; 0 = no blur, only veil).
+WEBCAM_SUBTITLE_BLUR_PX = _get_int("WEBCAM_SUBTITLE_BLUR_PX", 21)
+# Pre-flip subtitle bar H so text stays L→R when Teams/OBS mirrors the cam.
+# Set false if letters look mirrored on a non-mirrored viewer.
+WEBCAM_SUBTITLE_MIRROR = _get_bool("WEBCAM_SUBTITLE_MIRROR", True)
 
 # --------------------------------------------------------------------------- #
 # Debug / Verbose Mode
