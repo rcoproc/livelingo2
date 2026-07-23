@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-23
+
+Tag: [`v1.2.2`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.2).
+
+**Highlights:** **escuta estável** após TTS (hold/hangover/watchdog), **LiveCaptions off** no boot (`lc on`/`lc off`), **`[N]` escuta forçada** (voz baixa + bordas amarelas), **F11 freeze full-frame** da foto closed, **legendas burn-in** na vcam (`[sub]`), Sistema limpo por chunk + telemetria TTS (engine/first_chunk ms).
+
+### Added
+
+- **`[N]` force soft-listen** — capital **N** only (not mute `[n]`): VAD accepts low-volume speech
+  (`FORCE_LISTEN_THRESHOLD_SCALE`, `FORCE_LISTEN_ONSET_BLOCKS`); TUI yellow borders on header,
+  tabs, captions, command box; unmutes mic / leaves bypass as needed. **N** again restores normal energy VAD.
+- **VCam TARGET subtitle burn-in** — `livelingo/webcam/subtitle.py` draws frosted footer bar with
+  translated text on OBS Virtual Camera pixels (not Teams CC). Commands: **`[sub]`** / `sub on|off|status`,
+  **`[cam sub]`**. Default OFF. Hold timer off by default (`WEBCAM_SUBTITLE_HOLD_S=0` → stays until
+  next TARGET or `sub off`). Config: `WEBCAM_SUBTITLE*`, mirror for selfie, blur+veil footer.
+- **F11 full-frame closed freeze** — freezes the entire virtual-cam frame with the closed-mouth photo
+  (does **not** fullscreen the TUI). F10 remains face-plate only. `cam full` / help updated.
+- **Sistema per-chunk reset** — each chunk clears the Sistema panel and reprints
+  Languages|TTS|Sound|Mic + that chunk’s pipeline noise only (VOZ stays Heard/Translated clean).
+- **TTS instrumentation** — synthesizers expose `engine_name` / `voice_label` (edge, piper, hybrid);
+  timing line shows `engine=…` and `first_chunk Nms`; DB timing_json stores `tts_engine`, `tts_voice`,
+  `tts_first_ms`.
+
+### Fixed
+
+- **Listen resume after TTS** — mic re-opens only after Cable audio finishes (or `[x]`), with
+  hold count, hangover window, and self-heal watchdog so capture does not stay stuck muted.
+- **F2 / bypass deadlock** — nested lock path uses re-entrant locking so bypass cut + passthrough
+  no longer freezes the TUI mid-toggle.
+- **LiveCaptions auto-start** — LC no longer starts on launch by default; use `lc on` / `lc off`.
+- **Weak / long phrases** — VAD adaptive silence + STT filters tuned so soft or long monologues
+  are less often clipped or hallucinated.
+- **Closed-mouth auto-on-speech removed** — VAD no longer auto-applies the closed photo while you
+  speak; only **F10** (face plate) / **F11** (full frame). `WEBCAM_CLOSED_AUTO` default `false`
+  (legacy flag kept for status/help no-op).
+- **Operational noise on VOZ** — abort/filter/STT/TTS errors and progress lines route to **Sistema**
+  (`panel=app`); VOZ keeps phrase pairs only.
+- **VOZ spacing** — blank row before Heard/Translated so pairs are not glued under LC logo/chrome.
+- **Expandir VOZ** — expands width **and** collapses Live Captions strip + key-hint footer for
+  more vertical room; Restaurar brings chrome back.
+
+### Changed
+
+- **`[g]` swap feedback** — yellow swap line and deferred-swap tips log on **Sistema** only.
+- **Mute `[n]` docs** — case-sensitive: lowercase **n** = mute; capital **N** = force soft-listen.
+- **Help catalog** — EN/pt-BR entries for `[N]`, `[sub]`, `[cam sub]`, F11 full-frame.
+
+### Tests
+
+- `tests/test_listen_resume.py` — hangover gate, suspend/resume, force soft-listen energy bar.
+- `tests/test_lc_start_on_launch.py` — LC does not auto-start.
+- `tests/test_closed_full_frame.py` — F11 full-frame plate.
+- `tests/test_webcam_subtitle.py` — burn-in draw, footer flush, replace-not-stack, service toggle.
+- `tests/test_ui_log_panels.py` — timing engine/first_chunk, `begin_chunk_sistema` clear.
+- `tests/test_command_help.py` — `[N]` / `[sub]` in help markdown.
+- `tests/test_vad_silence_adaptive.py`, `tests/test_stt_filter.py` — extended VAD/STT cases.
+
+### Docs
+
+- README (EN/pt-BR): release banner v1.2.2; `[N]`, F11, `[sub]` / vcam subtitles; closed photo
+  is F10/F11 only (no VAD auto); listen-after-TTS notes.
+
 ## [1.2.1] - 2026-07-22
 
 Tag: [`v1.2.1`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1).
@@ -340,7 +402,8 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
 
-[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.2
 [1.2.1]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1
 [1.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.1.0
 [1.0.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0

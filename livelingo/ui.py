@@ -122,7 +122,7 @@ def _effective_panel(panel: str = "main") -> str:
 
 
 def _emit(kind, text, panel="main"):
-    """kind: info|success|warn|error|dim|raw|rich|list; panel: main|lc|app"""
+    """kind: info|success|warn|error|dim|raw|rich|list|clear; panel: main|lc|app"""
     sink = _log_sink
     if sink is not None:
         panel = _effective_panel(panel)
@@ -141,6 +141,92 @@ def _emit(kind, text, panel="main"):
     return False
 
 
+def clear_panel(panel: str = "app") -> bool:
+    """Clear a TUI log panel (no-op in classic terminal)."""
+    with _print_lock:
+        return _emit("clear", "", panel=_normalize_panel(panel))
+
+
+def _tts_status_label() -> str:
+    """Compact TTS engine label for Sistema status line."""
+    try:
+        import config as cfg
+    except Exception:
+        return "edge"
+    engine = (getattr(cfg, "TTS_ENGINE", "edge") or "edge").lower()
+    hybrid = bool(getattr(cfg, "TTS_HYBRID", False))
+    if engine == "hybrid" or (engine == "piper" and hybrid):
+        voice = getattr(cfg, "PIPER_VOICE", "") or (
+            f"auto:{getattr(cfg, 'TARGET_LANG', '?')}"
+        )
+        return f"hybrid (edge+piper / {voice})"
+    if engine == "piper":
+        voice = getattr(cfg, "PIPER_VOICE", "") or (
+            f"auto:{getattr(cfg, 'TARGET_LANG', '?')}"
+        )
+        return f"piper ({voice})"
+    try:
+        return f"edge ({getattr(cfg, 'TTS_VOICE', '') or '?'})"
+    except Exception:
+        return "edge"
+
+
+def format_sistema_status(pipeline=None) -> str:
+    """
+    Sticky status for the Sistema tab, e.g.
+    Languages: pt -> en | TTS: hybrid (edge+piper / auto:en) | Sound: ON | Mic: MUTED
+    """
+    try:
+        import config as cfg
+
+        src = getattr(cfg, "SOURCE_LANG", "?")
+        tgt = getattr(cfg, "TARGET_LANG", "?")
+    except Exception:
+        src, tgt = "?", "?"
+    sound = "OFF"
+    mic = "LIVE"
+    if pipeline is not None:
+        try:
+            sound = "ON" if pipeline.is_sound_enabled() else "OFF"
+        except Exception:
+            sound = "OFF"
+        try:
+            mic = "MUTED" if pipeline.is_mic_muted() else "LIVE"
+        except Exception:
+            mic = "LIVE"
+    return (
+        f"Languages: {src} -> {tgt} | "
+        f"TTS: {_tts_status_label()} | "
+        f"Sound: {sound} | "
+        f"Mic: {mic}"
+    )
+
+
+def print_sistema_status(pipeline=None) -> None:
+    """Print Languages|TTS|Sound|Mic on Sistema (TUI) / terminal."""
+    line = format_sistema_status(pipeline)
+    info(line, panel="app" if _log_sink is not None else "main")
+
+
+def begin_chunk_sistema(n, pipeline=None) -> None:
+    """
+    Start of a VOZ chunk on Sistema:
+
+    - Clear prior Sistema noise (boot, VAD, previous chunk stages)
+    - Keep sticky status Languages|TTS|Sound|Mic
+    - Subsequent chunk_* / stage lines accumulate until the next chunk
+    """
+    with _print_lock:
+        if _log_sink is not None:
+            clear_panel("app")
+            print_sistema_status(pipeline)
+            dim(f"[chunk {n}] ── início ──", panel="app")
+        else:
+            # Classic: no full clear; just a separator + status
+            print()
+            print_sistema_status(pipeline)
+
+
 __all__ = [
     "banner",
     "info",
@@ -157,6 +243,10 @@ __all__ = [
     "listen_progress",
     "pipeline_stage",
     "format_timing_line",
+    "format_sistema_status",
+    "print_sistema_status",
+    "begin_chunk_sistema",
+    "clear_panel",
     "clock_hhmmss",
     "format_recorded_stamp",
     "resolve_share_path",
@@ -200,7 +290,7 @@ _CHUNK_PROGRESS = {
     "translated": ("🌐", "Tradução pronta"),
     "tts": ("🔊", "Gerando voz traduzida…"),
     "tts_bg": ("🔊", "Gerando voz em segundo plano…"),
-    "ready": ("✅", "Pronto — tradução completa"),
+    "ready": ("✅", "TTS pronto — a reproduzir (aguarde o áudio · [x] corta)"),
     "ready_text": ("✅", "Pronto — texto completo (sem áudio ao vivo)"),
 }
 
@@ -638,6 +728,69 @@ def listen_progress(active: bool):
         pipeline_stage("stt", source="voz")
 
 
+_listen_ready_state = {"t": 0.0}
+_tts_playing_state = {"on": False}
+
+
+def set_tts_playing(active: bool, detail: str = "") -> None:
+    """
+    TTS audio is on Cable and/or headphones — mic closed; do not speak.
+
+    Visual + log so long playback does not look like "escuta pronta".
+    """
+    active = bool(active)
+    _tts_playing_state["on"] = active
+    if active:
+        try:
+            pipeline_stage("play", source="voz")
+        except Exception:
+            pass
+        extra = detail or ""
+        dim(
+            f"🔊 Reproduzindo tradução… NÃO fale · [x] interrompe{extra}",
+            panel="app",
+        )
+
+
+def is_tts_playing() -> bool:
+    return bool(_tts_playing_state.get("on"))
+
+
+def listen_ready(note: str = "", *, force: bool = False):
+    """
+    Return VOZ pipe to idle listening after a skip / TTS playback / empty STT.
+
+    Without this, a silent STT abort left the bar on STT and the log on
+    "Fim da fala — processando…", so the user thought listening was dead.
+    Rate-limited so multi-segment TTS does not spam the log.
+    Use force=True after real TTS playback ends (must always show).
+    """
+    import time as _time
+
+    # Never claim "escuta pronta" while TTS is still flagged playing
+    if _tts_playing_state.get("on") and not force:
+        return
+    if force:
+        _tts_playing_state["on"] = False
+
+    try:
+        pipeline_stage("idle", source="voz")
+    except Exception:
+        pass
+    # Mark listen state idle so the next onset is not rate-limited as a flap
+    try:
+        _listen_log_state["active"] = False
+    except Exception:
+        pass
+    now = _time.monotonic()
+    last = float(_listen_ready_state.get("t") or 0.0)
+    if not force and (now - last) < 0.8:
+        return
+    _listen_ready_state["t"] = now
+    extra = f" — {note}" if (note or "").strip() else ""
+    dim(f"🎙️  Escuta pronta (mic aberto){extra}", panel="app")
+
+
 def _emit_chunk_progress_line(stage: str, text: str) -> None:
     """Route a stage line to the Sistema/app panel (or classic colors)."""
     if stage in ("ready", "ready_text", "translated", "heard"):
@@ -763,7 +916,9 @@ def _cache_badge(from_cache=None):
     return ""
 
 
-def _emit_voz_chunk_block(n, heard, translated, *, from_cache=None, blank_after=True):
+def _emit_voz_chunk_block(
+    n, heard, translated, *, from_cache=None, blank_before=True, blank_after=True
+):
     """
     Emit a VOZ (mic) chunk on the **right rail**.
 
@@ -772,9 +927,15 @@ def _emit_voz_chunk_block(n, heard, translated, *, from_cache=None, blank_after=
 
     Order always follows system SOURCE → TARGET (heard then translated).
     from_cache: True=CACHE (magenta), False=LIVE (cyan), None=no badge.
+
+    Always ends with a blank line (and optional blank before) so the last
+    VOZ pair is never glued under the Tradução logo/header chrome.
     """
     heard = (heard or "").strip()
     translated = (translated or "").strip()
+    # Force visibility separators regardless of caller (blank_after=False ignored
+    # for the *final* separator — we always leave one empty row after the pair).
+    force_blank_after = True
     pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
     src_l, tgt_l = _voz_lang_pair()
     badge = _cache_badge(from_cache)
@@ -792,6 +953,8 @@ def _emit_voz_chunk_block(n, heard, translated, *, from_cache=None, blank_after=
     head = pad + right_shift
 
     with _print_lock:
+        if blank_before:
+            _emit_chunk_blank()
         if _log_sink is not None:
             e = _rich_escape
             if from_cache is True:
@@ -832,7 +995,7 @@ def _emit_voz_chunk_block(n, heard, translated, *, from_cache=None, blank_after=
                         "rich",
                         f"{head}{ind_tgt}[bold white]{e(line)}[/]",
                     )
-            if blank_after:
+            if force_blank_after or blank_after:
                 _emit_chunk_blank()
             return
 
@@ -885,7 +1048,8 @@ def _emit_voz_chunk_block(n, heard, translated, *, from_cache=None, blank_after=
                 )
             else:
                 print("\r\033[K" + head + ind_tgt + Fore.WHITE + line + Style.RESET_ALL)
-        if blank_after:
+        # Always leave a blank row so the pair is not glued under chrome/logo
+        if force_blank_after or blank_after:
             print()
 
 
@@ -1051,6 +1215,8 @@ def live_caption_block(n, original, translated, from_cache=None):
     with _print_lock:
         if _log_sink is not None:
             e = _rich_escape
+            # Blank before so the pair is never glued under the LC logo/header
+            _emit_chunk_blank(panel="lc")
             _emit(
                 "rich",
                 f"[bold magenta]{e(prefix)}[/][white]{e(hlab)}[/][green]{e(original)}[/]",
@@ -1063,6 +1229,7 @@ def live_caption_block(n, original, translated, from_cache=None):
             else:
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
             _emit("rich", f"{lab}[bold white]{e(translated)}[/]", panel="lc")
+            # Blank after LC pair so it never sticks under captions chrome
             _emit_chunk_blank(panel="lc")
             return
         print(
@@ -1390,11 +1557,21 @@ def format_timing_line(timings, extra=None, at=None, include_clock=True):
         parts.append("STT {stt:.2f}s".format(**timings))
     if "translate" in timings:
         parts.append("translate {translate:.2f}s".format(**timings))
+    if timings.get("tts_engine"):
+        eng = str(timings.get("tts_engine") or "")
+        voice = str(timings.get("tts_voice") or "").strip()
+        if voice:
+            parts.append(f"engine={eng}({voice})")
+        else:
+            parts.append(f"engine={eng}")
     if timings.get("tts_skipped"):
         parts.append("TTS —")
     elif "tts" in timings:
         parts.append("TTS {tts:.2f}s".format(**timings))
-    if timings.get("tts_first") is not None:
+    if timings.get("tts_first_ms") is not None:
+        parts.append("first_chunk {tts_first_ms}ms".format(**timings))
+    elif timings.get("tts_first") is not None:
+        # legacy seconds
         parts.append("first_audio {tts_first:.2f}s".format(**timings))
     if timings.get("tts_start") is not None:
         parts.append("tts_start {tts_start:.2f}s".format(**timings))

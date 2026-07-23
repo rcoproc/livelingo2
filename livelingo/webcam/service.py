@@ -46,10 +46,12 @@ from .mouth_template import (
     ClosedMouthTemplateStore,
     align_and_blend,
     compute_freeze_plate_geom,
+    cover_frame_with_closed_image,
     load_template,
     open_from_closed_template,
     save_template_from_frame,
 )
+
 
 def check_webcam_deps() -> dict:
     """
@@ -222,9 +224,7 @@ class WebcamLipSyncService:
                 "(only while mic listening, off during TTS)"
             )
         # Mirror template vs live (Teams often looks flipped vs OpenCV)
-        self._template_flip_h = bool(
-            getattr(config, "WEBCAM_TEMPLATE_FLIP_H", False)
-        )
+        self._template_flip_h = bool(getattr(config, "WEBCAM_TEMPLATE_FLIP_H", False))
         # VAD: True only while mic is *hearing speech* (not just unmuted)
         self._vad_speech = threading.Event()
         self._vad_lock = threading.Lock()
@@ -237,11 +237,44 @@ class WebcamLipSyncService:
         self._closed_manual_mode = False
         self._closed_manual_on = False
         self._closed_gen = 0  # increments every F10 so status/debug can see toggles
-        self._closed_auto = bool(getattr(config, "WEBCAM_CLOSED_AUTO", True))
+        # F11: full-frame freeze with closed photo (hides all live video)
+        self._closed_full_frame_on = False
+        self._closed_full_gen = 0
+        # VAD auto closed-plate removed — F10/F11 only (config kept for status/help)
+        self._closed_auto = False
         self._closed_apply_ok = 0  # frames successfully blended (debug)
         self._closed_apply_fail = 0
         self._last_frame_lock = threading.Lock()
         self._last_frame_bgr = None  # for cam snap closed
+        # Burn-in TARGET (translated) text on vcam frames — toggle [sub] / [cam sub]
+        self._subtitle_lock = threading.Lock()
+        self._subtitle_enabled = bool(getattr(config, "WEBCAM_SUBTITLE", False))
+        self._subtitle_text = ""
+        self._subtitle_set_mono = 0.0
+        self._subtitle_gen = 0  # increments on each replace (debug / status)
+        # 0 = stay until [sub off] or next push_subtitle_text (no auto-hide)
+        self._subtitle_hold_s = float(
+            getattr(config, "WEBCAM_SUBTITLE_HOLD_S", 0.0) or 0.0
+        )
+        # 2 lines: one caption at a time (wrap only); never stack old+new
+        self._subtitle_max_lines = int(
+            getattr(config, "WEBCAM_SUBTITLE_MAX_LINES", 2) or 2
+        )
+        self._subtitle_font_scale = float(
+            getattr(config, "WEBCAM_SUBTITLE_FONT_SCALE", 0.0) or 0.0
+        )
+        self._subtitle_margin_bottom = int(
+            getattr(config, "WEBCAM_SUBTITLE_MARGIN_BOTTOM", 22) or 22
+        )
+        # Dark veil over frosted video (see-through footer, not solid black)
+        self._subtitle_bar_alpha = float(
+            getattr(config, "WEBCAM_SUBTITLE_BAR_ALPHA", 0.48) or 0.48
+        )
+        self._subtitle_blur_px = int(
+            getattr(config, "WEBCAM_SUBTITLE_BLUR_PX", 21) or 0
+        )
+        # Default True: Teams/OBS often mirror vcam → bare putText reads R→L
+        self._subtitle_mirror_h = bool(getattr(config, "WEBCAM_SUBTITLE_MIRROR", True))
 
         qsize = max(1, int(getattr(config, "WEBCAM_QUEUE_SIZE", 2) or 2))
         self._q_cap: queue.Queue = queue.Queue(maxsize=qsize)
@@ -284,7 +317,9 @@ class WebcamLipSyncService:
         self._capture_failed.clear()
         self._vcam_ready.clear()
         self._threads = [
-            threading.Thread(target=self._capture_loop, name="cam-capture", daemon=True),
+            threading.Thread(
+                target=self._capture_loop, name="cam-capture", daemon=True
+            ),
             threading.Thread(target=self._infer_loop, name="cam-infer", daemon=True),
             threading.Thread(target=self._emit_loop, name="cam-emit", daemon=True),
         ]
@@ -410,6 +445,115 @@ class WebcamLipSyncService:
         except Exception:
             pass
 
+    # ------------------------------------------------------------------ #
+    # Burn-in subtitles (TARGET text on virtual-cam pixels)
+    # ------------------------------------------------------------------ #
+    def push_subtitle_text(self, text: str) -> None:
+        """
+        Replace TARGET burn-in with this string (never append).
+
+        Always overwrites the previous caption so the vcam shows a single
+        current translation. Empty text is ignored (keeps last until
+        ``clear_subtitle_text`` / ``sub off``).
+        """
+        t = " ".join((text or "").split())
+        if not t:
+            return
+        with self._subtitle_lock:
+            # Explicit replace — never concatenate with previous caption
+            self._subtitle_text = t
+            self._subtitle_set_mono = time.monotonic()
+            self._subtitle_gen = int(getattr(self, "_subtitle_gen", 0) or 0) + 1
+
+    def clear_subtitle_text(self) -> None:
+        """Clear stored TARGET text (overlay shows nothing until next push)."""
+        with self._subtitle_lock:
+            self._subtitle_text = ""
+            self._subtitle_set_mono = 0.0
+
+    def is_subtitle_enabled(self) -> bool:
+        with self._subtitle_lock:
+            return bool(self._subtitle_enabled)
+
+    def set_subtitle_enabled(self, on: bool) -> Tuple[bool, str]:
+        """Enable/disable burn-in. Returns (enabled, status message)."""
+        on = bool(on)
+        with self._subtitle_lock:
+            self._subtitle_enabled = on
+            preview = (self._subtitle_text or "")[:60]
+        # Persist for this process + config (so status/help stay in sync)
+        try:
+            self.cfg.WEBCAM_SUBTITLE = on
+        except Exception:
+            pass
+        if on:
+            extra = (
+                f' · last="{preview}…"'
+                if len(preview) >= 60
+                else (
+                    f' · last="{preview}"'
+                    if preview
+                    else " · (aguarde próxima tradução)"
+                )
+            )
+            return True, (
+                f"Legenda vcam ON (TARGET burn-in){extra}. "
+                f"Fica na tela até [sub off] ou nova tradução. "
+                f"Só pixels na OBS Virtual Cam — não é CC do Teams."
+            )
+        return False, (
+            "Legenda vcam OFF — texto sumiu do frame. "
+            "[sub on] liga de novo (último TARGET, se houver)."
+        )
+
+    def toggle_subtitle(self) -> Tuple[bool, str]:
+        """Toggle burn-in ON/OFF."""
+        with self._subtitle_lock:
+            nxt = not bool(self._subtitle_enabled)
+        return self.set_subtitle_enabled(nxt)
+
+    def _active_subtitle_text(self) -> str:
+        """
+        TARGET text while overlay is ON.
+
+        Stays visible until ``[sub off]`` (or clear) or the next
+        ``push_subtitle_text`` replaces it. Optional hold>0 auto-hides only
+        if WEBCAM_SUBTITLE_HOLD_S is set deliberately.
+        """
+        with self._subtitle_lock:
+            if not self._subtitle_enabled:
+                return ""
+            text = self._subtitle_text or ""
+            if not text:
+                return ""
+            hold = float(self._subtitle_hold_s or 0.0)
+            # Default 0: never expire. Only expire if hold explicitly > 0.
+            if hold > 0 and self._subtitle_set_mono > 0:
+                if (time.monotonic() - self._subtitle_set_mono) > hold:
+                    return ""
+            return text
+
+    def _apply_subtitle_burnin(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """Draw TARGET burn-in when enabled; otherwise return frame unchanged."""
+        text = self._active_subtitle_text()
+        if not text or frame_bgr is None:
+            return frame_bgr
+        try:
+            from livelingo.webcam.subtitle import draw_subtitle_burnin
+
+            return draw_subtitle_burnin(
+                frame_bgr,
+                text,
+                max_lines=self._subtitle_max_lines,
+                font_scale=self._subtitle_font_scale,
+                margin_bottom=self._subtitle_margin_bottom,
+                bar_alpha=self._subtitle_bar_alpha,
+                mirror_h=bool(self._subtitle_mirror_h),
+                blur_px=int(self._subtitle_blur_px or 0),
+            )
+        except Exception:
+            return frame_bgr
+
     def snap_closed_mouth(
         self,
         *,
@@ -444,7 +588,9 @@ class WebcamLipSyncService:
         if frame is None:
             with self._last_frame_lock:
                 frame = (
-                    None if self._last_frame_bgr is None else self._last_frame_bgr.copy()
+                    None
+                    if self._last_frame_bgr is None
+                    else self._last_frame_bgr.copy()
                 )
             if frame is None:
                 return (
@@ -581,9 +727,7 @@ class WebcamLipSyncService:
                 if geom.contour is not None and len(geom.contour) >= 6:
                     try:
                         hull = cv2.convexHull(geom.contour)
-                        cv2.polylines(
-                            vis, [hull], True, color, 2, cv2.LINE_AA
-                        )
+                        cv2.polylines(vis, [hull], True, color, 2, cv2.LINE_AA)
                     except Exception:
                         cv2.ellipse(
                             vis,
@@ -715,7 +859,7 @@ class WebcamLipSyncService:
 
     def toggle_closed_mouth_manual(self) -> Tuple[bool, str]:
         """
-        F10: toggle closed-mouth photo ON/OFF (manual).
+        F10: toggle closed-mouth face plate ON/OFF (manual).
 
         Enters manual mode (disables VAD auto for this session until
         ``set_closed_mouth_auto()``). Returns (is_on, status_message).
@@ -740,20 +884,16 @@ class WebcamLipSyncService:
             self._closed_apply_fail = 0
         if on:
             if not self._template_store.loaded:
-                return True, (
-                    f"Boca calada ON gen={gen} — sem foto: [cam snap closed]"
-                )
+                return True, (f"Boca calada ON gen={gen} — sem foto: [cam snap closed]")
             if not self.is_enabled() or not self._started:
                 return True, (
                     f"Boca calada ON gen={gen} — ative [cam on] + Teams=OBS Virtual Cam"
                 )
             snap = self.snapshot()
             if not snap.get("vcam_ready"):
-                return True, (
-                    f"Boca calada ON gen={gen} — vcam=false; [cam status]"
-                )
+                return True, (f"Boca calada ON gen={gen} — vcam=false; [cam status]")
             return True, (
-                f"Boca calada ON gen={gen} — foto no vídeo | "
+                f"Boca calada ON gen={gen} — foto no rosto | "
                 f"tpl={self._template_store.path() or 'ok'} | F10 tira"
             )
         return False, (
@@ -771,39 +911,91 @@ class WebcamLipSyncService:
         return False, "Boca calada OFF (manual)"
 
     def set_closed_mouth_auto(self) -> str:
-        """Return control to VAD auto (exit F10 manual mode)."""
+        """Exit F10/F11 manual freeze → live video (no VAD auto plate anymore)."""
         with self._vad_lock:
             self._closed_manual_mode = False
             self._closed_manual_on = False
-            auto = self._closed_auto
-        if auto:
-            return "Boca calada AUTO (VAD) — foto só enquanto o mic ouve fala"
-        return "Boca calada AUTO desligado (WEBCAM_CLOSED_AUTO=false) — use F10"
+            self._closed_full_frame_on = False
+            self._closed_gen = int(self._closed_gen) + 1
+        return (
+            "Vídeo ao vivo — closed só com F10 (rosto) / F11 (tela inteira). "
+            "Auto no mic desativado."
+        )
+
+    def toggle_closed_full_frame(self) -> Tuple[bool, str]:
+        """
+        F11: toggle full-frame closed photo (covers entire virtual cam).
+
+        Unlike F10 (face plate on live video), this hides 100% of the live
+        feed and shows only the closed-mouth template scaled to fill the frame.
+        """
+        try:
+            if not self._template_store.loaded:
+                self._template_store.load_from_config(self.cfg)
+        except Exception:
+            pass
+        try:
+            self.clear_tts_audio()
+        except Exception:
+            pass
+        with self._vad_lock:
+            self._closed_full_frame_on = not self._closed_full_frame_on
+            on = bool(self._closed_full_frame_on)
+            self._closed_full_gen = int(self._closed_full_gen) + 1
+            gen = self._closed_full_gen
+            # Full-frame freeze supersedes face plate while ON
+            if on:
+                self._closed_manual_mode = True
+                self._closed_manual_on = False
+        if on:
+            if not self._template_store.loaded:
+                return True, (f"Tela closed ON gen={gen} — sem foto: [cam snap closed]")
+            if not self.is_enabled() or not self._started:
+                return True, (
+                    f"Tela closed ON gen={gen} — ative [cam on] + Teams=OBS Virtual Cam"
+                )
+            snap = self.snapshot()
+            if not snap.get("vcam_ready"):
+                return True, (f"Tela closed ON gen={gen} — vcam=false; [cam status]")
+            return True, (
+                f"Tela closed ON gen={gen} — foto INTEIRA no vídeo "
+                f"(sem live) | tpl={self._template_store.path() or 'ok'} | F11 tira"
+            )
+        return False, (
+            f"Tela closed OFF gen={gen} — vídeo ao vivo | F11 congela de novo"
+        )
+
+    def set_closed_full_frame(self, on: bool) -> Tuple[bool, str]:
+        """Force full-frame closed freeze on/off."""
+        with self._vad_lock:
+            self._closed_full_frame_on = bool(on)
+            on = bool(self._closed_full_frame_on)
+            if on:
+                self._closed_manual_mode = True
+                self._closed_manual_on = False
+        if on:
+            return True, "Tela closed ON (manual full-frame)"
+        return False, "Tela closed OFF (manual full-frame)"
 
     def closed_mouth_state(self) -> dict:
         with self._vad_lock:
             return {
                 "manual_mode": self._closed_manual_mode,
                 "manual_on": self._closed_manual_on,
+                "full_frame_on": self._closed_full_frame_on,
                 "auto": self._closed_auto,
                 "vad_speech": self.is_mic_hearing_speech(),
             }
 
     def should_show_closed_template(self, *, playing: bool) -> bool:
-        """Whether to freeze closed-mouth photo this frame."""
-        # F10 manual ON forces plate even during quiet (still off while TTS plays)
-        if playing:
-            return False
-        if not self._force_closed_idle:
-            return False
-        if not self._template_store.loaded:
-            return False
-        with self._vad_lock:
-            if self._closed_manual_mode:
-                return bool(self._closed_manual_on)
-            if not self._closed_auto:
-                return False
-        return self.is_mic_hearing_speech()
+        """
+        Auto closed-photo on mic speech is **disabled**.
+
+        Closed image only via F10 (face plate) / F11 (full-frame) — see infer loop
+        ``manual_on`` / ``full_frame_on``. Always returns False (no VAD auto).
+        """
+        del playing  # no longer used for auto plate
+        return False
 
     # Back-compat alias used by older wiring
     def set_listening_probe(self, fn: Optional[Callable[[], bool]]) -> None:
@@ -847,10 +1039,14 @@ class WebcamLipSyncService:
                 "vad_speech": self.is_mic_hearing_speech(),
                 "closed_manual": self._closed_manual_mode,
                 "closed_manual_on": self._closed_manual_on,
+                "closed_full_frame_on": self._closed_full_frame_on,
+                "closed_full_gen": self._closed_full_gen,
                 "closed_auto": self._closed_auto,
                 "closed_gen": self._closed_gen,
                 "closed_apply_ok": self._closed_apply_ok,
                 "closed_apply_fail": self._closed_apply_fail,
+                "subtitle": self.is_subtitle_enabled(),
+                "subtitle_text": (self._active_subtitle_text() or "")[:80],
             }
 
     def _set_emit_phase(self, phase: str) -> None:
@@ -1046,7 +1242,9 @@ class WebcamLipSyncService:
         from pyvirtualcam import PixelFormat
 
         device = (getattr(self.cfg, "WEBCAM_VCAM_DEVICE", "") or "").strip() or None
-        configured = (getattr(self.cfg, "WEBCAM_VCAM_BACKEND", "") or "").strip() or None
+        configured = (
+            getattr(self.cfg, "WEBCAM_VCAM_BACKEND", "") or ""
+        ).strip() or None
         # Default 0 = open on emit thread (no nested worker). Set >0 only if
         # opens hang without the OBS driver registered.
         timeout_s = float(getattr(self.cfg, "WEBCAM_VCAM_OPEN_TIMEOUT_S", 0.0) or 0.0)
@@ -1108,12 +1306,8 @@ class WebcamLipSyncService:
                         if self._stop.is_set():
                             raise RuntimeError("stopped during vcam open")
                         try:
-                            cam = self._try_open_one_vcam(
-                                kwargs, timeout_s=timeout_s
-                            )
-                            be_name = str(
-                                getattr(cam, "backend", None) or be or "auto"
-                            )
+                            cam = self._try_open_one_vcam(kwargs, timeout_s=timeout_s)
+                            be_name = str(getattr(cam, "backend", None) or be or "auto")
                             dev_name = getattr(cam, "device", device)
                             self._log(
                                 f"Virtual cam OPEN: {sw}x{sh} @ {fps:g} FPS "
@@ -1260,9 +1454,7 @@ class WebcamLipSyncService:
                     fail_reads = 0
                     self._put_drop_old(
                         self._q_cap,
-                        _FramePacket(
-                            frame_bgr=frame, t_capture=time.perf_counter()
-                        ),
+                        _FramePacket(frame_bgr=frame, t_capture=time.perf_counter()),
                     )
                     n += 1
                     if n % 30 == 0:
@@ -1284,8 +1476,7 @@ class WebcamLipSyncService:
                     self._status.fps_cap = 0.0
                 if not self._stop.is_set():
                     self._log(
-                        "Capture released — webcam física livre "
-                        "([cam on] reabre)."
+                        "Capture released — webcam física livre ([cam on] reabre)."
                     )
                 # Brief settle so Windows can hand the device to another app.
                 time.sleep(0.15)
@@ -1324,22 +1515,28 @@ class WebcamLipSyncService:
                         open_amt = 0.0
 
                 tpl = self._template_store.get()
-                # F10 manual: ignore stuck audio.is_playing() for show/hide reliability
+                # F10 / F11 manual flags
                 with self._vad_lock:
+                    full_frame_on = bool(self._closed_full_frame_on)
                     manual_on = bool(
                         self._closed_manual_mode and self._closed_manual_on
                     )
-                if manual_on and tpl is not None and tpl.ok:
-                    use_tpl = True  # F10 ON always paints (even if TTS ring stale)
-                else:
-                    use_tpl = bool(
-                        tpl is not None
-                        and tpl.ok
-                        and self.should_show_closed_template(playing=playing)
-                    )
 
-                if use_tpl:
-                    # F10 / VAD: freeze plate (priority over TTS morph while manual ON)
+                # F11: entire virtual-cam frame = closed photo (hides live video)
+                if full_frame_on and tpl is not None and tpl.ok:
+                    try:
+                        out = cover_frame_with_closed_image(
+                            frame,
+                            tpl,
+                            flip_h=self._template_flip_h,
+                        )
+                        self._closed_apply_ok += 1
+                    except Exception as exc:
+                        self._closed_apply_fail += 1
+                        self._set_error(f"closed-full-frame: {exc}")
+                        out = frame
+                elif manual_on and tpl is not None and tpl.ok:
+                    use_tpl = True  # F10 ON always paints (even if TTS ring stale)
                     roi_use = roi
                     if not roi.face_ok:
                         try:
@@ -1366,6 +1563,7 @@ class WebcamLipSyncService:
                         self._closed_apply_fail += 1
                         self._set_error(f"closed-template blend: {exc}")
                         out = frame
+                # VAD auto closed-plate removed — only F10 (above) / F11 (above).
                 elif playing:
                     if roi.face_ok and open_amt > 0.05:
                         amt = max(open_amt, 0.2)
@@ -1373,10 +1571,16 @@ class WebcamLipSyncService:
                     else:
                         out = frame
                 else:
-                    # F10 OFF / silence: 100% live
+                    # F10/F11 OFF / silence: 100% live
                     out = frame
 
-                if self._sync_marker and roi.face_ok and (use_tpl or playing):
+                frozen = bool(full_frame_on or manual_on)
+                if (
+                    self._sync_marker
+                    and roi.face_ok
+                    and (frozen or playing)
+                    and not full_frame_on
+                ):
                     out = FaceMouthROI.draw_sync_marker(
                         out, roi, open_amt=open_amt, active=playing
                     )
@@ -1433,8 +1637,7 @@ class WebcamLipSyncService:
                 break
 
             self._log(
-                f"Opening virtual cam (target {want_w}x{want_h} @ "
-                f"{target_fps:g} FPS)…"
+                f"Opening virtual cam (target {want_w}x{want_h} @ {target_fps:g} FPS)…"
             )
             self._set_emit_phase("opening_vcam")
             cam = None
@@ -1451,11 +1654,7 @@ class WebcamLipSyncService:
                     "*virtual* device failed. "
                 )
                 low = msg.lower()
-                if (
-                    "could not be started" in low
-                    or "obs" in low
-                    or "exclusive" in low
-                ):
+                if "could not be started" in low or "obs" in low or "exclusive" in low:
                     hint += obs_virtual_cam_conflict_hint() + " "
                 if "unitycapture" in low or "no camera registered" in low:
                     hint += "Unity Capture not installed — use OBS instead. "
@@ -1537,13 +1736,15 @@ class WebcamLipSyncService:
                         pass  # re-send last (placeholder or freeze)
 
                     try:
-                        cam.send(_to_vcam(last))
+                        # Burn-in TARGET on BGR before RGB convert / send
+                        frame_out = self._apply_subtitle_burnin(last)
+                        cam.send(_to_vcam(frame_out))
                         cam.sleep_until_next_frame()
                         if debug_preview:
                             try:
                                 import cv2
 
-                                prev = last
+                                prev = frame_out if frame_out is not None else last
                                 if prev.shape[0] != h or prev.shape[1] != w:
                                     prev = cv2.resize(prev, (w, h))
                                 cv2.imshow("LiveLingo webcam (debug)", prev)

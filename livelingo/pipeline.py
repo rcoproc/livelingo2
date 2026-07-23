@@ -28,6 +28,7 @@ from .stt_filter import (
     clean_transcript,
     is_hallucination,
     should_discard_transcript,
+    transcript_discard_reason,
 )
 
 
@@ -104,6 +105,8 @@ class Pipeline:
             on_listening=on_listening,
             paragraph_split_enabled=self._should_paragraph_split,
             shorter_end_enabled=lambda: not self.is_sound_enabled(),
+            # Self-heal: recorder re-opens gate if pipeline left it closed wrongly
+            capture_should_run=self.capture_should_run,
         )
 
         self.history = []
@@ -173,6 +176,10 @@ class Pipeline:
         self._capture_hold_lock = threading.Lock()
         self._capture_hold_count = 0
         self._capture_hold_timer = None  # threading.Timer | None
+        # Monotonic deadline: keep STT gate closed after TTS (anti speaker echo).
+        # Must be part of capture_should_run — otherwise self-heal reopens mid-hangover
+        # and VAD latches onto TTS ring-out ("travou após N frases").
+        self._capture_hangover_until = 0.0
 
         # Deferred language swap ([g]): never drop in-flight STT/translate/TTS.
         self._lang_swap_lock = threading.Lock()
@@ -180,8 +187,10 @@ class Pipeline:
         self._pending_language_swap = False
         self._on_language_swapped = None  # optional callback(src, tgt, voice)
 
-        # Direct voice bypass ([b]): mic → CABLE without STT/translate.
-        self._passthrough_lock = threading.Lock()
+        # Direct voice bypass ([b]/F2): mic → CABLE without STT/translate.
+        # RLock: start path may re-enter is_passthrough_active / arm helpers
+        # (plain Lock deadlocked the TUI on F2).
+        self._passthrough_lock = threading.RLock()
         self._passthrough_active = False
         self._passthrough_stop = threading.Event()
         self._passthrough_thread = None
@@ -247,27 +256,94 @@ class Pipeline:
     # Microphone mute (Windows OS + app capture gate)
     # ------------------------------------------------------------------ #
     def is_mic_muted(self):
-        return self.mic.is_muted()
+        """True only when user paused escuta with [n] (app mute)."""
+        return self.mic.is_app_muted()
 
     def mic_endpoint_name(self):
         return self.mic.resolved_name()
 
+    def is_output_playing(self) -> bool:
+        """True while TTS is on Cable/monitor or in post-play hangover (mic closed)."""
+        try:
+            if self._is_capture_held_for_playback():
+                return True
+        except Exception:
+            pass
+        try:
+            if time.monotonic() < float(self._capture_hangover_until or 0.0):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def capture_should_run(self) -> bool:
+        """
+        Desired capture gate: escuta always ON except:
+          - [n] app mute
+          - voice bypass [b]
+          - TTS playing on Cable/headphones (always — UX: don't speak over TTS)
+          - post-TTS hangover window (must stay closed — no self-heal)
+        """
+        try:
+            if self.is_passthrough_active():
+                return False
+        except Exception:
+            pass
+        try:
+            if self.mic.is_app_muted():
+                return False
+        except Exception:
+            pass
+        # Always close mic while TTS plays (Cable and/or headphones/speakers).
+        # MUTE_CAPTURE_DURING_PLAYBACK only used to be optional; leaving mic open
+        # during long TTS made users think they could speak mid-playback.
+        try:
+            if self._is_capture_held_for_playback():
+                return False
+        except Exception:
+            pass
+        try:
+            if time.monotonic() < float(self._capture_hangover_until or 0.0):
+                return False
+        except Exception:
+            pass
+        return True
+
+    def sync_capture_gate(self, *, log_resume: bool = False) -> bool:
+        """
+        Apply capture_should_run() to the recorder.
+
+        Single source of truth so escuta never stays off after TTS / skip /
+        OS-mute quirks — only [n] (and bypass/TTS-hold) may close the gate.
+        """
+        want = bool(self.capture_should_run())
+        was = True
+        try:
+            was = bool(self.recorder.is_capture_enabled())
+        except Exception:
+            was = True
+        try:
+            self.recorder.set_capture_enabled(want)
+        except Exception:
+            pass
+        if log_resume and want and not was:
+            try:
+                ui.listen_ready("escuta ativa restaurada")
+            except Exception:
+                pass
+        return want
+
     def toggle_mic(self):
         """
-        Mute/unmute the capture mic.
+        Mute/unmute via [n]: app gate (+ OS tray when possible).
 
-        Best path on Windows: Core Audio SetMute (tray-visible) + app gate.
-        If COM fails, app gate alone still blocks STT chunks.
-        While TTS holds the capture gate, unmute keeps the hold until playback ends.
+        Escuta stays ON at all other times (sync_capture_gate).
         """
         if self.is_passthrough_active():
             # Leaving bypass first so STT gate state stays consistent
             self.set_voice_passthrough(False)
         muted, os_ok, name = self.mic.toggle()
-        if muted:
-            self.recorder.set_capture_enabled(False)
-        elif not self._is_capture_held_for_playback():
-            self.recorder.set_capture_enabled(True)
+        self.sync_capture_gate(log_resume=not muted)
         return muted, os_ok, name
 
     def set_mic_muted(self, muted: bool):
@@ -279,11 +355,58 @@ class Pipeline:
         if muted and self.is_passthrough_active():
             self.set_voice_passthrough(False)
         muted_now, os_ok, name = self.mic.set_muted(bool(muted))
-        if muted_now:
-            self.recorder.set_capture_enabled(False)
-        elif not self._is_capture_held_for_playback():
-            self.recorder.set_capture_enabled(True)
+        self.sync_capture_gate(log_resume=not muted_now)
         return muted_now, os_ok, name
+
+    # ------------------------------------------------------------------ #
+    # Force soft-listen ([N]) — low-energy VAD + yellow UI borders
+    # ------------------------------------------------------------------ #
+    def is_force_soft_listen(self) -> bool:
+        try:
+            return bool(self.recorder.is_force_soft_listen())
+        except Exception:
+            return False
+
+    def set_force_soft_listen(self, enabled: bool) -> bool:
+        """
+        Enable/disable [N] mode: accept soft / low-volume speech for translation.
+
+        When enabling: unmute app mic, open capture gate, arm escuta.
+        Returns new state (True = force soft-listen ON).
+        """
+        enabled = bool(enabled)
+        try:
+            self.recorder.set_force_soft_listen(enabled)
+        except Exception:
+            pass
+        if enabled:
+            # Leave mute / bypass so soft speech can be captured
+            try:
+                if self.is_passthrough_active():
+                    self.set_voice_passthrough(False)
+            except Exception:
+                pass
+            try:
+                if self.mic.is_app_muted():
+                    self.mic.set_muted(False)
+            except Exception:
+                pass
+            try:
+                self.sync_capture_gate(log_resume=True)
+            except Exception:
+                pass
+            try:
+                self._arm_listen_after_tts(note="[N] escuta forçada — voz baixa OK")
+            except Exception:
+                try:
+                    self.recorder.set_capture_enabled(True)
+                except Exception:
+                    pass
+        return self.is_force_soft_listen()
+
+    def toggle_force_soft_listen(self) -> bool:
+        """Toggle [N] force soft-listen. Returns new ON/OFF state."""
+        return self.set_force_soft_listen(not self.is_force_soft_listen())
 
     # ------------------------------------------------------------------ #
     # Direct voice bypass ([b]) — mic → OUTPUT (CABLE) without translation
@@ -354,16 +477,24 @@ class Pipeline:
     def _finish_stop_passthrough(self):
         """Resume TTS + STT after bypass OFF (must not hold _passthrough_lock)."""
         try:
+            self.recorder.resume_stream()
+        except Exception:
+            pass
+        try:
             self._resume_chunk_playback()
         except Exception:
             pass
         try:
-            if not self.is_mic_muted() and not self._is_capture_held_for_playback():
-                self.recorder.set_capture_enabled(True)
+            # Hard re-open escuta (clears hold/hangover; only [n] keeps closed)
+            self._arm_listen_after_tts(note="bypass OFF — escuta normal")
         except Exception:
-            pass
+            try:
+                self.sync_capture_gate(log_resume=True)
+            except Exception:
+                pass
 
     def _start_passthrough_unlocked(self):
+        """Caller holds ``_passthrough_lock``. Must not deadlock on nested lock."""
         # Same hard stop as [x]: cut any TTS already going to Cable/Teams
         try:
             with self._playback_suppress_lock:
@@ -371,19 +502,36 @@ class Pipeline:
             self._interrupt_playback(force=True)
         except Exception:
             pass
+        # Clear TTS hold/hangover WITHOUT arming listen (arm would re-open
+        # capture and call is_passthrough_active under this same lock → freeze).
         try:
-            self._force_release_capture_hold()
+            with self._capture_hold_lock:
+                self._cancel_capture_hold_timer_unlocked()
+                self._capture_hold_count = 0
+                self._capture_hangover_until = 0.0
         except Exception:
             pass
-        # Pause VAD/STT path
+        # Release mic InputStream so bypass can open the same device (Windows
+        # PortAudio freezes if two exclusive streams fight for one mic).
         try:
-            self.recorder.abort_utterance()
+            freed = self.recorder.suspend_stream(wait_s=0.6)
+            if not freed:
+                try:
+                    from . import ui
+
+                    ui.warn(
+                        "[b] Mic ainda ocupado pelo VAD — bypass pode falhar; "
+                        "tente F2 de novo em 1s.",
+                        panel="app",
+                    )
+                except Exception:
+                    pass
         except Exception:
-            pass
-        try:
-            self.recorder.set_capture_enabled(False)
-        except Exception:
-            pass
+            try:
+                self.recorder.abort_utterance()
+                self.recorder.set_capture_enabled(False)
+            except Exception:
+                pass
         # Free OUTPUT device from Player so we can open a live stream
         with self._player_lock:
             if self._player is not None:
@@ -981,24 +1129,82 @@ class Pipeline:
             except Exception:
                 pass
 
+    def _arm_listen_after_tts(self, note: str = "após TTS — escuta limpa"):
+        """
+        Hard-reset listen gate (post-TTS, sound-off ready, or recovery).
+
+        Always clears hold_count + hangover (leaks left the UI saying
+        "Escuta pronta" while capture stayed closed — one phrase then freeze).
+        Only [n] app-mute / bypass may keep the gate closed.
+        """
+        with self._capture_hold_lock:
+            self._capture_hold_count = 0
+            self._capture_hangover_until = 0.0
+            self._cancel_capture_hold_timer_unlocked()
+        try:
+            self.recorder.abort_utterance()
+        except Exception:
+            pass
+        # Open unless user mute or bypass — ignore stale hold/hangover
+        blocked = False
+        try:
+            blocked = bool(self.mic.is_app_muted()) or bool(
+                self.is_passthrough_active()
+            )
+        except Exception:
+            blocked = False
+        try:
+            self.recorder.set_capture_enabled(not blocked)
+        except Exception:
+            pass
+        try:
+            ui.set_tts_playing(False)
+        except Exception:
+            pass
+        if not blocked:
+            try:
+                ui.listen_ready(note, force=True)
+            except Exception:
+                pass
+            try:
+                if not self.recorder.is_capture_enabled():
+                    ui.warn(
+                        "Escuta: gate ainda FECHADO após arm — force open",
+                        panel="app",
+                    )
+                    self.recorder.set_capture_enabled(True)
+            except Exception:
+                pass
+
     def _hold_capture_for_playback(self):
-        """Pause STT chunk emission for the duration of one play() call."""
-        if not self._mute_capture_during_playback_enabled():
-            return
+        """Pause STT for one play() (Cable + headphones). Always on for UX."""
+        first = False
         with self._capture_hold_lock:
             self._cancel_capture_hold_timer_unlocked()
+            self._capture_hangover_until = 0.0
             self._capture_hold_count += 1
-            if self._capture_hold_count == 1:
-                self.recorder.set_capture_enabled(False)
+            first = self._capture_hold_count == 1
+        # Apply gate via single policy (hold count now > 0 → capture off)
+        self.sync_capture_gate()
+        if first:
+            try:
+                ui.set_tts_playing(True)
+            except Exception:
+                pass
+            try:
+                ui.pipeline_stage("play", source="voz")
+            except Exception:
+                pass
 
     def _release_capture_after_playback(self):
         """
-        Drop one play() hold. When count hits 0, reopen mic after hangover
-        (unless the user muted with [n] / OS mute).
+        Drop one play() hold. When count hits 0, keep gate closed for hangover
+        (ring-out on speakers/headphones), then arm escuta.
+
+        If count already 0 ([x] already force-released), do nothing — avoid
+        re-arming hangover after user interrupted.
         """
-        if not self._mute_capture_during_playback_enabled():
-            return
-        hangover_ms = max(0, int(getattr(self.cfg, "MUTE_CAPTURE_HANGOVER_MS", 350)))
+        hangover_ms = max(0, int(getattr(self.cfg, "MUTE_CAPTURE_HANGOVER_MS", 500)))
         with self._capture_hold_lock:
             if self._capture_hold_count <= 0:
                 return
@@ -1006,15 +1212,26 @@ class Pipeline:
             if self._capture_hold_count > 0:
                 return
             self._cancel_capture_hold_timer_unlocked()
+            try:
+                self.recorder.set_capture_enabled(False)
+            except Exception:
+                pass
             if hangover_ms <= 0:
-                self._reenable_capture_if_allowed_unlocked()
+                self._capture_hangover_until = 0.0
+            else:
+                self._capture_hangover_until = time.monotonic() + (hangover_ms / 1000.0)
+                try:
+                    ui.set_tts_playing(True, detail=" (cauda…)")
+                except Exception:
+                    pass
+                timer = threading.Timer(
+                    hangover_ms / 1000.0, self._on_capture_hold_hangover
+                )
+                timer.daemon = True
+                self._capture_hold_timer = timer
+                timer.start()
                 return
-            timer = threading.Timer(
-                hangover_ms / 1000.0, self._on_capture_hold_hangover
-            )
-            timer.daemon = True
-            self._capture_hold_timer = timer
-            timer.start()
+        self._arm_listen_after_tts(note="áudio terminou — pode falar")
 
     def _on_capture_hold_hangover(self):
         with self._capture_hold_lock:
@@ -1022,23 +1239,20 @@ class Pipeline:
             if self._capture_hold_count > 0:
                 return
             self._capture_hold_timer = None
-            self._reenable_capture_if_allowed_unlocked()
+            self._capture_hangover_until = 0.0
+        self._arm_listen_after_tts(note="áudio terminou — pode falar")
 
     def _reenable_capture_if_allowed_unlocked(self):
-        """Re-open capture only if user mute is off and no hold is active."""
-        if self._capture_hold_count > 0:
-            return
-        if self.mic.is_muted():
-            self.recorder.set_capture_enabled(False)
-            return
-        self.recorder.set_capture_enabled(True)
+        """Compat: re-open capture via sync policy (call without hold lock)."""
+        self._arm_listen_after_tts(note="áudio terminou — pode falar")
 
     def _force_release_capture_hold(self):
-        """Drop all playback holds (shutdown / player teardown)."""
+        """Drop all playback holds (shutdown / player teardown / [x])."""
         with self._capture_hold_lock:
             self._cancel_capture_hold_timer_unlocked()
             self._capture_hold_count = 0
-            self._reenable_capture_if_allowed_unlocked()
+            self._capture_hangover_until = 0.0
+        self._arm_listen_after_tts(note="áudio parado — pode falar")
 
     def _ensure_executor(self):
         if not self._use_parallel_processing():
@@ -1077,9 +1291,7 @@ class Pipeline:
         if self._is_tts_output_blocked():
             # Cable owned by bypass, or [x]/sound-off — never mix TTS in
             return
-        self.playback_queue.put(
-            (audio, sample_rate, interruptible, bool(pre_tts_cue))
-        )
+        self.playback_queue.put((audio, sample_rate, interruptible, bool(pre_tts_cue)))
         # Webcam lip-sync: feed the same TTS waveform that will hit Cable Out.
         try:
             cam = getattr(self, "webcam_service", None)
@@ -1089,13 +1301,23 @@ class Pipeline:
             pass
 
     def stop_playback(self):
-        """Stop current TTS and drop queued audio for this utterance."""
-        if not self.is_sound_enabled():
+        """Stop current TTS ([x]) and re-open escuta immediately."""
+        if not self.is_sound_enabled() and not self.is_output_playing():
             return False
         with self._playback_suppress_lock:
             self._playback_suppressed = True
         # force=True: user [x] always stops even if PLAYBACK_INTERRUPT=false
         self._interrupt_playback(force=True)
+        # Play()'s finally will also release, but arm now so user can speak ASAP
+        try:
+            self._force_release_capture_hold()
+        except Exception:
+            pass
+        # Allow next TTS after [x] unless bypass owns Cable
+        try:
+            self._resume_chunk_playback()
+        except Exception:
+            pass
         return True
 
     def _resume_chunk_playback(self):
@@ -1241,6 +1463,19 @@ class Pipeline:
             self.full_transcript.append((n, heard, translated, created_at, timing))
         return created_at
 
+    def _push_webcam_subtitle(self, translated: str) -> None:
+        """Replace vcam burn-in with current TARGET only (never append)."""
+        cam = getattr(self, "webcam_service", None)
+        if cam is None or not hasattr(cam, "push_subtitle_text"):
+            return
+        t = " ".join((translated or "").split())
+        if not t:
+            return
+        try:
+            cam.push_subtitle_text(t)
+        except Exception:
+            pass
+
     def _publish_chunk(
         self, n, heard, translated, audio_path, timing, timing_extra="", note=""
     ):
@@ -1254,6 +1489,8 @@ class Pipeline:
             ui.chunk_stream_done(n, heard, translated, from_cache=from_cache)
         else:
             ui.chunk_text_preview(n, heard, translated, from_cache=from_cache)
+        # Always TARGET text for vcam burn-in (shown only if [sub] ON)
+        self._push_webcam_subtitle(translated)
         created_at = self._timestamp_now()
         # Path set but file may still be flushing (sound OFF + background TTS)
         pending = bool(audio_path and str(audio_path).strip())
@@ -1833,9 +2070,53 @@ class Pipeline:
             threading.Thread(
                 target=self._background_tts_loop, name="tts-background", daemon=True
             ),
+            threading.Thread(
+                target=self._listen_watchdog_loop,
+                name="listen-watchdog",
+                daemon=True,
+            ),
         ]
         for thread in self._threads:
             thread.start()
+        # Immediate: escuta ON (do not wait for first VAD / first TTS cycle)
+        try:
+            self.recorder.set_capture_enabled(True)
+            ui.listen_ready("entrada — mic aberto", force=True)
+        except Exception:
+            try:
+                self.recorder.set_capture_enabled(True)
+            except Exception:
+                pass
+
+    def _listen_watchdog_loop(self):
+        """
+        Every ~0.8s: if policy says escuta ON but gate is closed, force open.
+        Does not open during TTS hold/hangover (capture_should_run is False).
+        """
+        while not self.stop_event.is_set():
+            try:
+                self.stop_event.wait(0.8)
+                if self.stop_event.is_set():
+                    break
+                # Hangover expired but timer missed? Clear by wall clock.
+                try:
+                    with self._capture_hold_lock:
+                        if (
+                            self._capture_hold_count <= 0
+                            and float(self._capture_hangover_until or 0.0) > 0
+                            and time.monotonic()
+                            >= float(self._capture_hangover_until or 0.0)
+                        ):
+                            self._capture_hangover_until = 0.0
+                except Exception:
+                    pass
+                if not self.capture_should_run():
+                    continue
+                if not self.recorder.is_capture_enabled():
+                    # Stale closed gate (hold leak / race) — hard arm
+                    self._arm_listen_after_tts(note="watchdog reabriu escuta")
+            except Exception:
+                pass
 
     def stop(self):
         self.stop_event.set()
@@ -1863,6 +2144,11 @@ class Pipeline:
             except queue.Empty:
                 # Idle tick: still apply deferred [g] if nothing is running.
                 self._try_apply_pending_language_swap()
+                # Keep escuta alive — heal any stuck capture gate ([n] still wins).
+                try:
+                    self.sync_capture_gate(log_resume=False)
+                except Exception:
+                    pass
                 continue
 
             # The recorder forwards device errors through the queue.
@@ -1906,43 +2192,97 @@ class Pipeline:
             ordered = self._should_order_chunks(sound_off)
 
             def _abort(message=None, kind="dim"):
-                """Release ordered slot; defer filter messages so they print in chunk order."""
+                """Release ordered slot; always return VOZ bar to escuta pronta.
+
+                Silent STT/filter skips used to leave the UI on
+                "Fim da fala — processando…" forever (looked like mic dead).
+                """
                 if ordered:
                     if message:
                         self._finish_chunk_slot(n, _ChunkSkip(message, kind=kind))
                     else:
                         self._finish_chunk_slot(n, None)
                 elif message:
+                    # Abort/filter notes belong on Sistema (not VOZ phrases)
                     if kind == "warn":
-                        ui.warn(message)
+                        ui.warn(message, panel="app")
                     elif kind == "error":
-                        ui.error(message)
+                        ui.error(message, panel="app")
                     else:
-                        ui.dim(message)
+                        ui.dim(message, panel="app")
+                try:
+                    note = (message or "").strip()
+                    if note:
+                        # Keep note short for the ready line
+                        if len(note) > 80:
+                            note = note[:77] + "…"
+                        ui.listen_ready(note)
+                    else:
+                        ui.listen_ready("chunk ignorado")
+                except Exception:
+                    try:
+                        ui.pipeline_stage("idle", source="voz")
+                    except Exception:
+                        pass
+                # Always re-assert capture gate after a skip (escuta stays ON)
+                try:
+                    self.sync_capture_gate(log_resume=False)
+                except Exception:
+                    pass
 
             if sound_off and self.cfg.VERBOSE:
-                ui.info(f"[chunk {n}] Processing (sound OFF)…")
+                ui.info(f"[chunk {n}] Processing (sound OFF)…", panel="app")
 
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] Iniciando processamento do chunk...")
+                ui.dim(
+                    f"[chunk {n}] [debug] Iniciando processamento do chunk...",
+                    panel="app",
+                )
             backlog = self.chunk_queue.qsize()
             # Backlog is operational signal — keep always; rest of progress is VERBOSE
             if backlog >= 3:
                 ui.warn(
                     f"processing is {backlog} chunks behind — "
-                    f"a smaller WHISPER_MODEL would keep up better."
+                    f"a smaller WHISPER_MODEL would keep up better.",
+                    panel="app",
                 )
 
             try:
                 self._process_chunk_body(item, n, sound_off, ordered, _abort)
             except Exception as exc:
-                ui.error(f"[chunk {n}] processing failed: {exc}")
+                ui.error(f"[chunk {n}] processing failed: {exc}", panel="app")
                 _abort()
         finally:
             self._mark_processor_leave()
 
     def _process_chunk_body(self, item, n, sound_off, ordered, _abort):
         sound_on = not sound_off
+        # Sistema: wipe prior noise; keep Languages|TTS|Sound|Mic + this chunk only
+        try:
+            ui.begin_chunk_sistema(n, pipeline=self)
+        except Exception:
+            pass
+
+        def _log_summary(heared_text, note=""):
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            total_ms = int((time.perf_counter() - t0) * 1000)
+            words = len((heared_text or "").split())
+            if self.is_mic_muted():
+                escuta = "OFF (mic mutado)"
+            elif self.is_output_playing():
+                escuta = "OFF (reproduzindo TTS — aguarde ou [x])"
+            elif sound_on:
+                escuta = "ON (mic ativo + som ON)"
+            elif sound_off:
+                escuta = "OFF (som mute, apenas texto)"
+            else:
+                escuta = "OFF"
+            ui.dim(
+                f"  [chunk {n}] {ts}  📝 Palavras: {words}  |  "
+                f"⏱ Total: {total_ms}ms  |  🔊 Escuta ativa: {escuta}"
+                + (f"  |  {note}" if note else ""),
+                panel="app",
+            )
 
         # --- Speech-to-text (or typed text via enew / edit re-queue) ---
         t0 = time.perf_counter()
@@ -1960,35 +2300,44 @@ class Pipeline:
                     panel="app",
                 )
         else:
+            ts_stt = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            ui.dim(f"  [chunk {n}] ⏱ STT         {ts_stt} — início", panel="app")
             ui.chunk_progress(n, "stt")
             try:
                 with self._stt_lock:
                     heard = self.transcriber.transcribe(item)
             except Exception as exc:
-                ui.error(f"[chunk {n}] STT failed: {exc}")
+                ui.error(f"[chunk {n}] STT failed: {exc}", panel="app")
                 _abort()
                 return
             t1 = time.perf_counter()
+            ts_stt_end = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            stt_ms = int((t1 - t0) * 1000)
+            ui.dim(
+                f"  [chunk {n}] ⏱ STT         {ts_stt_end} — fim ({stt_ms}ms)",
+                panel="app",
+            )
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] STT concluído com sucesso.")
+                ui.dim(
+                    f"[chunk {n}] [debug] STT concluído com sucesso.",
+                    panel="app",
+                )
 
             if not heard:
-                if self.cfg.VERBOSE:
-                    _abort(f"[chunk {n}] (no speech detected — skipped)", kind="warn")
-                else:
-                    _abort()
+                _abort(
+                    f"[chunk {n}] STT vazio — sem fala detectada (escuta segue)",
+                    kind="dim",
+                )
                 return
 
             # Pure silence-credit lines (whole chunk is "Legenda por …") — drop once.
             if getattr(self.cfg, "STT_HALLUCINATION_FILTER", True) and is_hallucination(
                 heard
             ):
-                if self.cfg.VERBOSE:
-                    _abort(
-                        f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
-                    )
-                else:
-                    _abort()
+                _abort(
+                    f'[chunk {n}] STT filtrado (alucinação): "{heard}"',
+                    kind="dim",
+                )
                 return
 
             # Long utterance + silence tail: strip trailing credit, keep real speech.
@@ -1999,29 +2348,22 @@ class Pipeline:
                     f"[chunk {n}] (removed STT tail hallucination from transcript)"
                 )
             if not heard:
-                if self.cfg.VERBOSE:
-                    _abort(
-                        f"[chunk {n}] (only hallucination in STT — skipped): "
-                        f'"{original_heard}"'
-                    )
-                else:
-                    _abort()
+                _abort(
+                    f'[chunk {n}] STT só alucinação — skipped: "{original_heard}"',
+                    kind="dim",
+                )
                 return
 
-            if should_discard_transcript(audio_item, heard, self.cfg):
-                if self.cfg.VERBOSE:
-                    _abort(
-                        f'[chunk {n}] (filtered STT hallucination — skipped): "{heard}"'
-                    )
-                else:
-                    _abort()
+            discard_why = transcript_discard_reason(audio_item, heard, self.cfg)
+            if discard_why:
+                _abort(
+                    f'[chunk {n}] STT descartado ({discard_why}): "{heard}"',
+                    kind="dim",
+                )
                 return
 
         if not heard:
-            if self.cfg.VERBOSE:
-                _abort(f"[chunk {n}] (empty text — skipped)", kind="warn")
-            else:
-                _abort()
+            _abort(f"[chunk {n}] texto vazio — skipped", kind="dim")
             return
 
         ui.chunk_progress(n, "heard", detail=heard)
@@ -2054,20 +2396,39 @@ class Pipeline:
 
         # Pre-TTS cue once per chunk (first segment only), not every sentence.
         pre_tts_cue_remaining = True
+        tts_engine_name = str(
+            getattr(self.synthesizer, "engine_name", None)
+            or getattr(self.cfg, "TTS_ENGINE", "edge")
+            or "edge"
+        ).lower()
+        tts_voice_label = str(
+            getattr(self.synthesizer, "voice_label", None)
+            or getattr(self.synthesizer, "voice_id", None)
+            or getattr(self.cfg, "TTS_VOICE", "")
+            or ""
+        )
 
         def on_segment(audio, sample_rate_):
             nonlocal tts_first_audio, time_to_audio, sample_rate, pre_tts_cue_remaining
             now = time.perf_counter()
             if tts_first_audio is None and t_tts_start is not None:
                 tts_first_audio = now - t_tts_start
+                # Instrument: prove which engine produced first audio + ms
+                try:
+                    ms = int(tts_first_audio * 1000)
+                    ui.dim(
+                        f"  [chunk {n}] ⏱ TTS first_chunk {ms}ms · "
+                        f"engine={tts_engine_name} · voice={tts_voice_label or '—'}",
+                        panel="app",
+                    )
+                except Exception:
+                    pass
             if time_to_audio is None:
                 time_to_audio = now - t0
             sample_rate = sample_rate_
             do_cue = pre_tts_cue_remaining
             pre_tts_cue_remaining = False
-            self._enqueue_playback(
-                audio, sample_rate_, False, pre_tts_cue=do_cue
-            )
+            self._enqueue_playback(audio, sample_rate_, False, pre_tts_cue=do_cue)
 
         will_synthesize = sound_on or (sound_off and not self._skip_tts_when_muted())
         if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
@@ -2140,6 +2501,12 @@ class Pipeline:
                     )
 
         try:
+            ts_tr = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            ui.dim(
+                f"  [chunk {n}] ⏱ Tradução    {ts_tr} — início "
+                f"({'cache HIT' if cache_hit else 'live LLM/Google'})",
+                panel="app",
+            )
             ui.chunk_progress(n, "translate")
             if cache_hit:
                 # Still show stream-less preview path as a normal translate
@@ -2151,6 +2518,8 @@ class Pipeline:
 
                 def on_token(partial):
                     ui.chunk_stream_update(n, partial)
+                    # Live TARGET on vcam while tokens stream (if [sub] ON)
+                    self._push_webcam_subtitle(partial)
                     if feeder is not None:
                         enqueue_segments(feeder.feed(partial))
 
@@ -2158,7 +2527,10 @@ class Pipeline:
             else:
                 translated = self.translator.translate(heard)
         except Exception as exc:
-            ui.error(f'[chunk {n}] translation failed for "{heard}": {exc}')
+            ui.error(
+                f'[chunk {n}] translation failed for "{heard}": {exc}',
+                panel="app",
+            )
             if segment_queue is not None:
                 segment_queue.put(None)
             if tts_thread is not None:
@@ -2166,6 +2538,12 @@ class Pipeline:
             _abort()
             return
         t2 = time.perf_counter()
+        ts_tr_end = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        tr_ms = int((t2 - t1) * 1000)
+        ui.dim(
+            f"  [chunk {n}] ⏱ Tradução    {ts_tr_end} — fim ({tr_ms}ms)",
+            panel="app",
+        )
 
         # Store MISS / forced live result into TM
         if (
@@ -2202,7 +2580,8 @@ class Pipeline:
         if self.cfg.VERBOSE:
             ui.dim(
                 f"[chunk {n}] [debug] Tradução concluída "
-                f"({'cache' if cache_hit else 'live'})."
+                f"({'cache' if cache_hit else 'live'}).",
+                panel="app",
             )
 
         if not translated:
@@ -2227,12 +2606,14 @@ class Pipeline:
         record_created_at = self._timestamp_now()
         if sound_on:
             if strip_note:
-                ui.dim(strip_note)
+                ui.dim(strip_note, panel="app")
             if self._use_streaming_llm_for_chunk() and not cache_hit:
                 ui.chunk_stream_done(n, heard, translated, from_cache=cache_badge)
             else:
                 # HIT has no token stream — always use preview with badge
                 ui.chunk_text_preview(n, heard, translated, from_cache=cache_badge)
+            # TARGET burn-in as soon as translation is ready (before/during TTS)
+            self._push_webcam_subtitle(translated)
             with self.history_lock:
                 self.history.append((n, heard, translated, audio_path))
             self._record_transcript(
@@ -2242,6 +2623,12 @@ class Pipeline:
         def _synthesize_chunk_audio(announce=True):
             nonlocal tts_audio, sample_rate, t_tts_start
             if announce:
+                ts_tts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                ui.dim(
+                    f"  [chunk {n}] ⏱ TTS         {ts_tts} — início · "
+                    f"engine={tts_engine_name} · voice={tts_voice_label or '—'}",
+                    panel="app",
+                )
                 ui.chunk_progress(n, "tts")
             if overlap_tts:
                 enqueue_segments(feeder.flush(translated))
@@ -2280,11 +2667,16 @@ class Pipeline:
                 "total": (t3 - t0) if t3 is not None else (t2 - t0),
                 "translate_cache": bool(cache_hit),
             }
+            if include_tts:
+                timing["tts_engine"] = tts_engine_name
+                if tts_voice_label:
+                    timing["tts_voice"] = tts_voice_label
             if include_tts and t3 is not None:
                 tts_start = t_tts_start if t_tts_start is not None else t2
                 timing["tts"] = t3 - tts_start
                 if tts_first_audio is not None:
                     timing["tts_first"] = tts_first_audio
+                    timing["tts_first_ms"] = int(tts_first_audio * 1000)
                 if time_to_audio is not None:
                     timing["time_to_audio"] = time_to_audio
                 if t_tts_start is not None:
@@ -2370,6 +2762,12 @@ class Pipeline:
                         created_at=record_created_at,
                     )
                 ui.chunk_progress(n, "ready_text")
+                _log_summary(heard)
+                # Sound OFF: no Cable playback — re-arm escuta now
+                try:
+                    self._arm_listen_after_tts()
+                except Exception:
+                    pass
                 if self.cfg.VERBOSE:
                     ui.dim(
                         f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS omitido."
@@ -2414,24 +2812,42 @@ class Pipeline:
                 n, heard, translated, timing=timing, created_at=record_created_at
             )
             ui.chunk_progress(n, "ready_text", detail="voz em segundo plano")
+            _log_summary(heard, note="TTS em background")
             self._enqueue_background_tts(n, _background_tts)
+            try:
+                self._arm_listen_after_tts()
+            except Exception:
+                pass
             if self.cfg.VERBOSE:
                 ui.dim(
-                    f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background."
+                    f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background.",
+                    panel="app",
                 )
             return
 
         try:
             _synthesize_chunk_audio()
         except Exception as exc:
-            ui.error(f"[chunk {n}] TTS failed: {exc}")
+            ui.error(f"[chunk {n}] TTS failed: {exc}", panel="app")
             return
 
         t3 = time.perf_counter()
+        ts_tts_end = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        tts_ms = int((t3 - (t_tts_start if t_tts_start else t2)) * 1000)
+        ui.dim(
+            f"  [chunk {n}] ⏱ TTS         {ts_tts_end} — fim ({tts_ms}ms)",
+            panel="app",
+        )
         if self.cfg.VERBOSE:
-            ui.dim(f"[chunk {n}] [debug] Síntese de voz (TTS) concluída com sucesso.")
+            ui.dim(
+                f"[chunk {n}] [debug] Síntese de voz (TTS) concluída com sucesso.",
+                panel="app",
+            )
         _finalize_chunk_timings(t3)
         ui.chunk_progress(n, "ready")
+        _log_summary(heard, note="TTS concluído")
+        # Do NOT sync/open capture here — playback thread still holds the gate
+        # until Cable/monitor play finishes. Opening early → eco TTS + freeze.
 
     def _persist_chunk(
         self,
@@ -2450,7 +2866,10 @@ class Pipeline:
         Ensures cache dir exists and path is absolute so Explorer matches UI.
         """
         if tts_audio is None or len(tts_audio) == 0:
-            ui.warn(f"[chunk {n}] Sem áudio na memória — WAV não gravado.")
+            ui.warn(
+                f"[chunk {n}] Sem áudio na memória — WAV não gravado.",
+                panel="app",
+            )
             return ""
 
         path = (audio_path or "").strip() or os.path.join(
@@ -2465,7 +2884,10 @@ class Pipeline:
             parent = os.path.dirname(path) or self.cache_dir
             os.makedirs(parent, exist_ok=True)
         except Exception as exc:
-            ui.error(f"[chunk {n}] Não criou pasta de áudio ({parent}): {exc}")
+            ui.error(
+                f"[chunk {n}] Não criou pasta de áudio ({parent}): {exc}",
+                panel="app",
+            )
             return ""
 
         rate = int(sample_rate or 24000)
@@ -2476,18 +2898,25 @@ class Pipeline:
                 audio = audio.mean(axis=1).astype(np.float32)
             sf.write(path, audio, rate)
         except Exception as exc:
-            ui.error(f"[chunk {n}] Erro ao salvar arquivo de áudio: {exc}")
-            ui.dim(f"   path={path}")
+            ui.error(
+                f"[chunk {n}] Erro ao salvar arquivo de áudio: {exc}",
+                panel="app",
+            )
+            ui.dim(f"   path={path}", panel="app")
             return ""
 
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
-            ui.error(f"[chunk {n}] WAV não encontrado após gravar: {path}")
+            ui.error(
+                f"[chunk {n}] WAV não encontrado após gravar: {path}",
+                panel="app",
+            )
             return ""
 
         if self.cfg.VERBOSE:
             ui.dim(
                 f"[chunk {n}] [debug] Áudio WAV gravado "
-                f"({os.path.getsize(path)} bytes): {path}"
+                f"({os.path.getsize(path)} bytes): {path}",
+                panel="app",
             )
 
         # Keep RAM history pointing at the real path
@@ -2512,9 +2941,15 @@ class Pipeline:
                 n, heard, translated, created_at=created_at, timing=timing
             )
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] Metadados gravados com sucesso no SQLite.")
+                ui.dim(
+                    f"[chunk {n}] [debug] Metadados gravados com sucesso no SQLite.",
+                    panel="app",
+                )
         except Exception as exc:
-            ui.error(f"[chunk {n}] Erro ao salvar no banco de dados: {exc}")
+            ui.error(
+                f"[chunk {n}] Erro ao salvar no banco de dados: {exc}",
+                panel="app",
+            )
             # File is on disk even if DB fails
         return path
 
@@ -2685,6 +3120,7 @@ class Pipeline:
                         ui.pipeline_stage("idle", source="voz")
                     except Exception:
                         pass
+                    # release → hangover (if mute-capture) → _arm_listen_after_tts
                     self._release_capture_after_playback()
         finally:
             self._force_release_capture_hold()

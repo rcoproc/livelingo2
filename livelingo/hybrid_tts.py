@@ -26,15 +26,23 @@ class HybridSynthesizer:
     """edge-tts first chunk + Piper tail — best time-to-first-audio on slow CPUs."""
 
     supports_live_streaming = True
+    engine_name = "hybrid"
 
     def __init__(self, config, log=print):
         self.cfg = config
         self.log = log
+        self.engine_name = "hybrid"
         self.edge = Synthesizer(config)
         self.piper = PiperSynthesizer(config, log=log)
         self.segment_min_chars = self.piper.segment_min_chars
         self._cache_rate = 22050
         self._first_played = False
+
+    @property
+    def voice_label(self):
+        if not self._first_played:
+            return f"edge:{self.edge.voice_label}+piper:{self.piper.voice_label}"
+        return f"piper:{self.piper.voice_label}"
 
     def begin_utterance(self):
         """Reset per-chunk state so the first clause uses edge-tts again."""

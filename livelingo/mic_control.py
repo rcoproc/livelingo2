@@ -271,26 +271,28 @@ class MicController:
 
     def is_muted(self) -> bool:
         """
-        Effective mute for UI: OS mute if known, else app gate.
-        If OS says unmuted but app gate is on, still treat as muted.
+        LiveLingo mute = **app gate only** (comando [n]).
+
+        OS tray mute is reported separately (diagnose / warn_if_muted) and must
+        NOT pause VOZ escuta — only [n] intentionally stops listening. Mixing
+        OS mute into this flag made "escuta morrer" after TTS when Windows
+        reported mute on a mismatched endpoint; [n] seemed to "fix" it.
         """
         with self._lock:
-            os_mute = self.get_os_mute()
-            if self._app_muted:
-                return True
-            if os_mute is not None:
-                return os_mute
-            return False
+            return bool(self._app_muted)
+
+    def is_os_muted(self) -> Optional[bool]:
+        """Windows Core Audio mute flag, or None if unavailable."""
+        return self.get_os_mute()
 
     def toggle(self) -> Tuple[bool, bool, str]:
         """
-        Toggle mute (OS when possible + app gate).
+        Toggle **app** mute ([n]) and mirror to OS tray when possible.
 
         Returns (now_muted, os_ok, endpoint_name).
         """
         with self._lock:
-            current = self.is_muted()
-            target = not current
+            target = not bool(self._app_muted)
             os_ok = self.set_os_mute(target)
             self._app_muted = target
             name = self.resolved_name()
@@ -314,7 +316,9 @@ class MicController:
                 "os_mute": os_mute,
                 "app_mute": self._app_muted,
                 "volume": vol,
-                "effectively_muted": self.is_muted()
+                # LiveLingo paused only via [n]; OS mute/vol still warned at start
+                "effectively_muted": bool(self._app_muted)
+                or (os_mute is True)
                 or (vol is not None and vol <= 0.001),
             }
 

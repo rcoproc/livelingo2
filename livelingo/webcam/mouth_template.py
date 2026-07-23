@@ -19,11 +19,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .face_roi import (
-    OUTER_LIP_IDX,
     _LIP_LEFT,
     _LIP_LOWER,
     _LIP_RIGHT,
     _LIP_UPPER,
+    OUTER_LIP_IDX,
     FaceMouthROI,
     MouthROI,
 )
@@ -515,6 +515,7 @@ def align_and_blend(
             if int(core.sum()) > 80:
                 live_px = out[core].astype(np.float32)
                 warp_px = warped[core].astype(np.float32)
+
                 # Rec.601 luma on BGR order
                 def _luma(px: np.ndarray) -> float:
                     return float(
@@ -546,6 +547,55 @@ def align_and_blend(
     blended = warped.astype(np.float32) * a3 + out.astype(np.float32) * (1.0 - a3)
     out = blended.clip(0, 255).astype(np.uint8)
     return out
+
+
+def cover_frame_with_closed_image(
+    live_bgr: np.ndarray,
+    template: MouthTemplate,
+    *,
+    flip_h: bool = False,
+) -> np.ndarray:
+    """
+    F11: fill the **entire** virtual-cam frame with the closed-mouth photo.
+
+    Unlike F10 (face plate only), live video is fully hidden — letterbox-free
+    cover crop (scale to fill, center crop).
+    """
+    try:
+        import cv2
+    except Exception:
+        return live_bgr
+    if live_bgr is None or getattr(live_bgr, "size", 0) == 0:
+        return live_bgr
+    if template is None or not template.ok:
+        return live_bgr
+    src = template.image_bgr
+    if flip_h:
+        try:
+            src = template.with_horizontal_flip().image_bgr
+        except Exception:
+            src = np.ascontiguousarray(src[:, ::-1])
+    h, w = live_bgr.shape[:2]
+    th, tw = src.shape[:2]
+    if th < 2 or tw < 2:
+        return live_bgr
+    # Cover: scale so both dims >= target, then center-crop
+    scale = max(float(w) / float(tw), float(h) / float(th))
+    nw = max(w, int(round(tw * scale)))
+    nh = max(h, int(round(th * scale)))
+    try:
+        resized = cv2.resize(src, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    except Exception:
+        return live_bgr
+    x0 = max(0, (nw - w) // 2)
+    y0 = max(0, (nh - h) // 2)
+    crop = resized[y0 : y0 + h, x0 : x0 + w]
+    if crop.shape[0] != h or crop.shape[1] != w:
+        try:
+            crop = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
+        except Exception:
+            return live_bgr
+    return np.ascontiguousarray(crop)
 
 
 def open_from_closed_template(
@@ -604,9 +654,9 @@ def open_from_closed_template(
     yy, xx = np.mgrid[0:ch, 0:cw].astype(np.float32)
     lx = max(8.0, lip_w * 0.45)
     ly = max(5.0, half_h * 0.4)
-    a = np.exp(
-        -(((xx - (cx - x0)) / lx) ** 2 + ((yy - mid) / ly) ** 2)
-    ).astype(np.float32)
+    a = np.exp(-(((xx - (cx - x0)) / lx) ** 2 + ((yy - mid) / ly) ** 2)).astype(
+        np.float32
+    )
     a = np.clip(a, 0.0, 1.0)
 
     # Soft neutral darken in the lip gap only (no red cast, no teeth paint)
@@ -618,8 +668,10 @@ def open_from_closed_template(
         ).astype(np.float32)
         ca = np.clip(ca * (0.08 + 0.14 * amt), 0.0, 0.28)
         opened = (
-            opened.astype(np.float32) * (1.0 - 0.40 * ca[:, :, None])
-        ).clip(0, 255).astype(np.uint8)
+            (opened.astype(np.float32) * (1.0 - 0.40 * ca[:, :, None]))
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
 
     a3 = a[:, :, None]
     blended = opened.astype(np.float32) * a3 + crop.astype(np.float32) * (1.0 - a3)
