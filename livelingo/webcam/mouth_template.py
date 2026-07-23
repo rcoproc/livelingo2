@@ -548,6 +548,55 @@ def align_and_blend(
     return out
 
 
+def cover_frame_with_closed_image(
+    live_bgr: np.ndarray,
+    template: MouthTemplate,
+    *,
+    flip_h: bool = False,
+) -> np.ndarray:
+    """
+    F11: fill the **entire** virtual-cam frame with the closed-mouth photo.
+
+    Unlike F10 (face plate only), live video is fully hidden — letterbox-free
+    cover crop (scale to fill, center crop).
+    """
+    try:
+        import cv2
+    except Exception:
+        return live_bgr
+    if live_bgr is None or getattr(live_bgr, "size", 0) == 0:
+        return live_bgr
+    if template is None or not template.ok:
+        return live_bgr
+    src = template.image_bgr
+    if flip_h:
+        try:
+            src = template.with_horizontal_flip().image_bgr
+        except Exception:
+            src = np.ascontiguousarray(src[:, ::-1])
+    h, w = live_bgr.shape[:2]
+    th, tw = src.shape[:2]
+    if th < 2 or tw < 2:
+        return live_bgr
+    # Cover: scale so both dims >= target, then center-crop
+    scale = max(float(w) / float(tw), float(h) / float(th))
+    nw = max(w, int(round(tw * scale)))
+    nh = max(h, int(round(th * scale)))
+    try:
+        resized = cv2.resize(src, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    except Exception:
+        return live_bgr
+    x0 = max(0, (nw - w) // 2)
+    y0 = max(0, (nh - h) // 2)
+    crop = resized[y0 : y0 + h, x0 : x0 + w]
+    if crop.shape[0] != h or crop.shape[1] != w:
+        try:
+            crop = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
+        except Exception:
+            return live_bgr
+    return np.ascontiguousarray(crop)
+
+
 def open_from_closed_template(
     closed_bgr: np.ndarray,
     live_roi: MouthROI,

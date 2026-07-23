@@ -200,7 +200,7 @@ _CHUNK_PROGRESS = {
     "translated": ("🌐", "Tradução pronta"),
     "tts": ("🔊", "Gerando voz traduzida…"),
     "tts_bg": ("🔊", "Gerando voz em segundo plano…"),
-    "ready": ("✅", "Pronto — tradução completa"),
+    "ready": ("✅", "TTS pronto — a reproduzir (aguarde o áudio · [x] corta)"),
     "ready_text": ("✅", "Pronto — texto completo (sem áudio ao vivo)"),
 }
 
@@ -636,6 +636,69 @@ def listen_progress(active: bool):
         dim(f"⏹️  Fim da fala — processando…{suffix}", panel="app")
         # Utterance closed — STT usually follows immediately
         pipeline_stage("stt", source="voz")
+
+
+_listen_ready_state = {"t": 0.0}
+_tts_playing_state = {"on": False}
+
+
+def set_tts_playing(active: bool, detail: str = "") -> None:
+    """
+    TTS audio is on Cable and/or headphones — mic closed; do not speak.
+
+    Visual + log so long playback does not look like "escuta pronta".
+    """
+    active = bool(active)
+    _tts_playing_state["on"] = active
+    if active:
+        try:
+            pipeline_stage("play", source="voz")
+        except Exception:
+            pass
+        extra = detail or ""
+        dim(
+            f"🔊 Reproduzindo tradução… NÃO fale · [x] interrompe{extra}",
+            panel="app",
+        )
+
+
+def is_tts_playing() -> bool:
+    return bool(_tts_playing_state.get("on"))
+
+
+def listen_ready(note: str = "", *, force: bool = False):
+    """
+    Return VOZ pipe to idle listening after a skip / TTS playback / empty STT.
+
+    Without this, a silent STT abort left the bar on STT and the log on
+    "Fim da fala — processando…", so the user thought listening was dead.
+    Rate-limited so multi-segment TTS does not spam the log.
+    Use force=True after real TTS playback ends (must always show).
+    """
+    import time as _time
+
+    # Never claim "escuta pronta" while TTS is still flagged playing
+    if _tts_playing_state.get("on") and not force:
+        return
+    if force:
+        _tts_playing_state["on"] = False
+
+    try:
+        pipeline_stage("idle", source="voz")
+    except Exception:
+        pass
+    # Mark listen state idle so the next onset is not rate-limited as a flap
+    try:
+        _listen_log_state["active"] = False
+    except Exception:
+        pass
+    now = _time.monotonic()
+    last = float(_listen_ready_state.get("t") or 0.0)
+    if not force and (now - last) < 0.8:
+        return
+    _listen_ready_state["t"] = now
+    extra = f" — {note}" if (note or "").strip() else ""
+    dim(f"🎙️  Escuta pronta (mic aberto){extra}", panel="app")
 
 
 def _emit_chunk_progress_line(stage: str, text: str) -> None:

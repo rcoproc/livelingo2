@@ -104,22 +104,50 @@ def test_should_discard_low_energy_short_text():
     cfg = SimpleNamespace(
         STT_HALLUCINATION_FILTER=True,
         SAMPLE_RATE=16000,
-        STT_MIN_RMS=0.010,
-        STT_LOW_ENERGY_MAX_WORDS=6,
-        STT_LOW_ENERGY_MAX_SEC=2.5,
+        STT_MIN_RMS=0.004,
+        STT_LOW_ENERGY_MAX_WORDS=2,
+        STT_LOW_ENERGY_MAX_SEC=1.2,
     )
-    # ~0.1 s of near-silence + short text
+    # ~0.1 s of near-silence + ultra-short text (1–2 words)
     audio = np.zeros(1600, dtype=np.float32)
     assert should_discard_transcript(audio, "hi there", cfg) is True
+    assert should_discard_transcript(audio, "ok", cfg) is True
+
+
+def test_should_keep_quiet_real_pt_phrases():
+    """Regression: soft mic + short clause must not be energy-dropped.
+
+    User log: "E aí, vai encarar?" / "Tem que ser ágil para encarar."
+    were discarded with old max_words=6 + max_sec=2.5 + rms=0.01.
+    """
+    from livelingo.stt_filter import transcript_discard_reason
+
+    cfg = SimpleNamespace(
+        STT_HALLUCINATION_FILTER=True,
+        SAMPLE_RATE=16000,
+        STT_MIN_RMS=0.004,
+        STT_LOW_ENERGY_MAX_WORDS=2,
+        STT_LOW_ENERGY_MAX_SEC=1.2,
+    )
+    # Quiet audio ~2.4s (same order as user VAD end)
+    n = int(2.4 * 16000)
+    quiet = np.ones(n, dtype=np.float32) * 0.006  # below old 0.010 floor
+    for text in (
+        "E aí, vai encarar?",
+        "Tem que ser ágil para encarar.",
+        "So, are you going to face it?",
+    ):
+        assert should_discard_transcript(quiet, text, cfg) is False, text
+        assert transcript_discard_reason(quiet, text, cfg) is None, text
 
 
 def test_should_keep_loud_real_speech():
     cfg = SimpleNamespace(
         STT_HALLUCINATION_FILTER=True,
         SAMPLE_RATE=16000,
-        STT_MIN_RMS=0.010,
-        STT_LOW_ENERGY_MAX_WORDS=6,
-        STT_LOW_ENERGY_MAX_SEC=2.5,
+        STT_MIN_RMS=0.004,
+        STT_LOW_ENERGY_MAX_WORDS=2,
+        STT_LOW_ENERGY_MAX_SEC=1.2,
     )
     audio = np.ones(8000, dtype=np.float32) * 0.2  # 0.5s
     text = "We should schedule the architecture review for next week"
