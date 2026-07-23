@@ -104,6 +104,12 @@ _COMMANDS: list[dict[str, str]] = [
         "token": "cam closed",
         "sort": "cam-closed",
     },
+    {
+        "id": "cam_full",
+        "group": "audio",
+        "token": "cam full",
+        "sort": "cam-full",
+    },
     {"id": "lo", "group": "sentence", "token": "lo", "sort": "lo"},
     {"id": "lt", "group": "sentence", "token": "lt", "sort": "lt"},
     # --- Session ---
@@ -319,14 +325,15 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_lc": "Live Captions pause/resume",
         "desc_lc": (
-            "Toggle pause for **Windows LiveCaptions** translation (strip above the log tabs). "
+            "Toggle **Windows LiveCaptions** translation (strip above the log tabs). "
+            "Default **OFF** at launch (`LIVE_CAPTIONS_START_ON_LAUNCH=false`) — VOZ/mic is the active path. "
             "Independent of mic→Whisper. Requires Win11 + `LIVE_CAPTIONS_ENABLED=true` + `uiautomation`. "
             "Also: `lc on` / `lc off` / `lc show` / `lc hide` / `lc status`."
         ),
-        "title_lc_on": "Resume LiveCaptions",
-        "desc_lc_on": "Resume caption translation after pause. Aliases: `lc resume`, `lc start`.",
+        "title_lc_on": "Start / resume LiveCaptions",
+        "desc_lc_on": "Start LiveCaptions scrape if off, or resume after pause. Aliases: `lc resume`, `lc start`.",
         "title_lc_off": "Pause LiveCaptions",
-        "desc_lc_off": "Pause caption translation (strip freezes; mic pipeline keeps running). Aliases: `lc pause`, `lc stop`.",
+        "desc_lc_off": "Turn LC OFF (pause strip; mic/VOZ pipeline keeps running). Aliases: `lc pause`, `lc stop`.",
         "title_lc_show": "Show LiveCaptions window",
         "desc_lc_show": "Restore the Windows LiveCaptions window (unhide). Alias: `lc restore`.",
         "title_lc_hide": "Hide LiveCaptions window",
@@ -358,8 +365,14 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_cam_closed": "Toggle closed mouth (F10)",
         "desc_cam_closed": (
-            "**F10** or `cam closed`: show/hide closed-mouth photo manually. "
+            "**F10** or `cam closed`: show/hide closed-mouth **face plate** on live video. "
             "`cam closed auto` returns to VAD automatic mode."
+        ),
+        "title_cam_full": "Full-frame closed freeze (F11)",
+        "desc_cam_full": (
+            "**F11** or `cam full` / `cam freeze`: fill the **entire** virtual camera "
+            "with the closed-mouth photo (hides live video; does **not** fullscreen the TUI). "
+            "Press again to restore live. Requires `cam snap closed` template."
         ),
         "title_lo": "List source only",
         "desc_lo": "List only **source** (heard) lines for the session.",
@@ -610,14 +623,15 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_lc": "Live Captions pausar/retomar",
         "desc_lc": (
-            "Alterna pausa da tradução de **Windows LiveCaptions** (faixa acima das abas de log). "
+            "Liga/desliga tradução de **Windows LiveCaptions** (faixa acima das abas de log). "
+            "Padrão **OFF** na entrada (`LIVE_CAPTIONS_START_ON_LAUNCH=false`) — escuta ativa = caminho VOZ/mic. "
             "Independente do mic→Whisper. Requer Win11 + `LIVE_CAPTIONS_ENABLED=true` + `uiautomation`. "
             "Também: `lc on` / `lc off` / `lc show` / `lc hide` / `lc status`."
         ),
-        "title_lc_on": "Retomar LiveCaptions",
-        "desc_lc_on": "Retoma a tradução de legendas após pausa. Aliases: `lc resume`, `lc start`.",
-        "title_lc_off": "Pausar LiveCaptions",
-        "desc_lc_off": "Pausa a tradução de legendas (faixa congela; pipeline do mic continua). Aliases: `lc pause`, `lc stop`.",
+        "title_lc_on": "Iniciar / retomar LiveCaptions",
+        "desc_lc_on": "Inicia o scrape se estiver OFF, ou retoma após pausa. Aliases: `lc resume`, `lc start`.",
+        "title_lc_off": "Desligar LiveCaptions",
+        "desc_lc_off": "Desliga LC (pausa a faixa; pipeline VOZ/mic continua). Aliases: `lc pause`, `lc stop`.",
         "title_lc_show": "Mostrar janela LiveCaptions",
         "desc_lc_show": "Restaura a janela do Windows LiveCaptions (desoculta). Alias: `lc restore`.",
         "title_lc_hide": "Ocultar janela LiveCaptions",
@@ -649,8 +663,14 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_cam_closed": "Boca calada (F10)",
         "desc_cam_closed": (
-            "**F10** ou `cam closed`: mostra/tira a foto de boca calada manualmente. "
+            "**F10** ou `cam closed`: mostra/tira a **placa de rosto** (boca calada) no vídeo ao vivo. "
             "`cam closed auto` volta ao modo automático (VAD)."
+        ),
+        "title_cam_full": "Tela closed inteira (F11)",
+        "desc_cam_full": (
+            "**F11** ou `cam full` / `cam freeze` / `cam tela`: preenche a câmera virtual "
+            "com a **foto closed inteira** (esconde o vídeo ao vivo; **não** maximiza a TUI). "
+            "Outro F11 volta ao vivo. Precisa de `cam snap closed`."
         ),
         "title_lo": "Listar só source",
         "desc_lo": "Lista só as linhas **source** (ouvidas) da sessão.",
@@ -829,13 +849,14 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_lc": "Live Captions pausar/reanudar",
         "desc_lc": (
-            "Pausa/reanuda Windows LiveCaptions (franja sobre las pestañas). "
-            "`lc on`/`off`/`show`/`hide`/`status`. Requiere Win11 + uiautomation."
+            "Activa/desactiva Windows LiveCaptions (franja sobre las pestañas). "
+            "Por defecto **OFF** al entrar. `lc on`/`off`/`show`/`hide`/`status`. "
+            "Requiere Win11 + uiautomation."
         ),
-        "title_lc_on": "Reanudar LiveCaptions",
-        "desc_lc_on": "Reanuda la traducción de subtítulos.",
-        "title_lc_off": "Pausar LiveCaptions",
-        "desc_lc_off": "Pausa la traducción de subtítulos (el mic sigue).",
+        "title_lc_on": "Iniciar / reanudar LiveCaptions",
+        "desc_lc_on": "Inicia el scrape si está OFF, o reanuda tras pausa.",
+        "title_lc_off": "Apagar LiveCaptions",
+        "desc_lc_off": "Apaga LC (pausa la franja; el mic/VOZ sigue).",
         "title_lc_show": "Mostrar ventana LiveCaptions",
         "desc_lc_show": "Restaura la ventana de LiveCaptions. Alias: `lc restore`.",
         "title_lc_hide": "Ocultar ventana LiveCaptions",

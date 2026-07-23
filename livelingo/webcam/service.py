@@ -46,6 +46,7 @@ from .mouth_template import (
     ClosedMouthTemplateStore,
     align_and_blend,
     compute_freeze_plate_geom,
+    cover_frame_with_closed_image,
     load_template,
     open_from_closed_template,
     save_template_from_frame,
@@ -237,6 +238,9 @@ class WebcamLipSyncService:
         self._closed_manual_mode = False
         self._closed_manual_on = False
         self._closed_gen = 0  # increments every F10 so status/debug can see toggles
+        # F11: full-frame freeze with closed photo (hides all live video)
+        self._closed_full_frame_on = False
+        self._closed_full_gen = 0
         self._closed_auto = bool(getattr(config, "WEBCAM_CLOSED_AUTO", True))
         self._closed_apply_ok = 0  # frames successfully blended (debug)
         self._closed_apply_fail = 0
@@ -715,7 +719,7 @@ class WebcamLipSyncService:
 
     def toggle_closed_mouth_manual(self) -> Tuple[bool, str]:
         """
-        F10: toggle closed-mouth photo ON/OFF (manual).
+        F10: toggle closed-mouth face plate ON/OFF (manual).
 
         Enters manual mode (disables VAD auto for this session until
         ``set_closed_mouth_auto()``). Returns (is_on, status_message).
@@ -753,7 +757,7 @@ class WebcamLipSyncService:
                     f"Boca calada ON gen={gen} — vcam=false; [cam status]"
                 )
             return True, (
-                f"Boca calada ON gen={gen} — foto no vídeo | "
+                f"Boca calada ON gen={gen} — foto no rosto | "
                 f"tpl={self._template_store.path() or 'ok'} | F10 tira"
             )
         return False, (
@@ -780,11 +784,71 @@ class WebcamLipSyncService:
             return "Boca calada AUTO (VAD) — foto só enquanto o mic ouve fala"
         return "Boca calada AUTO desligado (WEBCAM_CLOSED_AUTO=false) — use F10"
 
+    def toggle_closed_full_frame(self) -> Tuple[bool, str]:
+        """
+        F11: toggle full-frame closed photo (covers entire virtual cam).
+
+        Unlike F10 (face plate on live video), this hides 100% of the live
+        feed and shows only the closed-mouth template scaled to fill the frame.
+        """
+        try:
+            if not self._template_store.loaded:
+                self._template_store.load_from_config(self.cfg)
+        except Exception:
+            pass
+        try:
+            self.clear_tts_audio()
+        except Exception:
+            pass
+        with self._vad_lock:
+            self._closed_full_frame_on = not self._closed_full_frame_on
+            on = bool(self._closed_full_frame_on)
+            self._closed_full_gen = int(self._closed_full_gen) + 1
+            gen = self._closed_full_gen
+            # Full-frame freeze supersedes face plate while ON
+            if on:
+                self._closed_manual_mode = True
+                self._closed_manual_on = False
+        if on:
+            if not self._template_store.loaded:
+                return True, (
+                    f"Tela closed ON gen={gen} — sem foto: [cam snap closed]"
+                )
+            if not self.is_enabled() or not self._started:
+                return True, (
+                    f"Tela closed ON gen={gen} — ative [cam on] + Teams=OBS Virtual Cam"
+                )
+            snap = self.snapshot()
+            if not snap.get("vcam_ready"):
+                return True, (
+                    f"Tela closed ON gen={gen} — vcam=false; [cam status]"
+                )
+            return True, (
+                f"Tela closed ON gen={gen} — foto INTEIRA no vídeo "
+                f"(sem live) | tpl={self._template_store.path() or 'ok'} | F11 tira"
+            )
+        return False, (
+            f"Tela closed OFF gen={gen} — vídeo ao vivo | F11 congela de novo"
+        )
+
+    def set_closed_full_frame(self, on: bool) -> Tuple[bool, str]:
+        """Force full-frame closed freeze on/off."""
+        with self._vad_lock:
+            self._closed_full_frame_on = bool(on)
+            on = bool(self._closed_full_frame_on)
+            if on:
+                self._closed_manual_mode = True
+                self._closed_manual_on = False
+        if on:
+            return True, "Tela closed ON (manual full-frame)"
+        return False, "Tela closed OFF (manual full-frame)"
+
     def closed_mouth_state(self) -> dict:
         with self._vad_lock:
             return {
                 "manual_mode": self._closed_manual_mode,
                 "manual_on": self._closed_manual_on,
+                "full_frame_on": self._closed_full_frame_on,
                 "auto": self._closed_auto,
                 "vad_speech": self.is_mic_hearing_speech(),
             }
@@ -847,6 +911,8 @@ class WebcamLipSyncService:
                 "vad_speech": self.is_mic_hearing_speech(),
                 "closed_manual": self._closed_manual_mode,
                 "closed_manual_on": self._closed_manual_on,
+                "closed_full_frame_on": self._closed_full_frame_on,
+                "closed_full_gen": self._closed_full_gen,
                 "closed_auto": self._closed_auto,
                 "closed_gen": self._closed_gen,
                 "closed_apply_ok": self._closed_apply_ok,
@@ -1324,22 +1390,60 @@ class WebcamLipSyncService:
                         open_amt = 0.0
 
                 tpl = self._template_store.get()
-                # F10 manual: ignore stuck audio.is_playing() for show/hide reliability
+                # F10 / F11 manual flags
                 with self._vad_lock:
+                    full_frame_on = bool(self._closed_full_frame_on)
                     manual_on = bool(
                         self._closed_manual_mode and self._closed_manual_on
                     )
-                if manual_on and tpl is not None and tpl.ok:
-                    use_tpl = True  # F10 ON always paints (even if TTS ring stale)
-                else:
-                    use_tpl = bool(
-                        tpl is not None
-                        and tpl.ok
-                        and self.should_show_closed_template(playing=playing)
-                    )
 
-                if use_tpl:
-                    # F10 / VAD: freeze plate (priority over TTS morph while manual ON)
+                # F11: entire virtual-cam frame = closed photo (hides live video)
+                if full_frame_on and tpl is not None and tpl.ok:
+                    try:
+                        out = cover_frame_with_closed_image(
+                            frame,
+                            tpl,
+                            flip_h=self._template_flip_h,
+                        )
+                        self._closed_apply_ok += 1
+                    except Exception as exc:
+                        self._closed_apply_fail += 1
+                        self._set_error(f"closed-full-frame: {exc}")
+                        out = frame
+                elif manual_on and tpl is not None and tpl.ok:
+                    use_tpl = True  # F10 ON always paints (even if TTS ring stale)
+                    roi_use = roi
+                    if not roi.face_ok:
+                        try:
+                            roi_use = self.roi._heuristic_mouth_roi(frame)
+                        except Exception:
+                            roi_use = roi
+                    try:
+                        out = align_and_blend(
+                            frame,
+                            roi_use,
+                            tpl,
+                            feather_px=int(
+                                getattr(self.cfg, "WEBCAM_TEMPLATE_FEATHER_PX", 24)
+                                or 24
+                            ),
+                            region_scale=float(
+                                getattr(self.cfg, "WEBCAM_TEMPLATE_REGION_SCALE", 1.15)
+                                or 1.15
+                            ),
+                            flip_h=self._template_flip_h,
+                        )
+                        self._closed_apply_ok += 1
+                    except Exception as exc:
+                        self._closed_apply_fail += 1
+                        self._set_error(f"closed-template blend: {exc}")
+                        out = frame
+                elif (
+                    tpl is not None
+                    and tpl.ok
+                    and self.should_show_closed_template(playing=playing)
+                ):
+                    # VAD auto face plate
                     roi_use = roi
                     if not roi.face_ok:
                         try:
@@ -1373,10 +1477,16 @@ class WebcamLipSyncService:
                     else:
                         out = frame
                 else:
-                    # F10 OFF / silence: 100% live
+                    # F10/F11 OFF / silence: 100% live
                     out = frame
 
-                if self._sync_marker and roi.face_ok and (use_tpl or playing):
+                frozen = bool(full_frame_on or manual_on)
+                if (
+                    self._sync_marker
+                    and roi.face_ok
+                    and (frozen or playing)
+                    and not full_frame_on
+                ):
                     out = FaceMouthROI.draw_sync_marker(
                         out, roi, open_amt=open_amt, active=playing
                     )

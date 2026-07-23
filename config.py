@@ -118,10 +118,12 @@ STT_INITIAL_PROMPT = _get_str("STT_INITIAL_PROMPT", "")
 
 # Drop common silence hallucinations (e.g. "Legenda por …", "Thanks for watching").
 STT_HALLUCINATION_FILTER = _get_bool("STT_HALLUCINATION_FILTER", True)
-# Heuristic: very quiet + short chunk + few words → discard.
-STT_MIN_RMS = _get_float("STT_MIN_RMS", 0.010)
-STT_LOW_ENERGY_MAX_WORDS = _get_int("STT_LOW_ENERGY_MAX_WORDS", 6)
-STT_LOW_ENERGY_MAX_SEC = _get_float("STT_LOW_ENERGY_MAX_SEC", 2.5)
+# Low-energy discard: ONLY near-silence + ultra-short text (1–2 words).
+# ≥3 words always kept — quiet "E aí, vai encarar?" must not be dropped.
+# Old defaults (rms=0.01, words≤6, sec≤2.5) false-positive on soft mics.
+STT_MIN_RMS = _get_float("STT_MIN_RMS", 0.004)
+STT_LOW_ENERGY_MAX_WORDS = _get_int("STT_LOW_ENERGY_MAX_WORDS", 2)
+STT_LOW_ENERGY_MAX_SEC = _get_float("STT_LOW_ENERGY_MAX_SEC", 1.2)
 # Do not enqueue capture chunks shorter than this (seconds) when RMS is very low.
 CAPTURE_TAIL_MAX_SEC = _get_float("CAPTURE_TAIL_MAX_SEC", 2.0)
 
@@ -334,7 +336,8 @@ MAX_CHUNK_DURATION = _get_float("MAX_CHUNK_DURATION", 60.0)
 # get cut off, lower this; if background noise triggers chunks, raise it.
 # Typical mic values: silence ~0.002-0.01, speech ~0.02-0.15.
 # Laptop / built-in mics often need 0.02–0.04 (noise floor is higher).
-SILENCE_THRESHOLD = _get_float("SILENCE_THRESHOLD", 0.015)
+# Soft conversational speech often sits ~0.008–0.02; punchy short lines higher.
+SILENCE_THRESHOLD = _get_float("SILENCE_THRESHOLD", 0.013)
 
 # Consecutive "loud" blocks (~30 ms each) required before VAD enters speech.
 # Filters clicks, keyboard noise, and short room spikes. 2 ≈ 60 ms of energy.
@@ -342,16 +345,18 @@ SILENCE_THRESHOLD = _get_float("SILENCE_THRESHOLD", 0.015)
 VAD_ONSET_BLOCKS = _get_int("VAD_ONSET_BLOCKS", 2)
 
 # Quiet blocks allowed mid-onset without resetting the counter (soft PT starts).
-# 2 ≈ 60 ms dip tolerance between "está" and the louder rest of the word.
-VAD_ONSET_GAP_BLOCKS = _get_int("VAD_ONSET_GAP_BLOCKS", 2)
+# Higher helps "eu acho…", "está valendo…" (unstressed openers).
+VAD_ONSET_GAP_BLOCKS = _get_int("VAD_ONSET_GAP_BLOCKS", 4)
 
 # While waiting for speech onset, multiply SILENCE_THRESHOLD by this (<1 = more
-# sensitive) so unstressed first syllables still count toward onset.
-VAD_ONSET_THRESHOLD_SCALE = _get_float("VAD_ONSET_THRESHOLD_SCALE", 0.75)
+# sensitive) so soft / unstressed first syllables still count toward onset.
+# Not "intonation" — pure energy. 0.5 ≈ twice as sensitive at onset vs mid-speech.
+VAD_ONSET_THRESHOLD_SCALE = _get_float("VAD_ONSET_THRESHOLD_SCALE", 0.50)
 
 # Base silence (seconds) before a chunk ends. Adaptive VAD scales this up while
 # you keep talking (long monologues tolerate longer pauses between paragraphs).
-SILENCE_DURATION = _get_float("SILENCE_DURATION", 1.2)
+# 2.0–2.5 recommended for natural long phrases; 1.2 felt too eager mid-comma.
+SILENCE_DURATION = _get_float("SILENCE_DURATION", 2.0)
 
 # Longer speech requires longer silence to end the chunk (paragraph pauses).
 VAD_ADAPTIVE_SILENCE = _get_bool("VAD_ADAPTIVE_SILENCE", True)
@@ -458,10 +463,12 @@ PLAYBACK_BLOCK_MS = _get_int("PLAYBACK_BLOCK_MS", 80)
 # Side effect: you cannot barge-in while translation audio is playing.
 # Keep True for speaker testing; set False for headphones + VB-Cable full-duplex.
 MUTE_CAPTURE_DURING_PLAYBACK = _get_bool("MUTE_CAPTURE_DURING_PLAYBACK", True)
-
+# After TTS play ends, keep STT gate closed this long (ms) so self-heal cannot
+# reopen onto speaker ring-out. 600–800 recommended with open USB speakers.
 # Extra silence after TTS ends before re-opening the mic (speaker ring-out).
-# Milliseconds. Raise if the loop still catches the last word of the TTS.
-MUTE_CAPTURE_HANGOVER_MS = _get_int("MUTE_CAPTURE_HANGOVER_MS", 350)
+MUTE_CAPTURE_HANGOVER_MS = _get_int("MUTE_CAPTURE_HANGOVER_MS", 700)
+# Force-end VAD only when partially quiet + stuck this long (not continuous speech).
+VAD_STUCK_SPEECH_MAX_SEC = _get_float("VAD_STUCK_SPEECH_MAX_SEC", 20.0)
 
 # --------------------------------------------------------------------------- #
 # UI mode
@@ -480,6 +487,9 @@ TUI_MINIMAL = _get_bool("TUI_MINIMAL", False)
 # Requires Windows 11 22H2+ and: pip install uiautomation
 # Set language in Windows LiveCaptions settings (not only SOURCE_LANG).
 LIVE_CAPTIONS_ENABLED = _get_bool("LIVE_CAPTIONS_ENABLED", True)
+# true = start LiveCaptions scrape on app launch; false = wait for [lc on]
+# (mirrors WEBCAM_START_ENABLED — default OFF so VOZ/mic is the active path).
+LIVE_CAPTIONS_START_ON_LAUNCH = _get_bool("LIVE_CAPTIONS_START_ON_LAUNCH", False)
 # Hide LiveCaptions window after launch (like LiveCaptions-Translator).
 LIVE_CAPTIONS_HIDE_WINDOW = _get_bool("LIVE_CAPTIONS_HIDE_WINDOW", True)
 # Kill LiveCaptions.exe when LiveLingo exits (default: leave process running).

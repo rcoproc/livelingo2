@@ -16,9 +16,22 @@ The recorder runs in its own thread and stops cleanly when `stop_event` is set.
 import queue
 import threading
 from collections import deque
+from datetime import datetime
 
 import numpy as np
-import sounddevice as sd
+
+# Lazy: PortAudio may be missing in CI/WSL headless — only needed in run().
+sd = None
+
+
+def _sounddevice():
+    """Import sounddevice on first use (keeps unit tests importable without PortAudio)."""
+    global sd
+    if sd is None:
+        import sounddevice as _sd
+
+        sd = _sd
+    return sd
 
 
 def _rms(block):
@@ -38,6 +51,7 @@ class Recorder:
         on_listening=None,
         paragraph_split_enabled=None,
         shorter_end_enabled=None,
+        capture_should_run=None,
     ):
         self.cfg = config
         self.device = device_index
@@ -46,13 +60,19 @@ class Recorder:
         self.on_listening = on_listening  # optional callback(bool is_speaking)
         self.paragraph_split_enabled = paragraph_split_enabled
         self.shorter_end_enabled = shorter_end_enabled
-        # App-level mic gate (OS mute is separate; both used by [n]).
-        # When cleared, blocks are still read (avoid PortAudio overflow) but
-        # never emitted as speech chunks.
+        # Pipeline policy: True = escuta must stay open (self-heal if gate stuck).
+        # Only [n] app-mute / bypass / TTS-hold should return False.
+        self.capture_should_run = capture_should_run
+        # App-level mic gate ([n]). When cleared, blocks are still read (avoid
+        # PortAudio overflow) but never emitted as speech chunks.
         self._capture_enabled = threading.Event()
         self._capture_enabled.set()
         # Drop in-progress VAD utterance immediately (language swap [g], etc.).
         self._abort_utterance = threading.Event()
+        # [b]/F2 bypass: release InputStream so passthrough can open the mic
+        # (dual exclusive open freezes PortAudio on Windows).
+        self._stream_suspend = threading.Event()
+        self._stream_held = threading.Event()  # set while InputStream context live
 
         self.sample_rate = config.SAMPLE_RATE
         self.block_frames = max(1, int(config.SAMPLE_RATE * config.BLOCK_DURATION))
@@ -125,12 +145,13 @@ class Recorder:
             hangover = getattr(self.cfg, "VAD_SPEECH_HANGOVER", 0.65)
             threshold *= float(hangover)
         else:
-            # More sensitive while waiting for onset so soft first syllables
-            # still count (avoids clipping "vocês"/"está" before energy peaks).
+            # More sensitive while waiting for onset so soft / unstressed PT
+            # openers ("eu acho", "está", "vocês") still count — not only
+            # punchy lines like "E aí vai encarar".
             onset_scale = float(
-                getattr(self.cfg, "VAD_ONSET_THRESHOLD_SCALE", 0.75) or 0.75
+                getattr(self.cfg, "VAD_ONSET_THRESHOLD_SCALE", 0.55) or 0.55
             )
-            onset_scale = min(1.0, max(0.4, onset_scale))
+            onset_scale = min(1.0, max(0.30, onset_scale))
             threshold *= onset_scale
         return _rms(block) > threshold
 
@@ -158,12 +179,15 @@ class Recorder:
         blocks = base
         if getattr(self.cfg, "VAD_ADAPTIVE_SILENCE", True):
             speech_sec = total_frames / float(self.sample_rate)
-            # Start scaling a bit earlier so 3–8s phrases already get more patience
-            if speech_sec >= 3.0:
+            # From ~1.2s speech, grow end-silence so commas/breaths mid-phrase
+            # do not flush early on long answers.
+            if speech_sec >= 1.2:
                 scale_max = float(
                     getattr(self.cfg, "VAD_SILENCE_SCALE_MAX", 3.5) or 3.5
                 )
-                factor = min(scale_max, 1.0 + speech_sec / 10.0)
+                scale_max = max(1.0, min(6.0, scale_max))
+                # 2s → ~1.25x · 8s → 2.0x · 16s → 3.0x · 24s+ → scale_max
+                factor = min(scale_max, 1.0 + speech_sec / 8.0)
                 blocks = max(blocks, int(base * factor))
         return blocks
 
@@ -216,6 +240,28 @@ class Recorder:
     def is_capture_enabled(self) -> bool:
         return self._capture_enabled.is_set()
 
+    def suspend_stream(self, wait_s: float = 0.5) -> bool:
+        """Release the PortAudio InputStream (for [b]/F2 voice bypass).
+
+        Returns True if the stream was released (or never held) within wait_s.
+        """
+        import time as _time
+
+        self._stream_suspend.set()
+        self.abort_utterance()
+        self.set_capture_enabled(False)
+        deadline = _time.monotonic() + max(0.05, float(wait_s or 0.5))
+        while self._stream_held.is_set() and _time.monotonic() < deadline:
+            _time.sleep(0.02)
+        return not self._stream_held.is_set()
+
+    def resume_stream(self):
+        """Allow recorder to re-open InputStream after bypass ends."""
+        self._stream_suspend.clear()
+
+    def is_stream_suspended(self) -> bool:
+        return self._stream_suspend.is_set()
+
     def abort_utterance(self):
         """
         Discard the current partial utterance (do not emit).
@@ -225,21 +271,64 @@ class Recorder:
 
     # ------------------------------------------------------------------ #
     def run(self):
-        """Blocking capture loop; intended to run in a dedicated thread."""
-        try:
-            with sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.cfg.CHANNELS,
-                dtype="float32",
-                blocksize=self.block_frames,
-                device=self.device,
-            ) as stream:
-                if self.cfg.VAD_ENABLED:
-                    self._run_vad(stream)
-                else:
-                    self._run_fixed(stream)
-        except Exception as exc:  # surface device errors to the main thread
-            self.chunk_queue.put(_CaptureError(exc))
+        """Blocking capture loop; intended to run in a dedicated thread.
+
+        Auto-reopens the input stream after transient device glitches (LiveCaptions
+        launch, exclusive-mode apps, USB hiccups) instead of killing the pipeline.
+        """
+        import time as _time
+
+        failures = 0
+        while not self.stop_event.is_set():
+            # Bypass owns the mic — keep device free until resume_stream()
+            if self._stream_suspend.is_set():
+                _time.sleep(0.05)
+                continue
+            try:
+                _sd = _sounddevice()
+                channels = int(getattr(self.cfg, "CHANNELS", 1) or 1)
+                with _sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=channels,
+                    dtype="float32",
+                    blocksize=self.block_frames,
+                    device=self.device,
+                ) as stream:
+                    self._stream_held.set()
+                    try:
+                        failures = 0
+                        if self.cfg.VAD_ENABLED:
+                            self._run_vad(stream)
+                        else:
+                            self._run_fixed(stream)
+                    finally:
+                        self._stream_held.clear()
+                # VAD returned: stop_event, suspend, or clean end
+                if self.stop_event.is_set():
+                    break
+                # Suspend → loop waits above; other exit → try reopen
+                continue
+            except Exception as exc:
+                self._stream_held.clear()
+                if self.stop_event.is_set():
+                    break
+                if self._stream_suspend.is_set():
+                    continue
+                failures += 1
+                try:
+                    from . import ui
+
+                    ui.warn(
+                        f"Captura de áudio interrompida: {exc} — "
+                        f"reabrindo mic ({failures})…",
+                        panel="app",
+                    )
+                except Exception:
+                    pass
+                if failures >= 8:
+                    self.chunk_queue.put(_CaptureError(exc))
+                    break
+                _time.sleep(min(2.0, 0.25 * failures))
 
     # ------------------------------------------------------------------ #
     def _read_block(self, stream):
@@ -251,20 +340,25 @@ class Recorder:
         return np.ascontiguousarray(data, dtype=np.float32)
 
     def _emit(self, blocks):
-        """Concatenate blocks and push the chunk if it is long enough."""
+        """Concatenate blocks and push the chunk if it is long enough.
+
+        Returns True if a chunk was enqueued, False if dropped (too short / near-silent).
+        Callers use this so the UI does not stay on "processando" when nothing is queued.
+        """
         if not blocks:
-            return
+            return False
         chunk = np.concatenate(blocks)
         if chunk.size < self.min_speech_frames:
-            return
+            return False
         # Drop near-silent tails left after paragraph splits (Whisper hallucinates on these).
         if getattr(self.cfg, "STT_HALLUCINATION_FILTER", True):
             tail_max_sec = getattr(self.cfg, "CAPTURE_TAIL_MAX_SEC", 2.0)
             tail_max_frames = int(tail_max_sec * self.sample_rate)
             min_rms = getattr(self.cfg, "STT_MIN_RMS", 0.010)
             if chunk.size <= tail_max_frames and _rms(chunk) < min_rms:
-                return
+                return False
         self.chunk_queue.put(chunk)
+        return True
 
     # ------------------------------------------------------------------ #
     def _run_vad(self, stream):
@@ -287,6 +381,13 @@ class Recorder:
                     self.on_listening(False)
                 except Exception:
                     pass
+                try:
+                    from . import ui
+
+                    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    ui.dim(f"  🔴 VAD END    {ts} — silêncio detectado", panel="app")
+                except Exception:
+                    pass
             in_speech = False
             speech = []
             trailing_silence = 0
@@ -305,6 +406,14 @@ class Recorder:
                     pass
 
         while not self.stop_event.is_set():
+            if self._stream_suspend.is_set():
+                # Free mic for [b]/F2 bypass (exit so InputStream context closes)
+                if in_speech and self.on_listening:
+                    try:
+                        self.on_listening(False)
+                    except Exception:
+                        pass
+                return
             block = self._read_block(stream)
             if self._abort_utterance.is_set() or not self._capture_enabled.is_set():
                 # Soft-mute or explicit abort: drain stream, drop partial utterance.
@@ -315,11 +424,23 @@ class Recorder:
                     _reset_utterance_state(clear_preroll=True)
                     continue
                 if not self._capture_enabled.is_set():
-                    # App mute / TTS anti-feedback: drop speech but feed silence
-                    # into preroll so re-open still has a lead-in window (without
-                    # speaker→mic TTS audio stuck in the buffer).
-                    _reset_utterance_state(clear_preroll=False, pad_silence=True)
-                    continue
+                    # Self-heal only when policy says ON (not [n]/bypass/hold/hangover).
+                    # During post-TTS hangover capture_should_run() is False — must
+                    # stay closed so VAD does not latch onto speaker ring-out.
+                    should = None
+                    if self.capture_should_run is not None:
+                        try:
+                            should = bool(self.capture_should_run())
+                        except Exception:
+                            should = None
+                    if should is True:
+                        self._capture_enabled.set()
+                        # Silent re-open (no log spam — "após TTS" already signals ready)
+                        # Fall through — process this block as normal listen
+                    else:
+                        # Hold / hangover / mute: drop speech, pad silence into preroll
+                        _reset_utterance_state(clear_preroll=False, pad_silence=True)
+                        continue
 
             loud = self._block_is_speech(block, in_speech=in_speech)
 
@@ -340,6 +461,16 @@ class Recorder:
                         trailing_silence = 0
                         if self.on_listening:
                             self.on_listening(True)
+                        try:
+                            from . import ui
+
+                            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                            ui.dim(
+                                f"  🟢 VAD ONSET  {ts} — fala detectada",
+                                panel="app",
+                            )
+                        except Exception:
+                            pass
                 else:
                     # Tolerate brief dips mid-onset (soft syllables / mic ramp).
                     if onset_count > 0:
@@ -358,6 +489,34 @@ class Recorder:
             end_threshold = self._silence_blocks_to_end(total_frames)
             ended = trailing_silence >= end_threshold
             too_long = total_frames >= self.max_chunk_frames
+            # Soft noise / TTS echo can hover just above hangover forever —
+            # never reaching end_threshold. Force-end ONLY when already
+            # partially silent (not continuous loud monologue — that was
+            # cutting "frases compridas" at 8s).
+            stuck_max = float(
+                getattr(self.cfg, "VAD_STUCK_SPEECH_MAX_SEC", 20.0) or 20.0
+            )
+            stuck_max = max(8.0, min(45.0, stuck_max))
+            speech_sec_now = total_frames / float(self.sample_rate)
+            quiet_enough = trailing_silence >= max(3, end_threshold // 3)
+            force_stuck = (
+                (not ended)
+                and (not loud)
+                and quiet_enough
+                and speech_sec_now >= stuck_max
+            )
+            if force_stuck:
+                ended = True
+                try:
+                    from . import ui
+
+                    ui.dim(
+                        f"  🔴 VAD STUCK  force-end após {speech_sec_now:.1f}s "
+                        f"(ruído residual — retoma escuta)",
+                        panel="app",
+                    )
+                except Exception:
+                    pass
             rolling = rolling_enabled and total_frames >= self.rolling_chunk_frames
             early_silence_need = self._early_split_silence_blocks(total_frames)
             paragraph_split = (
@@ -369,7 +528,8 @@ class Recorder:
             )
 
             if rolling or ended or too_long or paragraph_split:
-                self._emit(speech)
+                speech_sec = total_frames / float(self.sample_rate)
+                emitted = bool(self._emit(speech))
                 if ended:
                     speech = []
                     in_speech = False
@@ -384,6 +544,27 @@ class Recorder:
                             pass
                     if self.on_listening:
                         self.on_listening(False)
+                    try:
+                        from . import ui
+
+                        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        if emitted:
+                            ui.dim(
+                                f"  🔴 VAD END    {ts} — silêncio "
+                                f"({speech_sec:.1f}s de fala) → STT",
+                                panel="app",
+                            )
+                        else:
+                            # Dropped (too short / near-silent): do NOT leave UI
+                            # stuck on "Fim da fala — processando…".
+                            ui.dim(
+                                f"  🔴 VAD END    {ts} — ignorado "
+                                f"({speech_sec:.1f}s, curto/silêncio)",
+                                panel="app",
+                            )
+                            ui.listen_ready("chunk curto/silêncio — sem STT")
+                    except Exception:
+                        pass
                 elif paragraph_split:
                     overlap_blocks = max(
                         self.preroll_blocks, self.paragraph_overlap_blocks
@@ -412,6 +593,8 @@ class Recorder:
         buffer = []
         frames = 0
         while not self.stop_event.is_set():
+            if self._stream_suspend.is_set():
+                return
             block = self._read_block(stream)
             if self._abort_utterance.is_set():
                 self._abort_utterance.clear()
@@ -419,9 +602,18 @@ class Recorder:
                 frames = 0
                 continue
             if not self._capture_enabled.is_set():
-                buffer = []
-                frames = 0
-                continue
+                should = None
+                if self.capture_should_run is not None:
+                    try:
+                        should = bool(self.capture_should_run())
+                    except Exception:
+                        should = None
+                if should is True:
+                    self._capture_enabled.set()
+                else:
+                    buffer = []
+                    frames = 0
+                    continue
             buffer.append(block)
             frames += block.size
             if frames >= self.fixed_chunk_frames:

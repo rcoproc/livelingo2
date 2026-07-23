@@ -2236,9 +2236,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         ui.raw("")
     elif cmd == "x":
         if pipeline.stop_playback():
-            ui.info("Playback stopped — remaining audio for this chunk skipped.")
+            ui.info(
+                "Áudio interrompido ([x]) — escuta liberada; pode falar.",
+                panel="app",
+            )
         else:
-            ui.warn("Sound is OFF — nothing playing to stop.")
+            ui.warn("Nada a interromper (som OFF ou sem TTS a tocar).", panel="app")
     elif cmd == "o":
         print("Enter a word in English: ", end="", flush=True)
         word = sys.stdin.readline().strip()
@@ -3449,7 +3452,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             "boca auto",
             "f10",
         ):
-            # Manual closed-mouth plate (same as F10 in TUI)
+            # Manual closed-mouth face plate (same as F10 in TUI)
             if not getattr(svc, "_started", False):
                 ok = svc.start()
                 if not ok:
@@ -3472,6 +3475,40 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 _cam_info(svc.set_closed_mouth_auto())
             else:
                 on, msg = svc.toggle_closed_mouth_manual()
+                (ui.success if on else ui.info)(msg, indent=3)
+        elif sub in (
+            "full",
+            "full on",
+            "full off",
+            "freeze",
+            "freeze on",
+            "freeze off",
+            "tela",
+            "tela on",
+            "tela off",
+            "f11",
+        ):
+            # F11: full-frame closed photo (entire vcam = closed image)
+            if not getattr(svc, "_started", False):
+                ok = svc.start()
+                if not ok:
+                    _cam_err(
+                        f"Webcam start falhou: {svc.snapshot().get('error') or '?'}",
+                    )
+                    return
+            if not svc.is_enabled():
+                svc.enable()
+                _cam_auto_sound()
+            parts = sub.split()
+            action = parts[-1] if len(parts) > 1 else "toggle"
+            if action in ("on", "1", "true"):
+                on, msg = svc.set_closed_full_frame(True)
+                _cam_ok(msg) if on else _cam_info(msg)
+            elif action in ("off", "0", "false"):
+                on, msg = svc.set_closed_full_frame(False)
+                _cam_info(msg)
+            else:
+                on, msg = svc.toggle_closed_full_frame()
                 (ui.success if on else ui.info)(msg, indent=3)
         elif sub in (
             "snap closed",
@@ -3584,7 +3621,8 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         "[cam on] retoma.",
                     )
     elif cmd == "lc" or cmd.startswith("lc "):
-        # Live Captions (Windows): pause / show / hide / status
+        # Live Captions (Windows): on/off (start+resume / pause) · show / hide / status
+        # Default: OFF at launch (LIVE_CAPTIONS_START_ON_LAUNCH=false) — only [lc on].
         svc = getattr(pipeline, "caption_service", None)
         sub = ""
         if cmd.startswith("lc "):
@@ -3599,31 +3637,78 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 indent=3,
             )
         elif sub in ("show", "restore", "unhide"):
-            svc.show_window()
-            ui.success("LiveCaptions: janela restaurada.", indent=3)
+            if not svc.is_running():
+                ui.warn(
+                    "Live Captions ainda OFF — use [lc on] antes de [lc show].",
+                    indent=3,
+                )
+            else:
+                svc.show_window()
+                ui.success("LiveCaptions: janela restaurada.", indent=3)
         elif sub in ("hide",):
-            svc.hide_window()
-            ui.success("LiveCaptions: janela oculta.", indent=3)
+            if not svc.is_running():
+                ui.info("Live Captions OFF (nada a ocultar).", indent=3)
+            else:
+                svc.hide_window()
+                ui.success("LiveCaptions: janela oculta.", indent=3)
         elif sub in ("on", "resume", "start"):
-            svc.resume()
-            ui.success("Live Captions: tradução retomada.", indent=3)
+            try:
+                if not svc.is_running():
+                    svc.start()
+                    ui.success(
+                        "Live Captions: ON (iniciado). [lc off] desliga.",
+                        indent=3,
+                    )
+                else:
+                    svc.resume()
+                    ui.success(
+                        "Live Captions: ON. [lc off] desliga.",
+                        indent=3,
+                    )
+            except Exception as exc:
+                ui.warn(f"Live Captions falhou ao ligar: {exc}", indent=3)
         elif sub in ("off", "pause", "stop"):
-            svc.pause()
-            ui.info("Live Captions: tradução pausada ([lc on] retoma).", indent=3)
+            if not svc.is_running():
+                ui.info("Live Captions já está OFF.", indent=3)
+            else:
+                svc.pause()
+                ui.info(
+                    "Live Captions: OFF ([lc on] retoma).",
+                    indent=3,
+                )
         elif sub in ("status", "st", "?"):
             snap = svc.snapshot()
+            on_off = (
+                "ON"
+                if snap.get("running") and not snap.get("paused")
+                else "OFF"
+            )
             ui.info(
-                f"LC status={snap.get('status')} paused={snap.get('paused')} "
+                f"LC {on_off} status={snap.get('status')} "
+                f"paused={snap.get('paused')} running={snap.get('running')} "
                 f"hidden={snap.get('hidden')} err={snap.get('error') or '—'}",
                 indent=3,
             )
         else:
-            # bare [lc] toggles pause
-            paused = svc.toggle_pause()
-            if paused:
-                ui.info("Live Captions PAUSADO ([lc] de novo retoma).", indent=3)
-            else:
-                ui.success("Live Captions RETOMADO.", indent=3)
+            # bare [lc] toggles: not running → start ON; running → pause/resume
+            try:
+                if not svc.is_running():
+                    svc.start()
+                    ui.success(
+                        "Live Captions ON (iniciado). [lc] de novo pausa.",
+                        indent=3,
+                    )
+                else:
+                    paused = svc.toggle_pause()
+                    if paused:
+                        ui.info(
+                            "Live Captions OFF ([lc] / [lc on] retoma).",
+                            indent=3,
+                        )
+                    else:
+                        ui.success("Live Captions ON.", indent=3)
+            except Exception as exc:
+                ui.warn(f"Live Captions falhou: {exc}", indent=3)
     elif cmd in ("q", "quit"):
         ui.info("Stopping application...")
         try:
@@ -4265,9 +4350,13 @@ def main():
                 _print_swap_lang_menu_line(pipeline)
 
         pipeline.set_language_swap_callback(_on_deferred_language_swap)
+        # Start VOZ immediately (recorder thread) before LC/webcam so escuta
+        # is live as soon as the TUI paints.
         pipeline.start()
 
         # --- Live Captions (Windows LiveCaptions → TUI strip; parallel to mic) ---
+        # Default: build service but do NOT start (LIVE_CAPTIONS_START_ON_LAUNCH=false).
+        # Escuta ativa = VOZ/mic path. LC only with [lc on] / off with [lc off].
         caption_service = None
         if getattr(cfg, "LIVE_CAPTIONS_ENABLED", False):
             try:
@@ -4282,20 +4371,38 @@ def main():
                         pipeline=pipeline,
                     )
                     pipeline.caption_service = caption_service
-                    caption_service.start()
+                    auto_lc = bool(
+                        getattr(cfg, "LIVE_CAPTIONS_START_ON_LAUNCH", False)
+                    )
+                    if auto_lc:
+                        caption_service.start()
                     try:
                         from livelingo.livecaptions import caption_lang_pair
 
                         lc_s, lc_t = caption_lang_pair(cfg)
-                        _log_info(
-                            f"Live Captions ON — {lc_s}→{lc_t} (strip) · "
-                            f"SQLite+cache · [lc] pause · [lc show]/[lc hide]."
-                        )
+                        if auto_lc:
+                            _log_info(
+                                f"Live Captions ON — {lc_s}→{lc_t} (strip) · "
+                                f"SQLite+cache · [lc off] pausa · "
+                                f"[lc show]/[lc hide]."
+                            )
+                        else:
+                            _log_info(
+                                f"Live Captions OFF (pronto {lc_s}→{lc_t}) — "
+                                f"[lc on] inicia · [lc off] pausa · "
+                                f"[lc show]/[lc hide]."
+                            )
                     except Exception:
-                        _log_info(
-                            "Live Captions ON — faixa superior da TUI "
-                            "([lc] pause · [lc show]/[lc hide])."
-                        )
+                        if auto_lc:
+                            _log_info(
+                                "Live Captions ON — faixa superior da TUI "
+                                "([lc off] pausa · [lc show]/[lc hide])."
+                            )
+                        else:
+                            _log_info(
+                                "Live Captions OFF (pronto) — "
+                                "[lc on] inicia · [lc off] pausa."
+                            )
                 else:
                     _log_warn("LIVE_CAPTIONS_ENABLED=true mas OS ≠ Windows — ignorado.")
             except Exception as exc:
