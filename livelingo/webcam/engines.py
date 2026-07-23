@@ -36,8 +36,7 @@ class LipSyncEngine(ABC):
         audio: np.ndarray,
         sample_rate: int,
         roi: MouthROI,
-    ) -> np.ndarray:
-        ...
+    ) -> np.ndarray: ...
 
     def close(self) -> None:
         pass
@@ -96,7 +95,11 @@ class AmplitudeEngine(LipSyncEngine):
         ys = np.arange(h, dtype=np.float32)
         mid = (h - 1) * 0.5
         # Prefer landmark lip center inside crop when ROI known
-        if roi is not None and getattr(roi, "mouth_cy", 0) and getattr(roi, "y0", None) is not None:
+        if (
+            roi is not None
+            and getattr(roi, "mouth_cy", 0)
+            and getattr(roi, "y0", None) is not None
+        ):
             try:
                 mid = float(np.clip(roi.mouth_cy - roi.y0, 0, h - 1))
             except Exception:
@@ -113,6 +116,7 @@ class AmplitudeEngine(LipSyncEngine):
             borderMode=cv2.BORDER_REPLICATE,
         )
         return warped
+
 
 class OnnxLipSyncEngine(LipSyncEngine):
     """

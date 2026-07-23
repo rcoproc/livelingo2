@@ -7,8 +7,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from livelingo.capture import Recorder
 from livelingo import ui
+from livelingo.capture import Recorder
 
 
 def _cfg(**overrides):
@@ -72,7 +72,7 @@ def test_emit_returns_true_for_real_speech_energy():
 
     # 0.5s of non-silent audio
     n = int(0.5 * 16000)
-    block = (np.random.randn(n).astype(np.float32) * 0.05)
+    block = np.random.randn(n).astype(np.float32) * 0.05
     assert rec._emit([block]) is True
     assert not rec.chunk_queue.empty()
 
@@ -240,8 +240,8 @@ def test_arm_listen_after_tts_aborts_and_opens(monkeypatch):
 
 def test_passthrough_lock_is_reentrant():
     """F2 must not deadlock: start path re-enters is_passthrough_active."""
-    import threading
     import sys
+    import threading
     from unittest.mock import MagicMock
 
     sys.modules.setdefault("sounddevice", MagicMock())
@@ -279,9 +279,9 @@ def test_recorder_suspend_resume():
 
 def test_capture_should_run_false_during_hangover():
     """Self-heal must not reopen during post-TTS hangover window."""
-    import time
-    import threading
     import sys
+    import threading
+    import time
     from unittest.mock import MagicMock
 
     # No PortAudio needed
@@ -311,7 +311,9 @@ def test_force_soft_listen_lowers_energy_bar():
     import numpy as np
 
     cfg = _cfg(SILENCE_THRESHOLD=0.02, FORCE_LISTEN_THRESHOLD_SCALE=0.12)
-    rec = Recorder(cfg, 0, queue.Queue(), threading.Event(), capture_should_run=lambda: True)
+    rec = Recorder(
+        cfg, 0, queue.Queue(), threading.Event(), capture_should_run=lambda: True
+    )
     # Quiet block: rms ~0.005 → below 0.02, above 0.02*0.12=0.0024
     quiet = np.full(480, 0.005, dtype=np.float32)
     assert rec._block_is_speech(quiet, in_speech=False) is False

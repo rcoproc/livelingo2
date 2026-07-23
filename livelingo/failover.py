@@ -23,7 +23,6 @@ import time
 from enum import Enum
 from typing import Any, Callable, Optional
 
-
 # --------------------------------------------------------------------------- #
 # Error classification
 # --------------------------------------------------------------------------- #
@@ -98,7 +97,9 @@ class CircuitBreaker:
     def __init__(self, threshold: int = 3, cooldown_s: float = 60.0):
         self.threshold = max(1, int(threshold or 1))
         # Allow sub-second cooldowns (tests / aggressive recover); floor at 0.
-        self.cooldown_s = max(0.0, float(cooldown_s if cooldown_s is not None else 60.0))
+        self.cooldown_s = max(
+            0.0, float(cooldown_s if cooldown_s is not None else 60.0)
+        )
         self._fails = 0
         self._opened_at = 0.0
         self._state = "closed"  # closed | open | half_open

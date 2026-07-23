@@ -102,7 +102,9 @@ def test_old_5s_base_is_slower_than_balanced_profile():
     slow = _recorder(_cfg(SILENCE_DURATION=5.0, VAD_ADAPTIVE_SILENCE=True))
     fast = _recorder(_cfg(SILENCE_DURATION=2.2, VAD_ADAPTIVE_SILENCE=True))
     frames = int(1.0 * 16000)
-    assert slow._silence_blocks_to_end(frames) > fast._silence_blocks_to_end(frames) * 1.5
+    assert (
+        slow._silence_blocks_to_end(frames) > fast._silence_blocks_to_end(frames) * 1.5
+    )
 
 
 def test_live_captions_start_on_launch_default_false():
