@@ -151,10 +151,12 @@ class PiperSynthesizer:
     """Local Piper TTS — streams ONNX chunks for low time-to-first-audio."""
 
     supports_live_streaming = True
+    engine_name = "piper"
 
     def __init__(self, config, log=print):
         self.cfg = config
         self.log = log
+        self.engine_name = "piper"
         self.voice_id = getattr(
             config, "PIPER_VOICE", ""
         ).strip() or default_voice_for_lang(config.TARGET_LANG)
@@ -190,6 +192,10 @@ class PiperSynthesizer:
             f"Text-to-speech: Piper local ({self.voice_id}, "
             f"chunk_streaming={'on' if self.chunk_streaming else 'off'})."
         )
+
+    @property
+    def voice_label(self):
+        return str(self.voice_id or "")
 
     def set_language_pair(self, source=None, target=None):
         """

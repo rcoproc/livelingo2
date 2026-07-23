@@ -26,10 +26,10 @@ microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears 
 translation as if it were your mic. Speak **French**, others hear **English**
 (both languages configurable).
 
-**Current release: [v1.2.1](CHANGELOG.md#121---2026-07-22)** — webcam/TUI polish on top of
-v1.1.0: reliable **OBS Virtual Camera**, **full-face F10 freeze**, F2/F5 on the tab bar,
-bypass tips on **Sistema**, local Whisper first-boot notes. Full notes:
-[`CHANGELOG.md`](CHANGELOG.md).
+**Current release: [v1.2.2](CHANGELOG.md#122---2026-07-23)** — stable **listen after TTS**,
+**LiveCaptions off** by default, **`[N]` force soft-listen** (low voice + yellow borders),
+**F11 full-frame closed freeze**, **vcam TARGET burn-in** (`[sub]`), cleaner **Sistema** per
+chunk + TTS engine/first-chunk timings. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
 
 ```text
 🎤 mic (French)
@@ -480,7 +480,8 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `Ctrl+C` | Copy selected log text |
 | `Ctrl+Shift+C` | Copy entire content of the **focused** log pane (on Tradução: LC or VOZ) |
 | `F2` / click bypass chip / `b` | **Voice bypass** — stop Cable TTS (like `[x]`), then raw mic → CABLE; tips log on **Sistema**; press again to resume translate |
-| `F10` / `cam closed` | Toggle **full-face freeze** from the closed-mouth photo (manual show/hide; does **not** recapture — use `cam snap closed` to update) |
+| `F10` / `cam closed` | Toggle **face-plate freeze** from the closed-mouth photo (manual; does **not** recapture — use `cam snap closed`) |
+| `F11` / `cam full` | Freeze the **entire** virtual-cam frame with the closed photo (not TUI fullscreen). Press again for live |
 | Palette → Screenshot | Save SVG+PNG under `.cache/screenshots/` and put the **image** on the clipboard |
 | `↑` / `↓` | Command history |
 | `/text` · `/n` · `/p` | Search in the focused log pane (aliases: `find text`, `s?text`) |
@@ -493,9 +494,11 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `cls1` / `cls2` | Clear only left **LC** / right **VOZ** |
 | `l` / `lo` / `lt` | List session (into matching panes) / source-only / target-only |
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
-| `s` / `n` / `r` / `rN` | Sound, mic mute, replay |
+| `s` / `n` / `r` / `rN` | Sound, **mic mute** (lowercase **n** only), replay |
+| `N` | **Force soft-listen** (capital **N** only) — yellow borders; VAD accepts low-volume speech; press again for normal VAD |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync stream to **OBS Virtual Camera** (needs `requirements-webcam.txt` + OBS) |
-| `cam snap closed` | **Capture / update** the closed-mouth **full-face photo** used by F10. Preview shows the freeze oval. Aliases: `cam snap`, `cam snapshot closed` |
+| `cam snap closed` | **Capture / update** the closed-mouth **full-face photo** used by F10/F11. Preview shows the freeze oval. Aliases: `cam snap`, `cam snapshot closed` |
+| `sub` / `sub on` / `sub off` / `cam sub` | **Burn-in TARGET** text on virtual-cam frames (frosted footer). Pixels only — not Teams CC. Default OFF; stays until next translation or `sub off` |
 | `a` / `aN` / `p` / `pN` | Copy audio path / open audio folder |
 | `ld` | List audio devices (`python list_devices.py`) into the log |
 | `lav` | List all edge-tts voices (`edge-tts --list-voices`) into the log |
@@ -596,11 +599,20 @@ recapture. There is **no** procedural “virtual teeth” paint (removed).
    .cache/webcam/closed_mouth.png
    .cache/webcam/closed_mouth.json
    ```
-6. **`cam status`** → `tpl=true`. Toggle: **F10** / `cam closed` · `cam closed auto` (VAD).
+6. **`cam status`** → `tpl=true`. Toggle plate: **F10** / `cam closed`. Full-frame freeze:
+   **F11** / `cam full`. Closed photo is **manual only** (no VAD auto while you speak).
 
 Plate size: `WEBCAM_TEMPLATE_REGION_SCALE` (default `1.15`) · feather
 `WEBCAM_TEMPLATE_FEATHER_PX` (default `24`). Paths:
 `WEBCAM_CLOSED_MOUTH_IMAGE` · `WEBCAM_CLOSED_MOUTH_LANDMARKS`.
+
+**Burn-in subtitles (v1.2.2):** `[sub on]` draws the latest **TARGET** translation on a
+frosted footer bar of the virtual-cam image (Teams sees pixels, not CC). Config:
+`WEBCAM_SUBTITLE=false` (default), `WEBCAM_SUBTITLE_MIRROR=true` (selfie flip),
+`WEBCAM_SUBTITLE_HOLD_S=0` (no auto-hide).
+
+**Listen after TTS (v1.2.2):** capture re-opens only when Cable playback ends (or `[x]`),
+with a short hangover so the TTS echo does not re-trigger STT. Soft voice? Press **`N`**.
 
 **OBS:** while LiveLingo streams, **Stop Virtual Camera** in OBS (exclusive producer).
 LiveLingo owns the device; Teams camera = **OBS Virtual Camera**.
@@ -708,7 +720,7 @@ With an NVIDIA GPU + CUDA/cuDNN installed, set `WHISPER_DEVICE=cuda` and
     ├── tui_app.py      # Textual TUI (log, menu, screenshot, clipboard)
     ├── db.py           # SQLite sessions, chunks, comments, favorites
     ├── ui.py           # terminal banner, colors, status lines
-    └── webcam/         # optional lip-sync → OBS Virtual Camera
+    └── webcam/         # optional lip-sync → OBS Virtual Camera (+ subtitle burn-in)
 ```
 
 ## Notes & limitations

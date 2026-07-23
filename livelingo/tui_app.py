@@ -1356,8 +1356,8 @@ _FOOTER_I18N = {
         "trad_lbl_voz": "VOICE mic + commands",
         "expand": "Expand",
         "restore": "Restore",
-        "expand_tip": "Maximize VOZ panel (right)",
-        "restore_tip": "Restore LC | VOZ split",
+        "expand_tip": "Maximize VOZ: full width, collapse Live Captions strip, hide key-hint footer",
+        "restore_tip": "Restore LC | VOZ split, captions strip, and key-hint footer",
         "cls_note_lc": "[dim]LC cleared — stable [LC n] pairs will show here again[/]",
         "cls_note_voz": "[dim]VOZ cleared — [l] history · [lo]/[lt] · F3 System[/]",
         "cls_note_app": "[dim]System cleared — STT/translate/TTS stages will show here again[/]",
@@ -1394,8 +1394,8 @@ _FOOTER_I18N = {
             "search [bold]/text[/]  ·  F3 tabs"
         ),
         "boot_voz_5": (
-            "[dim]Split LC|VOZ: drag ║ · Expand top-right of this pane · "
-            "captions ↕ at top · sash 50/50 double-click. Quit: Ctrl+Q / [q].[/]"
+            "[dim]Split LC|VOZ: drag ║ · Expand = full VOZ + collapse captions "
+            "+ hide key footer · sash 50/50 double-click. Quit: Ctrl+Q / [q].[/]"
         ),
         "boot_app_1": (
             "[bold cyan]System[/] — pipeline stages, VAD listen, timestamps "
@@ -1511,8 +1511,8 @@ _FOOTER_I18N = {
         "trad_lbl_voz": "VOZ mic + comandos",
         "expand": "Expandir",
         "restore": "Restaurar",
-        "expand_tip": "Maximizar painel VOZ (direita)",
-        "restore_tip": "Restaurar split LC | VOZ",
+        "expand_tip": "Maximizar VOZ: largura total, colapsa faixa Live Captions, oculta atalhos do rodapé",
+        "restore_tip": "Restaurar split LC | VOZ, faixa captions e atalhos do rodapé",
         "cls_note_lc": "[dim]LC limpo — pares estáveis [LC n] voltam a aparecer aqui[/]",
         "cls_note_voz": "[dim]VOZ limpo — [l] histórico · [lo]/[lt] · F3 Sistema[/]",
         "cls_note_app": "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
@@ -1549,8 +1549,8 @@ _FOOTER_I18N = {
             "busca [bold]/texto[/]  ·  F3 abas"
         ),
         "boot_voz_5": (
-            "[dim]Split LC|VOZ: arraste ║ · Expandir no canto superior direito "
-            "desta janela · captions ↕ no topo · sash 50/50 duplo-clique. "
+            "[dim]Split LC|VOZ: arraste ║ · Expandir = VOZ total + colapsa "
+            "captions + oculta atalhos do rodapé · sash 50/50 duplo-clique. "
             "Sair: Ctrl+Q / [q].[/]"
         ),
         "boot_app_1": (
@@ -2172,6 +2172,21 @@ class LiveLingoApp(App):
         background: #c23b3b;
         color: #ffffff;
     }
+    /* [N] force soft-listen — yellow chrome (escuta forçada / voz baixa) */
+    #listen-header.-hot-listen {
+        background: #e0a020;
+        color: #1a1b26;
+        text-style: bold;
+    }
+    #log-tabs.-hot-listen {
+        border: solid #e0a020;
+    }
+    #captions-panel.-hot-listen {
+        border: solid #e0a020;
+    }
+    #cmd-box.-hot-listen {
+        border: round #e0a020;
+    }
     Footer {
         dock: bottom;
         background: $panel;
@@ -2198,6 +2213,20 @@ class LiveLingoApp(App):
     }
     #captions-panel.-paused {
         border: solid #e0a020;
+    }
+    /* Expandir VOZ: collapse Live Captions strip (vertical space → log tabs) */
+    #captions-panel.-collapsed {
+        display: none;
+        height: 0;
+        min-height: 0;
+        max-height: 0;
+    }
+    /* Expandir VOZ: hide keybinding Footer row under command box */
+    Footer.-hidden-expand {
+        display: none;
+        height: 0;
+        min-height: 0;
+        max-height: 0;
     }
     #captions-title {
         height: 1;
@@ -2356,8 +2385,8 @@ class LiveLingoApp(App):
     /*
      * Menu + command bar (above docked Footer — do NOT dock #bottom).
      *
-     * height 9 content (no top border):
-     *   #hint 6 (≈5 menu lines + 1 blank) + #cmd-row 3
+     * Wide: height 9 = #hint 6 + #cmd-row 3 (pipe | cmd | TTS horizontal)
+     * Narrow (-cmd-stacked): #cmd-row stacks 3×3 rows; bottom grows to 15
      */
     #bottom {
         height: 9;
@@ -2369,6 +2398,13 @@ class LiveLingoApp(App):
     /* Compact UI ([u]): menu hidden — only command row */
     #bottom.-compact {
         height: 3;
+    }
+    /* Narrow window: pipe / command / TTS stacked → taller bottom */
+    #bottom.-cmd-stacked {
+        height: 15;
+    }
+    #bottom.-compact.-cmd-stacked {
+        height: 9;
     }
     #hint {
         height: 6;
@@ -2396,6 +2432,15 @@ class LiveLingoApp(App):
         padding: 0 1;
         align: left middle;
     }
+    /* Narrow: stack pipe → command (middle) → TTS */
+    #cmd-row.-stacked {
+        layout: vertical;
+        height: 9;
+        min-height: 9;
+        max-height: 9;
+        padding: 0;
+        align: center middle;
+    }
     /* Fixed gutters between pipe | command | TTS (not 1fr — that stole cmd width). */
     #cmd-flex-l, #cmd-flex-r {
         width: 2;
@@ -2403,8 +2448,18 @@ class LiveLingoApp(App):
         max-width: 2;
         height: 3;
     }
+    #cmd-row.-stacked #cmd-flex-l,
+    #cmd-row.-stacked #cmd-flex-r {
+        display: none;
+        width: 0;
+        min-width: 0;
+        max-width: 0;
+        height: 0;
+        min-height: 0;
+        max-height: 0;
+    }
     /*
-     * Pipeline activity bar — left edge of command row.
+     * Pipeline activity bar — left edge of command row (wide) / top (stacked).
      * Shows Mic → STT → Trad → TTS → Out (+ LC when LiveCaptions is busy).
      */
     #pipe-bar {
@@ -2422,6 +2477,13 @@ class LiveLingoApp(App):
         content-align: left middle;
         overflow: hidden;
         text-style: none;
+    }
+    #cmd-row.-stacked #pipe-bar {
+        width: 1fr;
+        min-width: 1;
+        max-width: 1fr;
+        height: 3;
+        content-align: center middle;
     }
     #pipe-bar.-busy {
         border: round $accent;
@@ -2539,6 +2601,12 @@ class LiveLingoApp(App):
         border: round $accent;
         padding: 0 1;
     }
+    #cmd-row.-stacked #cmd-box {
+        width: 1fr;
+        min-width: 1;
+        max-width: 1fr;
+        height: 3;
+    }
     #cmd-box:focus-within {
         border: round $primary;
         background: $surface;
@@ -2570,6 +2638,13 @@ class LiveLingoApp(App):
         text-style: bold;
         content-align: center middle;
         overflow: hidden;
+    }
+    #cmd-row.-stacked #cmd-tts {
+        width: 1fr;
+        min-width: 1;
+        max-width: 1fr;
+        height: 3;
+        content-align: center middle;
     }
 
     /* ---- Command palette (Ctrl+P): continuous box lines, not hkey/???? ---- */
@@ -2691,6 +2766,8 @@ class LiveLingoApp(App):
         self._trad_focus: str = "voz"  # which sub-pane search/gg/copy use
         # Live Captions strip height in rows (drag bottom edge vs middle logs)
         self._captions_height: int = 8
+        # Saved captions height while Expand hides the strip (restore on Restaurar)
+        self._captions_height_before_expand: int | None = None
         # VOZ pipe bar: mic → stt → translate → tts → play (Cable Out)
         self._pipe_stage: str = "idle"
         self._pipe_stage_t: float = 0.0
@@ -2718,6 +2795,10 @@ class LiveLingoApp(App):
         # Never touch console buffer APIs (that corrupted Textual before).
         # Initial value from config TUI_MINIMAL (applied on_mount when widgets exist).
         self._compact_ui = False
+        # Narrow TUI: stack pipe / command / TTS under the menu
+        self._cmd_row_stacked = False
+        # [N] force soft-listen: yellow borders + low-energy VAD
+        self._force_soft_listen = False
         try:
             import config as _cfg
 
@@ -3004,6 +3085,10 @@ class LiveLingoApp(App):
         # Menu is mostly static; refresh less often to free the UI thread for log lines.
         self.set_interval(2.0, self._refresh_cmd_menu)
         self._refresh_log_width()
+        try:
+            self._apply_cmd_row_responsive()
+        except Exception:
+            pass
         self._refresh_cmd_menu()
         self._bind_caption_service()
         self._paint_captions_panel()
@@ -3784,9 +3869,11 @@ class LiveLingoApp(App):
 
     def trad_toggle_expand(self, side: str | None = None) -> None:
         """
-        Expand LC or VOZ to full width; second press restores.
+        Expand LC or VOZ; second press restores.
 
-        Default side=None from VOZ button → toggle VOZ expand.
+        VOZ expand (default / button):
+          - horizontal: hide LC column → VOZ full width
+          - vertical: collapse Live Captions strip + hide key-hint Footer
         """
         if side is None:
             side = "voz"
@@ -3798,9 +3885,87 @@ class LiveLingoApp(App):
             self.set_trad_focus(side)
         self._apply_trad_split_layout()
         self._refresh_log_width()
+        try:
+            self.refresh(layout=True)
+        except Exception:
+            try:
+                self.refresh()
+            except Exception:
+                pass
+
+    def _apply_trad_expand_chrome(self, voz_expanded: bool) -> None:
+        """
+        Extra vertical space for VOZ expand:
+
+        - Collapse / restore top Live Captions strip
+        - Hide / show Footer keybinding row (under command box)
+        """
+        # --- Live Captions strip ---
+        try:
+            panel = self.query_one("#captions-panel")
+        except Exception:
+            panel = None
+        if panel is not None:
+            if voz_expanded:
+                if self._captions_height_before_expand is None:
+                    try:
+                        self._captions_height_before_expand = int(
+                            getattr(self, "_captions_height", 8) or 8
+                        )
+                    except Exception:
+                        self._captions_height_before_expand = 8
+                try:
+                    panel.add_class("-collapsed")
+                    panel.display = False
+                except Exception:
+                    try:
+                        panel.display = False
+                    except Exception:
+                        pass
+            else:
+                try:
+                    panel.remove_class("-collapsed")
+                    panel.display = True
+                except Exception:
+                    try:
+                        panel.display = True
+                    except Exception:
+                        pass
+                saved = self._captions_height_before_expand
+                self._captions_height_before_expand = None
+                if saved is not None:
+                    try:
+                        self.captions_set_height(int(saved))
+                    except Exception:
+                        pass
+
+        # --- Footer key hints (F1/F2/… under command box) ---
+        try:
+            footer = self.query_one(Footer)
+        except Exception:
+            footer = None
+        if footer is not None:
+            if voz_expanded:
+                try:
+                    footer.add_class("-hidden-expand")
+                    footer.display = False
+                except Exception:
+                    try:
+                        footer.display = False
+                    except Exception:
+                        pass
+            else:
+                try:
+                    footer.remove_class("-hidden-expand")
+                    footer.display = True
+                except Exception:
+                    try:
+                        footer.display = True
+                    except Exception:
+                        pass
 
     def _apply_trad_split_layout(self) -> None:
-        """Apply ratio or expand state to LC/VOZ columns + sash visibility."""
+        """Apply ratio or expand state to LC/VOZ columns + sash + chrome."""
         try:
             lc_col = self.query_one("#trad-lc-col")
             voz_col = self.query_one("#trad-voz-col")
@@ -3810,6 +3975,7 @@ class LiveLingoApp(App):
         exp = self._trad_expand
 
         if exp == "lc":
+            # LC full width only (no chrome collapse — keep captions/footer)
             lc_col.remove_class("-hidden")
             voz_col.add_class("-hidden")
             try:
@@ -3817,9 +3983,11 @@ class LiveLingoApp(App):
             except Exception:
                 pass
             lc_col.styles.width = "1fr"
+            self._apply_trad_expand_chrome(False)
             self._update_trad_voz_expand_label()
             return
         if exp == "voz":
+            # VOZ: full width + more vertical room (captions + footer)
             voz_col.remove_class("-hidden")
             lc_col.add_class("-hidden")
             try:
@@ -3827,6 +3995,7 @@ class LiveLingoApp(App):
             except Exception:
                 pass
             voz_col.styles.width = "1fr"
+            self._apply_trad_expand_chrome(True)
             self._update_trad_voz_expand_label()
             return
 
@@ -3842,6 +4011,7 @@ class LiveLingoApp(App):
         right_w = max(12, 100 - left_w)
         lc_col.styles.width = f"{left_w}fr"
         voz_col.styles.width = f"{right_w}fr"
+        self._apply_trad_expand_chrome(False)
         self._update_trad_voz_expand_label()
 
     @on(Button.Pressed, "#trad-btn-voz")
@@ -3994,6 +4164,13 @@ class LiveLingoApp(App):
         """Must run on the UI thread (or via _drain_log_queue). panel=main|lc|app."""
         log = self._resolve_log_widget(panel)
         if log is None:
+            return
+        # Silent clear (per-chunk Sistema reset) — no note, no auto-scroll noise
+        if kind == "clear":
+            try:
+                log.clear()
+            except Exception:
+                pass
             return
         is_trad = self._is_trad_panel(panel)
         if is_trad:
@@ -4360,6 +4537,43 @@ class LiveLingoApp(App):
     # ------------------------------------------------------------------ #
     # Fixed listen header (robot animation + source/target)
     # ------------------------------------------------------------------ #
+    def set_force_soft_listen(self, on: bool) -> None:
+        """[N] UI: yellow borders while force soft-listen is active."""
+        on = bool(on)
+        self._force_soft_listen = on
+        self._paint_hot_listen_chrome(on)
+        try:
+            self._tick_status()
+        except Exception:
+            pass
+
+    def _paint_hot_listen_chrome(self, on: bool | None = None) -> None:
+        """Apply/remove yellow borders for [N] force soft-listen mode."""
+        if on is None:
+            on = bool(getattr(self, "_force_soft_listen", False))
+            try:
+                if self.pipeline is not None and hasattr(
+                    self.pipeline, "is_force_soft_listen"
+                ):
+                    on = bool(self.pipeline.is_force_soft_listen())
+                    self._force_soft_listen = on
+            except Exception:
+                pass
+        on = bool(on)
+        for sel in ("#listen-header", "#log-tabs", "#captions-panel", "#cmd-box"):
+            try:
+                w = self.query_one(sel)
+                w.set_class(on, "-hot-listen")
+            except Exception:
+                try:
+                    w = self.query_one(sel)
+                    if on:
+                        w.add_class("-hot-listen")
+                    else:
+                        w.remove_class("-hot-listen")
+                except Exception:
+                    pass
+
     def set_speaking(self, speaking: bool) -> None:
         """
         Mic VAD: speech started/stopped.
@@ -5551,6 +5765,78 @@ class LiveLingoApp(App):
         """Toggle compact UI mode (must run on UI thread)."""
         self.set_compact_ui(not bool(getattr(self, "_compact_ui", False)))
 
+    def on_resize(self, event) -> None:  # noqa: ARG002
+        """Reflow pipe | command | TTS when the app width changes."""
+        try:
+            self._apply_cmd_row_responsive()
+        except Exception:
+            pass
+        try:
+            self._refresh_log_width()
+        except Exception:
+            pass
+
+    def _apply_cmd_row_responsive(self) -> None:
+        """
+        Wide: horizontal  pipe | [command] | TTS
+        Narrow: vertical   pipe → command (middle) → TTS  (full width each)
+
+        Breakpoint ~100 columns (min pipe+cmd+tts + gutters no longer fit).
+        """
+        w = 0
+        try:
+            w = int(getattr(self.size, "width", 0) or 0)
+        except Exception:
+            w = 0
+        if w < 20:
+            try:
+                w = int(getattr(self.query_one("#bottom").size, "width", 0) or 0)
+            except Exception:
+                pass
+        if w < 20:
+            w = _terminal_log_width(100)
+
+        # pipe min~28 + gutters 4 + cmd min~48 + tts min~12 ≈ 92; use 100 soft
+        stacked = w < 100
+        prev = bool(getattr(self, "_cmd_row_stacked", False))
+        self._cmd_row_stacked = stacked
+        if stacked == prev:
+            # Still re-apply classes after compact toggle / first mount
+            pass
+
+        try:
+            row = self.query_one("#cmd-row")
+            row.set_class(stacked, "-stacked")
+        except Exception:
+            try:
+                row = self.query_one("#cmd-row")
+                if stacked:
+                    row.add_class("-stacked")
+                else:
+                    row.remove_class("-stacked")
+            except Exception:
+                pass
+
+        try:
+            bottom = self.query_one("#bottom")
+            bottom.set_class(stacked, "-cmd-stacked")
+            # Let CSS control height (clear stale inline)
+            try:
+                bottom.styles.height = None
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        if stacked != prev:
+            try:
+                self.refresh(layout=True)
+            except Exception:
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+
     def set_compact_ui(self, compact: bool) -> None:
         """
         Compact mode: hide #hint menu strip, shrink #bottom to the command row,
@@ -5580,6 +5866,11 @@ class LiveLingoApp(App):
                     hint.styles.height = None
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # Re-apply stacked heights (compact + stacked → bottom height 9)
+        try:
+            self._apply_cmd_row_responsive()
         except Exception:
             pass
 
@@ -5623,6 +5914,7 @@ class LiveLingoApp(App):
             _after_resize()
 
         try:
+            # Sistema only — never VOZ (Heard/Translated)
             if compact:
                 extra = (
                     " Janela reduzida."
@@ -5634,12 +5926,14 @@ class LiveLingoApp(App):
                     "info",
                     "UI compacta: menu oculto; comando visível."
                     f"{extra} [u]/F4 restaura.",
+                    panel="app",
                 )
             else:
                 self.post_log(
                     "info",
                     "UI completa: menu visível"
                     + (" · janela restaurada." if win_ok else "."),
+                    panel="app",
                 )
         except Exception:
             pass
@@ -5951,6 +6245,17 @@ class LiveLingoApp(App):
 
         header.set_class(self._sound_on and not self._mic_muted, "sound-on")
         header.set_class(self._mic_muted, "mic-muted")
+        # [N] force soft-listen chrome (yellow borders)
+        try:
+            fl = bool(getattr(self, "_force_soft_listen", False))
+            if self.pipeline is not None and hasattr(
+                self.pipeline, "is_force_soft_listen"
+            ):
+                fl = bool(self.pipeline.is_force_soft_listen())
+            self._force_soft_listen = fl
+            self._paint_hot_listen_chrome(fl)
+        except Exception:
+            fl = bool(getattr(self, "_force_soft_listen", False))
 
         if self._passthrough:
             by_line = (
@@ -5985,6 +6290,22 @@ class LiveLingoApp(App):
             if getattr(self, "_last_header_line", None) != muted_line:
                 self._last_header_line = muted_line
                 header.update(muted_line)
+            return
+
+        if fl and not playing:
+            pulse = "🟡" if (self._frame_i % 2) == 0 else "👂"
+            hot_line = (
+                f"{pulse}  ESCUTA FORÇADA [N]   {lang_block_short}   |  "
+                f"voz baixa OK · bordas amarelas  |  [N] desliga"
+            )
+            self._frame_i = (self._frame_i + 1) % 8
+            self._last_header_line = hot_line
+            header.update(hot_line)
+            try:
+                header.set_class(True, "-hot-listen")
+                header.set_class(False, "mic-muted")
+            except Exception:
+                pass
             return
 
         # Advance animation frame (classic robot idle / mic active)

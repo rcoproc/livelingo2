@@ -304,3 +304,20 @@ def test_capture_should_run_false_during_hangover():
     assert Pipeline.capture_should_run(host) is False
     host._capture_hangover_until = 0.0
     assert Pipeline.capture_should_run(host) is True
+
+
+def test_force_soft_listen_lowers_energy_bar():
+    """[N] mode: soft speech passes VAD where normal mode would reject."""
+    import numpy as np
+
+    cfg = _cfg(SILENCE_THRESHOLD=0.02, FORCE_LISTEN_THRESHOLD_SCALE=0.12)
+    rec = Recorder(cfg, 0, queue.Queue(), threading.Event(), capture_should_run=lambda: True)
+    # Quiet block: rms ~0.005 → below 0.02, above 0.02*0.12=0.0024
+    quiet = np.full(480, 0.005, dtype=np.float32)
+    assert rec._block_is_speech(quiet, in_speech=False) is False
+    rec.set_force_soft_listen(True)
+    assert rec.is_force_soft_listen() is True
+    assert rec._block_is_speech(quiet, in_speech=False) is True
+    rec.set_force_soft_listen(False)
+    assert rec.is_force_soft_listen() is False
+    assert rec._block_is_speech(quiet, in_speech=False) is False

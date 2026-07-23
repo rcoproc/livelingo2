@@ -33,6 +33,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "ld", "group": "audio", "token": "ld", "sort": "ld"},
     {"id": "lv", "group": "audio", "token": "lv", "sort": "lv"},
     {"id": "n", "group": "audio", "token": "n", "sort": "n"},
+    {"id": "N", "group": "audio", "token": "N", "sort": "n2"},
     {"id": "p", "group": "audio", "token": "p", "sort": "p"},
     {"id": "pN", "group": "audio", "token": "pN", "sort": "pn"},
     {"id": "r", "group": "audio", "token": "r", "sort": "r"},
@@ -110,6 +111,18 @@ _COMMANDS: list[dict[str, str]] = [
         "token": "cam full",
         "sort": "cam-full",
     },
+    {
+        "id": "sub",
+        "group": "audio",
+        "token": "sub",
+        "sort": "sub",
+    },
+    {
+        "id": "cam_sub",
+        "group": "audio",
+        "token": "cam sub",
+        "sort": "cam-sub",
+    },
     {"id": "lo", "group": "sentence", "token": "lo", "sort": "lo"},
     {"id": "lt", "group": "sentence", "token": "lt", "sort": "lt"},
     # --- Session ---
@@ -179,7 +192,15 @@ _I18N: dict[str, dict[str, str]] = {
             "Toggle microphone mute (Windows Core Audio when available + app capture gate). "
             "In the TUI a **centered red modal** (white text) appears while muted; "
             "only action: press **n** again (**Cmd n** / desmutar o microfone - Cmd n). "
-            "Header also shows MUTED. TUI stays open behind the popup."
+            "Header also shows MUTED. TUI stays open behind the popup. "
+            "Case-sensitive: lowercase **n** only (capital **N** is force soft-listen)."
+        ),
+        "title_N": "Force soft-listen",
+        "desc_N": (
+            "Capital **N** only (not mute). Arms **force soft-listen** for translation: "
+            "yellow borders on the TUI, VAD accepts **low-volume** speech (no need to speak loudly). "
+            "Unmutes the mic if needed. Press **N** again to return to normal energy VAD. "
+            "Does not replace **n** (mute)."
         ),
         "title_p": "Open audio folder",
         "desc_p": "Opens the folder of the **last** chunk audio file in the system file manager (Explorer).",
@@ -366,13 +387,25 @@ _I18N: dict[str, dict[str, str]] = {
         "title_cam_closed": "Toggle closed mouth (F10)",
         "desc_cam_closed": (
             "**F10** or `cam closed`: show/hide closed-mouth **face plate** on live video. "
-            "`cam closed auto` returns to VAD automatic mode."
+            "No auto on mic speech — only F10/F11. `cam closed off` = live again."
         ),
         "title_cam_full": "Full-frame closed freeze (F11)",
         "desc_cam_full": (
             "**F11** or `cam full` / `cam freeze`: fill the **entire** virtual camera "
             "with the closed-mouth photo (hides live video; does **not** fullscreen the TUI). "
             "Press again to restore live. Requires `cam snap closed` template."
+        ),
+        "title_sub": "VCam subtitle burn-in (TARGET)",
+        "desc_sub": (
+            "Toggle **burn-in TARGET (translated) text** on OBS Virtual Camera frames. "
+            "Stays until **`sub off`** or the **next translation** (no auto-hide). "
+            "Pixels only — not Teams/Zoom CC. "
+            "`sub on` / `sub off` / `sub status`. Default OFF. `[u]` = compact UI."
+        ),
+        "title_cam_sub": "VCam subtitle via cam",
+        "desc_cam_sub": (
+            "Same as `sub`: `cam sub` / `cam sub on` / `cam sub off` — "
+            "draw latest **TARGET** translation at the bottom of the virtual-cam frame."
         ),
         "title_lo": "List source only",
         "desc_lo": "List only **source** (heard) lines for the session.",
@@ -481,7 +514,15 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_n": (
             "Liga/desliga o mute do microfone (Core Audio no Windows quando disponível + gate do app). "
             "Na TUI abre um **popup vermelho centralizado** (texto branco) enquanto estiver mudo; "
-            "única ação: **n** de novo (**desmutar o microfone - Cmd n**). Header mostra MUTED."
+            "única ação: **n** de novo (**desmutar o microfone - Cmd n**). Header mostra MUTED. "
+            "Case-sensitive: só **n** minúsculo (**N** maiúsculo = escuta forçada)."
+        ),
+        "title_N": "Escuta forçada (voz baixa)",
+        "desc_N": (
+            "Só **N** maiúsculo (não é mute). Liga **escuta forçada** para tradução: "
+            "bordas amarelas na TUI, VAD aceita **voz baixa** (sem precisar falar alto). "
+            "Desmuta o mic se precisar. **N** de novo volta ao VAD normal. "
+            "Não substitui **n** (mute)."
         ),
         "title_p": "Abrir pasta do áudio",
         "desc_p": "Abre a pasta do áudio do **último** chunk no gerenciador de arquivos.",
@@ -664,13 +705,25 @@ _I18N: dict[str, dict[str, str]] = {
         "title_cam_closed": "Boca calada (F10)",
         "desc_cam_closed": (
             "**F10** ou `cam closed`: mostra/tira a **placa de rosto** (boca calada) no vídeo ao vivo. "
-            "`cam closed auto` volta ao modo automático (VAD)."
+            "Sem auto ao falar no mic — só F10/F11. `cam closed off` = ao vivo de novo."
         ),
         "title_cam_full": "Tela closed inteira (F11)",
         "desc_cam_full": (
             "**F11** ou `cam full` / `cam freeze` / `cam tela`: preenche a câmera virtual "
             "com a **foto closed inteira** (esconde o vídeo ao vivo; **não** maximiza a TUI). "
             "Outro F11 volta ao vivo. Precisa de `cam snap closed`."
+        ),
+        "title_sub": "Legenda vcam burn-in (TARGET)",
+        "desc_sub": (
+            "Liga/desliga **texto TARGET (traduzido)** na OBS Virtual Cam. "
+            "Fica até **`sub off`** ou a **próxima tradução** (sem sumir sozinha). "
+            "Só pixels — não é CC do Teams. "
+            "`sub on` / `sub off` / `sub status`. Padrão OFF. `[u]` = UI compacta."
+        ),
+        "title_cam_sub": "Legenda vcam via cam",
+        "desc_cam_sub": (
+            "Igual a `sub`: `cam sub` / `cam sub on` / `cam sub off` — "
+            "desenha a última tradução **TARGET** na base do frame da câmera virtual."
         ),
         "title_lo": "Listar só source",
         "desc_lo": "Lista só as linhas **source** (ouvidas) da sessão.",

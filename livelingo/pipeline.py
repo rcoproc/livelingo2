@@ -359,6 +359,56 @@ class Pipeline:
         return muted_now, os_ok, name
 
     # ------------------------------------------------------------------ #
+    # Force soft-listen ([N]) — low-energy VAD + yellow UI borders
+    # ------------------------------------------------------------------ #
+    def is_force_soft_listen(self) -> bool:
+        try:
+            return bool(self.recorder.is_force_soft_listen())
+        except Exception:
+            return False
+
+    def set_force_soft_listen(self, enabled: bool) -> bool:
+        """
+        Enable/disable [N] mode: accept soft / low-volume speech for translation.
+
+        When enabling: unmute app mic, open capture gate, arm escuta.
+        Returns new state (True = force soft-listen ON).
+        """
+        enabled = bool(enabled)
+        try:
+            self.recorder.set_force_soft_listen(enabled)
+        except Exception:
+            pass
+        if enabled:
+            # Leave mute / bypass so soft speech can be captured
+            try:
+                if self.is_passthrough_active():
+                    self.set_voice_passthrough(False)
+            except Exception:
+                pass
+            try:
+                if self.mic.is_app_muted():
+                    self.mic.set_muted(False)
+            except Exception:
+                pass
+            try:
+                self.sync_capture_gate(log_resume=True)
+            except Exception:
+                pass
+            try:
+                self._arm_listen_after_tts(note="[N] escuta forçada — voz baixa OK")
+            except Exception:
+                try:
+                    self.recorder.set_capture_enabled(True)
+                except Exception:
+                    pass
+        return self.is_force_soft_listen()
+
+    def toggle_force_soft_listen(self) -> bool:
+        """Toggle [N] force soft-listen. Returns new ON/OFF state."""
+        return self.set_force_soft_listen(not self.is_force_soft_listen())
+
+    # ------------------------------------------------------------------ #
     # Direct voice bypass ([b]) — mic → OUTPUT (CABLE) without translation
     # ------------------------------------------------------------------ #
     def is_passthrough_active(self) -> bool:
@@ -1417,6 +1467,19 @@ class Pipeline:
             self.full_transcript.append((n, heard, translated, created_at, timing))
         return created_at
 
+    def _push_webcam_subtitle(self, translated: str) -> None:
+        """Replace vcam burn-in with current TARGET only (never append)."""
+        cam = getattr(self, "webcam_service", None)
+        if cam is None or not hasattr(cam, "push_subtitle_text"):
+            return
+        t = " ".join((translated or "").split())
+        if not t:
+            return
+        try:
+            cam.push_subtitle_text(t)
+        except Exception:
+            pass
+
     def _publish_chunk(
         self, n, heard, translated, audio_path, timing, timing_extra="", note=""
     ):
@@ -1430,6 +1493,8 @@ class Pipeline:
             ui.chunk_stream_done(n, heard, translated, from_cache=from_cache)
         else:
             ui.chunk_text_preview(n, heard, translated, from_cache=from_cache)
+        # Always TARGET text for vcam burn-in (shown only if [sub] ON)
+        self._push_webcam_subtitle(translated)
         created_at = self._timestamp_now()
         # Path set but file may still be flushing (sound OFF + background TTS)
         pending = bool(audio_path and str(audio_path).strip())
@@ -2142,12 +2207,13 @@ class Pipeline:
                     else:
                         self._finish_chunk_slot(n, None)
                 elif message:
+                    # Abort/filter notes belong on Sistema (not VOZ phrases)
                     if kind == "warn":
-                        ui.warn(message)
+                        ui.warn(message, panel="app")
                     elif kind == "error":
-                        ui.error(message)
+                        ui.error(message, panel="app")
                     else:
-                        ui.dim(message)
+                        ui.dim(message, panel="app")
                 try:
                     note = (message or "").strip()
                     if note:
@@ -2169,28 +2235,37 @@ class Pipeline:
                     pass
 
             if sound_off and self.cfg.VERBOSE:
-                ui.info(f"[chunk {n}] Processing (sound OFF)…")
+                ui.info(f"[chunk {n}] Processing (sound OFF)…", panel="app")
 
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] Iniciando processamento do chunk...")
+                ui.dim(
+                    f"[chunk {n}] [debug] Iniciando processamento do chunk...",
+                    panel="app",
+                )
             backlog = self.chunk_queue.qsize()
             # Backlog is operational signal — keep always; rest of progress is VERBOSE
             if backlog >= 3:
                 ui.warn(
                     f"processing is {backlog} chunks behind — "
-                    f"a smaller WHISPER_MODEL would keep up better."
+                    f"a smaller WHISPER_MODEL would keep up better.",
+                    panel="app",
                 )
 
             try:
                 self._process_chunk_body(item, n, sound_off, ordered, _abort)
             except Exception as exc:
-                ui.error(f"[chunk {n}] processing failed: {exc}")
+                ui.error(f"[chunk {n}] processing failed: {exc}", panel="app")
                 _abort()
         finally:
             self._mark_processor_leave()
 
     def _process_chunk_body(self, item, n, sound_off, ordered, _abort):
         sound_on = not sound_off
+        # Sistema: wipe prior noise; keep Languages|TTS|Sound|Mic + this chunk only
+        try:
+            ui.begin_chunk_sistema(n, pipeline=self)
+        except Exception:
+            pass
 
         def _log_summary(heared_text, note=""):
             ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -2236,7 +2311,7 @@ class Pipeline:
                 with self._stt_lock:
                     heard = self.transcriber.transcribe(item)
             except Exception as exc:
-                ui.error(f"[chunk {n}] STT failed: {exc}")
+                ui.error(f"[chunk {n}] STT failed: {exc}", panel="app")
                 _abort()
                 return
             t1 = time.perf_counter()
@@ -2247,7 +2322,10 @@ class Pipeline:
                 panel="app",
             )
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] STT concluído com sucesso.")
+                ui.dim(
+                    f"[chunk {n}] [debug] STT concluído com sucesso.",
+                    panel="app",
+                )
 
             if not heard:
                 _abort(
@@ -2322,12 +2400,33 @@ class Pipeline:
 
         # Pre-TTS cue once per chunk (first segment only), not every sentence.
         pre_tts_cue_remaining = True
+        tts_engine_name = str(
+            getattr(self.synthesizer, "engine_name", None)
+            or getattr(self.cfg, "TTS_ENGINE", "edge")
+            or "edge"
+        ).lower()
+        tts_voice_label = str(
+            getattr(self.synthesizer, "voice_label", None)
+            or getattr(self.synthesizer, "voice_id", None)
+            or getattr(self.cfg, "TTS_VOICE", "")
+            or ""
+        )
 
         def on_segment(audio, sample_rate_):
             nonlocal tts_first_audio, time_to_audio, sample_rate, pre_tts_cue_remaining
             now = time.perf_counter()
             if tts_first_audio is None and t_tts_start is not None:
                 tts_first_audio = now - t_tts_start
+                # Instrument: prove which engine produced first audio + ms
+                try:
+                    ms = int(tts_first_audio * 1000)
+                    ui.dim(
+                        f"  [chunk {n}] ⏱ TTS first_chunk {ms}ms · "
+                        f"engine={tts_engine_name} · voice={tts_voice_label or '—'}",
+                        panel="app",
+                    )
+                except Exception:
+                    pass
             if time_to_audio is None:
                 time_to_audio = now - t0
             sample_rate = sample_rate_
@@ -2425,6 +2524,8 @@ class Pipeline:
 
                 def on_token(partial):
                     ui.chunk_stream_update(n, partial)
+                    # Live TARGET on vcam while tokens stream (if [sub] ON)
+                    self._push_webcam_subtitle(partial)
                     if feeder is not None:
                         enqueue_segments(feeder.feed(partial))
 
@@ -2432,7 +2533,10 @@ class Pipeline:
             else:
                 translated = self.translator.translate(heard)
         except Exception as exc:
-            ui.error(f'[chunk {n}] translation failed for "{heard}": {exc}')
+            ui.error(
+                f'[chunk {n}] translation failed for "{heard}": {exc}',
+                panel="app",
+            )
             if segment_queue is not None:
                 segment_queue.put(None)
             if tts_thread is not None:
@@ -2482,7 +2586,8 @@ class Pipeline:
         if self.cfg.VERBOSE:
             ui.dim(
                 f"[chunk {n}] [debug] Tradução concluída "
-                f"({'cache' if cache_hit else 'live'})."
+                f"({'cache' if cache_hit else 'live'}).",
+                panel="app",
             )
 
         if not translated:
@@ -2507,12 +2612,14 @@ class Pipeline:
         record_created_at = self._timestamp_now()
         if sound_on:
             if strip_note:
-                ui.dim(strip_note)
+                ui.dim(strip_note, panel="app")
             if self._use_streaming_llm_for_chunk() and not cache_hit:
                 ui.chunk_stream_done(n, heard, translated, from_cache=cache_badge)
             else:
                 # HIT has no token stream — always use preview with badge
                 ui.chunk_text_preview(n, heard, translated, from_cache=cache_badge)
+            # TARGET burn-in as soon as translation is ready (before/during TTS)
+            self._push_webcam_subtitle(translated)
             with self.history_lock:
                 self.history.append((n, heard, translated, audio_path))
             self._record_transcript(
@@ -2523,7 +2630,11 @@ class Pipeline:
             nonlocal tts_audio, sample_rate, t_tts_start
             if announce:
                 ts_tts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                ui.dim(f"  [chunk {n}] ⏱ TTS         {ts_tts} — início", panel="app")
+                ui.dim(
+                    f"  [chunk {n}] ⏱ TTS         {ts_tts} — início · "
+                    f"engine={tts_engine_name} · voice={tts_voice_label or '—'}",
+                    panel="app",
+                )
                 ui.chunk_progress(n, "tts")
             if overlap_tts:
                 enqueue_segments(feeder.flush(translated))
@@ -2562,11 +2673,16 @@ class Pipeline:
                 "total": (t3 - t0) if t3 is not None else (t2 - t0),
                 "translate_cache": bool(cache_hit),
             }
+            if include_tts:
+                timing["tts_engine"] = tts_engine_name
+                if tts_voice_label:
+                    timing["tts_voice"] = tts_voice_label
             if include_tts and t3 is not None:
                 tts_start = t_tts_start if t_tts_start is not None else t2
                 timing["tts"] = t3 - tts_start
                 if tts_first_audio is not None:
                     timing["tts_first"] = tts_first_audio
+                    timing["tts_first_ms"] = int(tts_first_audio * 1000)
                 if time_to_audio is not None:
                     timing["time_to_audio"] = time_to_audio
                 if t_tts_start is not None:
@@ -2710,14 +2826,15 @@ class Pipeline:
                 pass
             if self.cfg.VERBOSE:
                 ui.dim(
-                    f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background."
+                    f"[chunk {n}] [debug] Sound OFF — texto pronto; TTS em background.",
+                    panel="app",
                 )
             return
 
         try:
             _synthesize_chunk_audio()
         except Exception as exc:
-            ui.error(f"[chunk {n}] TTS failed: {exc}")
+            ui.error(f"[chunk {n}] TTS failed: {exc}", panel="app")
             return
 
         t3 = time.perf_counter()
@@ -2728,7 +2845,10 @@ class Pipeline:
             panel="app",
         )
         if self.cfg.VERBOSE:
-            ui.dim(f"[chunk {n}] [debug] Síntese de voz (TTS) concluída com sucesso.")
+            ui.dim(
+                f"[chunk {n}] [debug] Síntese de voz (TTS) concluída com sucesso.",
+                panel="app",
+            )
         _finalize_chunk_timings(t3)
         ui.chunk_progress(n, "ready")
         _log_summary(heard, note="TTS concluído")
@@ -2752,7 +2872,10 @@ class Pipeline:
         Ensures cache dir exists and path is absolute so Explorer matches UI.
         """
         if tts_audio is None or len(tts_audio) == 0:
-            ui.warn(f"[chunk {n}] Sem áudio na memória — WAV não gravado.")
+            ui.warn(
+                f"[chunk {n}] Sem áudio na memória — WAV não gravado.",
+                panel="app",
+            )
             return ""
 
         path = (audio_path or "").strip() or os.path.join(
@@ -2767,7 +2890,10 @@ class Pipeline:
             parent = os.path.dirname(path) or self.cache_dir
             os.makedirs(parent, exist_ok=True)
         except Exception as exc:
-            ui.error(f"[chunk {n}] Não criou pasta de áudio ({parent}): {exc}")
+            ui.error(
+                f"[chunk {n}] Não criou pasta de áudio ({parent}): {exc}",
+                panel="app",
+            )
             return ""
 
         rate = int(sample_rate or 24000)
@@ -2778,18 +2904,25 @@ class Pipeline:
                 audio = audio.mean(axis=1).astype(np.float32)
             sf.write(path, audio, rate)
         except Exception as exc:
-            ui.error(f"[chunk {n}] Erro ao salvar arquivo de áudio: {exc}")
-            ui.dim(f"   path={path}")
+            ui.error(
+                f"[chunk {n}] Erro ao salvar arquivo de áudio: {exc}",
+                panel="app",
+            )
+            ui.dim(f"   path={path}", panel="app")
             return ""
 
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
-            ui.error(f"[chunk {n}] WAV não encontrado após gravar: {path}")
+            ui.error(
+                f"[chunk {n}] WAV não encontrado após gravar: {path}",
+                panel="app",
+            )
             return ""
 
         if self.cfg.VERBOSE:
             ui.dim(
                 f"[chunk {n}] [debug] Áudio WAV gravado "
-                f"({os.path.getsize(path)} bytes): {path}"
+                f"({os.path.getsize(path)} bytes): {path}",
+                panel="app",
             )
 
         # Keep RAM history pointing at the real path
@@ -2814,9 +2947,15 @@ class Pipeline:
                 n, heard, translated, created_at=created_at, timing=timing
             )
             if self.cfg.VERBOSE:
-                ui.dim(f"[chunk {n}] [debug] Metadados gravados com sucesso no SQLite.")
+                ui.dim(
+                    f"[chunk {n}] [debug] Metadados gravados com sucesso no SQLite.",
+                    panel="app",
+                )
         except Exception as exc:
-            ui.error(f"[chunk {n}] Erro ao salvar no banco de dados: {exc}")
+            ui.error(
+                f"[chunk {n}] Erro ao salvar no banco de dados: {exc}",
+                panel="app",
+            )
             # File is on disk even if DB fails
         return path
 
