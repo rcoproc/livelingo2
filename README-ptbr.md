@@ -154,6 +154,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `t` / `t EN` | **TARGET** — muda só o idioma alvo (códigos em **CAIXA ALTA**; aceita one-liner) |
 | `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura (**só n minúsculo**) |
 | `N` | **Escuta forçada** — **N maiúsculo** só: bordas amarelas; VAD aceita **voz baixa**; **N** de novo = VAD normal |
+| `go` / `.` / `flush` / **F6** | **Flush escuta** — encerra a fala **agora** → STT (sem esperar silêncio do VAD ~1–2s) |
 | `b` / `bypass` | **Bypass de voz** — 1ª tecla corta TTS no Cable (como `[x]`) e envia mic cru → CABLE **sem** tradução; 2ª tecla retoma escuta/tradução/TTS |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync → **OBS Virtual Camera** (requer `requirements-webcam.txt` + OBS) |
 | `cam snap closed` | **Captura / atualiza** a **foto do rosto inteiro** (boca fechada) usada por F10/F11. Preview mostra a elipse de congelamento. Aliases: `cam snap`, `cam snapshot closed` |
@@ -179,7 +180,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F10`** = placa de rosto closed; **`F11`** = freeze full-frame da foto closed (não maximiza TUI); **`N`** = escuta forçada (voz baixa); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F6` / `[go]`** = flush escuta → STT agora; **`F10`** = placa de rosto closed; **`F11`** = freeze full-frame da foto closed (não maximiza TUI); **`N`** = escuta forçada (voz baixa); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
 
 **Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = ajuda agrupada.
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
@@ -254,6 +255,9 @@ vcam (pixels no Teams, não CC). Config: `WEBCAM_SUBTITLE=false`,
 
 **Escuta pós-TTS (v1.2.2):** o mic só reabre quando o áudio no Cable termina (ou `[x]`),
 com hangover curto para o eco do TTS não re-disparar STT. Voz baixa? Pressione **`N`**.
+Terminou de falar e o VAD ainda espera silêncio? **`[go]` / F6** manda o STT **agora**.
+`MONITOR_PLAYBACK` espelha o TTS nos fones **em paralelo** com o Cable (não sequencial).
+Lead do bip pré-TTS: `TTS_MONITOR_CUE_LEAD_S=0.3` (padrão).
 LiveCaptions **não** inicia sozinho — use `lc on` / `lc off`.
 
 **OBS:** com LiveLingo streaming, use **Stop Virtual Camera** no OBS (produtor

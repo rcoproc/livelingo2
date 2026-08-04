@@ -100,7 +100,7 @@ class Player:
     def is_interrupted(self):
         return self._interrupt.is_set()
 
-    def _write_stream(self, stream, audio):
+    def _write_stream(self, stream, audio, *, use_lock: bool = True):
         if stream is None:
             return
         pos = 0
@@ -110,10 +110,19 @@ class Player:
             end = min(pos + self.block_frames, len(audio))
             chunk = audio[pos:end]
             try:
-                with self._stream_lock:
+                if use_lock:
+                    with self._stream_lock:
+                        if self._interrupt.is_set():
+                            return
+                        if stream is None or not getattr(stream, "active", True):
+                            return
+                        stream.write(chunk)
+                else:
+                    # Parallel Cable|monitor path: each stream thread skips the
+                    # shared lock so writes are not serialized (2× wall-clock).
                     if self._interrupt.is_set():
                         return
-                    if stream is None or not stream.active:
+                    if stream is None or not getattr(stream, "active", True):
                         return
                     stream.write(chunk)
             except Exception:
@@ -123,12 +132,43 @@ class Player:
                 raise
             pos = end
 
+    def _write_cable_and_monitor_parallel(self, audio):
+        """
+        Full MONITOR_PLAYBACK: Cable + headphones at the same time.
+
+        Previously wrote Cable completely, then monitor (2× duration). Now two
+        threads write the same waveform to two OutputStreams concurrently.
+        """
+        mon = self._monitor_stream
+        if mon is None:
+            self._write_stream(self._stream, audio)
+            return
+        err: list = []
+
+        def _mon_write():
+            try:
+                self._write_stream(mon, audio, use_lock=False)
+            except Exception as exc:
+                err.append(exc)
+
+        t = threading.Thread(target=_mon_write, name="player-monitor", daemon=True)
+        t.start()
+        try:
+            self._write_stream(self._stream, audio, use_lock=False)
+        finally:
+            t.join(timeout=max(1.0, len(audio) / float(self.samplerate or 24000) + 2.0))
+        if err and not self._interrupt.is_set():
+            raise err[0]
+
     def play(self, audio, samplerate, interruptible=True, blocking=True, clear=True):
         """Write one audio array in small blocks (interruptible).
 
         clear=True (default) resets the interrupt flag at start. Callers that
         already cleared (and re-checked a stop flag) should pass clear=False
         so a concurrent stop is not accidentally undone.
+
+        When ``monitor_full_playback`` is on, Cable and headphones receive the
+        same TTS **in parallel** (not sequential full passes).
         """
         if audio is None or len(audio) == 0:
             return
@@ -139,31 +179,45 @@ class Player:
         elif self._interrupt.is_set():
             return
 
+        mon_full = (
+            self.monitor_full_playback
+            and self.monitor_device is not None
+            and self.monitor_device != self.device
+        )
+
         if samplerate != self.samplerate:
             # Fallback path: less granular, but interrupt() calls sd.stop().
             if blocking:
-                sd.play(audio, samplerate=samplerate, device=self.device)
-                sd.wait()
-                if self._interrupt.is_set():
-                    return
-                if self.monitor_full_playback and self.monitor_device is not None:
-                    if self.monitor_device != self.device:
-                        sd.play(
-                            audio, samplerate=samplerate, device=self.monitor_device
-                        )
-                        sd.wait()
-            else:
-                sd.play(
-                    audio, samplerate=samplerate, device=self.device, blocking=False
-                )
-                if self.monitor_full_playback and self.monitor_device is not None:
-                    if self.monitor_device != self.device:
+                if mon_full:
+                    # Fire both non-blocking then wait once (parallel-ish).
+                    sd.play(audio, samplerate=samplerate, device=self.device)
+                    try:
                         sd.play(
                             audio,
                             samplerate=samplerate,
                             device=self.monitor_device,
                             blocking=False,
                         )
+                    except Exception:
+                        pass
+                    sd.wait()
+                else:
+                    sd.play(audio, samplerate=samplerate, device=self.device)
+                    sd.wait()
+            else:
+                sd.play(
+                    audio, samplerate=samplerate, device=self.device, blocking=False
+                )
+                if mon_full:
+                    try:
+                        sd.play(
+                            audio,
+                            samplerate=samplerate,
+                            device=self.monitor_device,
+                            blocking=False,
+                        )
+                    except Exception:
+                        pass
             return
 
         # Pre-TTS cue calls pause_main_output() → stream.abort(). Ensure live
@@ -173,16 +227,11 @@ class Player:
             self.resume_main_output()
         except Exception:
             pass
-        self._write_stream(self._stream, audio)
         # Full TTS on headphones only when MONITOR_PLAYBACK (not cue-only)
-        if (
-            self.monitor_full_playback
-            and not self._interrupt.is_set()
-            and self._monitor_stream is not None
-            and self.monitor_device is not None
-            and self.monitor_device != self.device
-        ):
-            self._write_stream(self._monitor_stream, audio)
+        if mon_full and self._monitor_stream is not None and not self._interrupt.is_set():
+            self._write_cable_and_monitor_parallel(audio)
+        else:
+            self._write_stream(self._stream, audio)
 
     def pause_main_output(self):
         """

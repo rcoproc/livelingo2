@@ -2321,6 +2321,20 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             )
         else:
             ui.warn("Nada a interromper (som OFF ou sem TTS a tocar).", panel="app")
+    elif cmd in ("go", ".", "flush") or (raw_cmd or "").strip() in (
+        "go",
+        "[go]",
+        ".",
+        "[.]",
+        "flush",
+        "[flush]",
+    ):
+        # Force VAD end → STT now (skip SILENCE_DURATION wait).
+        ok, msg = pipeline.flush_listen_now()
+        if ok:
+            ui.success(msg, panel="app")
+        else:
+            ui.warn(msg, panel="app")
     elif cmd == "o":
         print("Enter a word in English: ", end="", flush=True)
         word = sys.stdin.readline().strip()

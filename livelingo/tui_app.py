@@ -2702,6 +2702,13 @@ class LiveLingoApp(App):
             priority=True,
         ),
         Binding(
+            "f6",
+            "flush_listen",
+            "Flush STT",
+            show=True,
+            priority=True,
+        ),
+        Binding(
             "f10",
             "toggle_closed_mouth",
             "Boca calada",
@@ -5029,6 +5036,17 @@ class LiveLingoApp(App):
     def action_toggle_bypass(self) -> None:
         """Footer/F2: toggle voice bypass (same as click on white badge / [b])."""
         self._toggle_bypass_from_ui()
+
+    def action_flush_listen(self) -> None:
+        """F6 / [go]: force VAD end → STT now (skip silence wait)."""
+        try:
+            ok, msg = self.pipeline.flush_listen_now()
+            self.post_log("success" if ok else "warn", msg, panel="app")
+        except Exception as exc:
+            try:
+                self.post_log("error", f"Flush escuta: {exc}", panel="app")
+            except Exception:
+                pass
 
     def action_toggle_fullscreen(self) -> None:
         """

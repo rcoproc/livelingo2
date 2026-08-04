@@ -477,6 +477,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `F3` | Cycle log tabs (Tradução → Sistema → Novidades → Lista de comandos) |
 | `F4` / `u` | Compact UI: hide command menu; keep command line (optional window height shrink) |
 | `F5` / click scroll chip | **Auto-scroll lock** for Tradução **LC + VOZ** — ON (green) follows new lines; OFF (amber) freezes the viewport while lines still append. Footer shows `Auto↓ ON` / `Auto↓ OFF`. `GG` still jumps once without re-enabling follow when OFF |
+| `F6` / `go` / `.` | **Flush listen** — force end of current speech → STT now (skip silence wait) |
 | `Ctrl+C` | Copy selected log text |
 | `Ctrl+Shift+C` | Copy entire content of the **focused** log pane (on Tradução: LC or VOZ) |
 | `F2` / click bypass chip / `b` | **Voice bypass** — stop Cable TTS (like `[x]`), then raw mic → CABLE; tips log on **Sistema**; press again to resume translate |
@@ -496,6 +497,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
 | `s` / `n` / `r` / `rN` | Sound, **mic mute** (lowercase **n** only), replay |
 | `N` | **Force soft-listen** (capital **N** only) — yellow borders; VAD accepts low-volume speech; press again for normal VAD |
+| `go` / `.` / `flush` / **F6** | **Flush listen** — end current speech **now** → STT (skip VAD silence wait ~1–2s) |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync stream to **OBS Virtual Camera** (needs `requirements-webcam.txt` + OBS) |
 | `cam snap closed` | **Capture / update** the closed-mouth **full-face photo** used by F10/F11. Preview shows the freeze oval. Aliases: `cam snap`, `cam snapshot closed` |
 | `sub` / `sub on` / `sub off` / `cam sub` | **Burn-in TARGET** text on virtual-cam frames (frosted footer). Pixels only — not Teams CC. Default OFF; stays until next translation or `sub off` |
@@ -613,6 +615,9 @@ frosted footer bar of the virtual-cam image (Teams sees pixels, not CC). Config:
 
 **Listen after TTS (v1.2.2):** capture re-opens only when Cable playback ends (or `[x]`),
 with a short hangover so the TTS echo does not re-trigger STT. Soft voice? Press **`N`**.
+Finished speaking and still waiting on silence? **`[go]` / F6** flushes STT now.
+`MONITOR_PLAYBACK` mirrors full TTS on headphones **in parallel** with Cable (not sequential).
+Pre-TTS bip lead default: `TTS_MONITOR_CUE_LEAD_S=0.3`.
 
 **OBS:** while LiveLingo streams, **Stop Virtual Camera** in OBS (exclusive producer).
 LiveLingo owns the device; Teams camera = **OBS Virtual Camera**.

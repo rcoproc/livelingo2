@@ -305,9 +305,11 @@ MONITOR_PLAYBACK = _get_bool("MONITOR_PLAYBACK", False)
 # to use the system default output. Used when MONITOR_PLAYBACK and/or TTS cue.
 MONITOR_DEVICE = _get_str("MONITOR_DEVICE", "")
 
-# Soft beep on MONITOR_DEVICE ~1s before TTS hits Cable (not on Teams mic).
+# Soft beep on MONITOR_DEVICE before TTS hits Cable (not on Teams mic).
+# Lead is wall-clock after bip start while Cable stays paused (bip never on Cable).
+# Default 0.3s (was 1.0) — lower first-audio latency; raise if you need more warning.
 TTS_MONITOR_CUE = _get_bool("TTS_MONITOR_CUE", True)
-TTS_MONITOR_CUE_LEAD_S = _get_float("TTS_MONITOR_CUE_LEAD_S", 1.0)
+TTS_MONITOR_CUE_LEAD_S = _get_float("TTS_MONITOR_CUE_LEAD_S", 0.3)
 TTS_MONITOR_CUE_DURATION_S = _get_float("TTS_MONITOR_CUE_DURATION_S", 0.14)
 TTS_MONITOR_CUE_FREQ_HZ = _get_float("TTS_MONITOR_CUE_FREQ_HZ", 880.0)
 TTS_MONITOR_CUE_AMPLITUDE = _get_float("TTS_MONITOR_CUE_AMPLITUDE", 0.22)

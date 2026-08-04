@@ -41,6 +41,17 @@ def test_build_commands_markdown_includes_n_force_and_sub():
     assert "legenda" in md_pt.lower() or "burn-in" in md_pt.lower()
 
 
+def test_build_commands_markdown_includes_go_flush():
+    md_en = build_commands_markdown("en")
+    assert "`[go]`" in md_en or "[go]" in md_en
+    assert "flush" in md_en.lower() or "stt" in md_en.lower()
+    assert "F6" in md_en or "`F6`" in md_en
+
+    md_pt = build_commands_markdown("pt-BR")
+    assert "go" in md_pt.lower()
+    assert "stt" in md_pt.lower() or "flush" in md_pt.lower()
+
+
 def test_build_commands_markdown_includes_cls_sides():
     """Tradução split: cls clears all; cls1=LC left; cls2=VOZ right."""
     md_en = build_commands_markdown("en")
