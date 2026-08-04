@@ -42,6 +42,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "rsN", "group": "audio", "token": "rsN", "sort": "rsn"},
     {"id": "s", "group": "audio", "token": "s", "sort": "s"},
     {"id": "x", "group": "audio", "token": "x", "sort": "x"},
+    {"id": "go", "group": "audio", "token": "go", "sort": "go"},
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
     {"id": "o", "group": "idiom", "token": "o", "sort": "o"},
@@ -60,6 +61,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "f3", "group": "keys", "token": "F3", "sort": "f3"},
     {"id": "f4", "group": "keys", "token": "F4", "sort": "f4"},
     {"id": "f5", "group": "keys", "token": "F5", "sort": "f5"},
+    {"id": "f6", "group": "keys", "token": "F6", "sort": "f6"},
     {"id": "search", "group": "keys", "token": "/", "sort": "search"},
     {"id": "search_n", "group": "keys", "token": "/n", "sort": "search-n"},
     {"id": "search_p", "group": "keys", "token": "/p", "sort": "search-p"},
@@ -237,6 +239,14 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_x": "Stop playback",
         "desc_x": "Stops the current TTS playback and clears the remaining audio queue.",
+        "title_go": "Flush listen → STT now",
+        "desc_go": (
+            "End the current utterance **immediately** and start STT/translate "
+            "(skip VAD silence wait). Aliases: `.` · `flush`. Same as **F6**. "
+            "Use when you finished speaking and do not want to wait ~1–2s of silence."
+        ),
+        "title_f6": "Flush listen (F6)",
+        "desc_f6": "Same as `[go]` / `.` — force VAD end → STT now without waiting for silence.",
         # Idiom
         "title_g": "Swap languages",
         "desc_g": "Swap `SOURCE_LANG` ↔ `TARGET_LANG` at runtime (STT, translator, TTS). Does not rewrite old chunks. If a chunk is in flight, the swap may be deferred until idle.",
@@ -558,6 +568,14 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_x": "Parar reprodução",
         "desc_x": "Interrompe o TTS atual e esvazia a fila de áudio restante.",
+        "title_go": "Flush escuta → STT agora",
+        "desc_go": (
+            "Encerra a fala **agora** e inicia STT/tradução "
+            "(sem esperar o silêncio do VAD). Aliases: `.` · `flush`. Igual a **F6**. "
+            "Use quando terminar de falar e não quiser esperar ~1–2s de quietude."
+        ),
+        "title_f6": "Flush escuta (F6)",
+        "desc_f6": "Igual a `[go]` / `.` — força fim do VAD → STT agora, sem esperar silêncio.",
         "title_g": "Trocar idiomas",
         "desc_g": "Inverte `SOURCE_LANG` ↔ `TARGET_LANG` em tempo real (STT, tradutor, TTS). Não reescreve chunks antigos. Se houver chunk em andamento, a troca pode ser adiada.",
         "title_o": "Sinônimos / significado",

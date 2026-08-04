@@ -71,6 +71,10 @@ class Recorder:
         self._force_soft_listen = threading.Event()
         # Drop in-progress VAD utterance immediately (language swap [g], etc.).
         self._abort_utterance = threading.Event()
+        # [go]/F6: end current utterance NOW (emit → STT), skip silence wait.
+        self._force_end_utterance = threading.Event()
+        # True while VAD has an open speech buffer (onset..end).
+        self._in_speech = threading.Event()
         # [b]/F2 bypass: release InputStream so passthrough can open the mic
         # (dual exclusive open freezes PortAudio on Windows).
         self._stream_suspend = threading.Event()
@@ -291,6 +295,26 @@ class Recorder:
         Used so [g] language swap takes effect immediately mid-listen.
         """
         self._abort_utterance.set()
+        self._force_end_utterance.clear()
+
+    def is_in_speech(self) -> bool:
+        """True while VAD holds an open utterance (after onset, before emit/end)."""
+        return self._in_speech.is_set()
+
+    def force_end_utterance(self) -> bool:
+        """
+        Request immediate flush of the current utterance (emit → STT).
+
+        Unlike ``abort_utterance`` (discard), this keeps audio and ends the turn
+        without waiting for ``SILENCE_DURATION``.
+
+        Returns True if speech was in progress (flush will be honored on next
+        VAD loop tick); False if nothing to flush.
+        """
+        if not self._in_speech.is_set():
+            return False
+        self._force_end_utterance.set()
+        return True
 
     # ------------------------------------------------------------------ #
     def run(self):
@@ -412,6 +436,7 @@ class Recorder:
                 except Exception:
                     pass
             in_speech = False
+            self._in_speech.clear()
             speech = []
             trailing_silence = 0
             total_frames = 0
@@ -436,6 +461,7 @@ class Recorder:
                         self.on_listening(False)
                     except Exception:
                         pass
+                self._in_speech.clear()
                 return
             block = self._read_block(stream)
             if self._abort_utterance.is_set() or not self._capture_enabled.is_set():
@@ -443,6 +469,7 @@ class Recorder:
                 aborted = self._abort_utterance.is_set()
                 if aborted:
                     self._abort_utterance.clear()
+                    self._force_end_utterance.clear()
                     # Hard drop: discard everything so swap/mute mid-phrase is clean.
                     _reset_utterance_state(clear_preroll=True)
                     continue
@@ -482,6 +509,7 @@ class Recorder:
                     onset_quiet = 0
                     if onset_count >= need_onset:
                         in_speech = True
+                        self._in_speech.set()
                         onset_count = 0
                         onset_quiet = 0
                         # Full preroll = audio *before* + during onset (first words).
@@ -518,6 +546,13 @@ class Recorder:
 
             end_threshold = self._silence_blocks_to_end(total_frames)
             ended = trailing_silence >= end_threshold
+            manual_flush = False
+            if self._force_end_utterance.is_set():
+                self._force_end_utterance.clear()
+                # Honor even mid-word: user asked for STT now ([go]/F6).
+                if speech:
+                    ended = True
+                    manual_flush = True
             too_long = total_frames >= self.max_chunk_frames
             # Soft noise / TTS echo can hover just above hangover forever —
             # never reaching end_threshold. Force-end ONLY when already
@@ -563,6 +598,7 @@ class Recorder:
                 if ended:
                     speech = []
                     in_speech = False
+                    self._in_speech.clear()
                     trailing_silence = 0
                     total_frames = 0
                     onset_count = 0
@@ -579,8 +615,13 @@ class Recorder:
 
                         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                         if emitted:
+                            why = (
+                                "flush manual [go]/F6"
+                                if manual_flush
+                                else "silêncio"
+                            )
                             ui.dim(
-                                f"  🔴 VAD END    {ts} — silêncio "
+                                f"  🔴 VAD END    {ts} — {why} "
                                 f"({speech_sec:.1f}s de fala) → STT",
                                 panel="app",
                             )

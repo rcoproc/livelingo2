@@ -408,6 +408,40 @@ class Pipeline:
         """Toggle [N] force soft-listen. Returns new ON/OFF state."""
         return self.set_force_soft_listen(not self.is_force_soft_listen())
 
+    def flush_listen_now(self) -> tuple[bool, str]:
+        """
+        Force-end current VAD utterance → emit → STT immediately ([go]/[.]/F6).
+
+        Skips remaining SILENCE_DURATION wait. Does not discard audio
+        (unlike abort on [g]/post-TTS).
+        """
+        rec = getattr(self, "recorder", None)
+        if rec is None:
+            return False, "Recorder indisponível."
+        try:
+            if not rec.is_capture_enabled() and not rec.is_in_speech():
+                return (
+                    False,
+                    "Escuta fechada (mute/TTS hold) — nada para flush.",
+                )
+        except Exception:
+            pass
+        try:
+            ok = bool(rec.force_end_utterance())
+        except Exception as exc:
+            return False, f"Flush falhou: {exc}"
+        if not ok:
+            return (
+                False,
+                "Nada para flush — sem fala em curso "
+                "(fale primeiro, ou espere o VAD ONSET).",
+            )
+        return (
+            True,
+            "Flush manual — fim da fala agora → STT "
+            "(sem esperar silêncio VAD).",
+        )
+
     # ------------------------------------------------------------------ #
     # Direct voice bypass ([b]) — mic → OUTPUT (CABLE) without translation
     # ------------------------------------------------------------------ #
