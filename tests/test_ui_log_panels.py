@@ -196,6 +196,53 @@ def test_live_caption_block_emits_to_lc_panel():
     assert "Olá mundo" in body or "Translated" in body
 
 
+def test_voz_chunk_blank_between_source_and_target():
+    """SOURCE and TARGET must not stick — blank row between them."""
+    captured: list[tuple[str, str, str]] = []
+
+    def sink(kind, text, panel="main"):
+        captured.append((kind, text, panel))
+
+    prev = ui.get_log_sink()
+    try:
+        ui.set_log_sink(sink)
+        ui.chunk_text_preview(9, "frase fonte", "target phrase", from_cache=False)
+    finally:
+        ui.set_log_sink(prev)
+
+    main = [(k, t) for k, t, p in captured if p == "main"]
+    assert main, captured
+    # Find indices of source/target content and a blank raw between them
+    src_i = next(i for i, (k, t) in enumerate(main) if "frase fonte" in t)
+    tgt_i = next(i for i, (k, t) in enumerate(main) if "target phrase" in t)
+    assert tgt_i > src_i
+    between = main[src_i + 1 : tgt_i]
+    assert any(k == "raw" and (t == "" or t.strip() == "") for k, t in between), (
+        f"expected blank between source and target, got {between!r}"
+    )
+
+
+def test_lc_blank_between_caption_and_translated():
+    captured: list[tuple[str, str, str]] = []
+
+    def sink(kind, text, panel="main"):
+        captured.append((kind, text, panel))
+
+    prev = ui.get_log_sink()
+    try:
+        ui.set_log_sink(sink)
+        ui.live_caption_block(2, "Hello", "Olá", from_cache=None)
+    finally:
+        ui.set_log_sink(prev)
+
+    lc = [(k, t) for k, t, p in captured if p == "lc"]
+    src_i = next(i for i, (k, t) in enumerate(lc) if "Hello" in t)
+    tgt_i = next(i for i, (k, t) in enumerate(lc) if "Olá" in t)
+    assert tgt_i > src_i
+    between = lc[src_i + 1 : tgt_i]
+    assert any(k == "raw" and (t == "" or t.strip() == "") for k, t in between), between
+
+
 def test_ui_lang_code_br_aliases(monkeypatch):
     import config as cfg
 

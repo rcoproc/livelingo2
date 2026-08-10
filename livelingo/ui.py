@@ -980,20 +980,25 @@ def _emit_voz_chunk_block(
                         "rich",
                         f"{head}{ind_src}[green]{e(line)}[/]",
                     )
-            # 2) TARGET (translated) — white + optional CACHE/LIVE
+            # Respiro entre SOURCE e TARGET (não grudar as duas linhas)
+            if heard and translated:
+                _emit_chunk_blank()
+            # 2) TARGET (translated) — emphasized (terminal can't grow font size;
+            # bold + soft bg makes the line feel heavier / taller than SOURCE).
             for i, line in enumerate(_wrap_labeled_body(lab_tgt, translated, right_w)):
+                body = f"[bold white on #1e2a3a]{e(line)}[/]"
                 if i == 0:
                     _emit(
                         "rich",
                         f"{head}"
                         f"[white]{e(' ' * len(prefix))}[/]"
                         f"{tgt_lab_rich}"
-                        f"[bold white]{e(line)}[/]",
+                        f"{body}",
                     )
                 else:
                     _emit(
                         "rich",
-                        f"{head}{ind_tgt}[bold white]{e(line)}[/]",
+                        f"{head}{ind_tgt}{body}",
                     )
             if force_blank_after or blank_after:
                 _emit_chunk_blank()
@@ -1023,6 +1028,9 @@ def _emit_voz_chunk_block(
                 )
             else:
                 print("\r\033[K" + head + ind_src + Fore.GREEN + line + Style.RESET_ALL)
+        # Respiro entre SOURCE e TARGET
+        if heard and translated:
+            print()
         # 2) TARGET (translated)
         for i, line in enumerate(_wrap_labeled_body(lab_tgt, translated, right_w)):
             if i == 0:
@@ -1222,13 +1230,21 @@ def live_caption_block(n, original, translated, from_cache=None):
                 f"[bold magenta]{e(prefix)}[/][white]{e(hlab)}[/][green]{e(original)}[/]",
                 panel="lc",
             )
+            # Respiro entre Caption e Translated
+            if original and translated:
+                _emit_chunk_blank(panel="lc")
             if from_cache is True:
                 lab = f"{indent}[bold magenta]{e(tlab)}[/]"
             elif from_cache is False:
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
             else:
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
-            _emit("rich", f"{lab}[bold white]{e(translated)}[/]", panel="lc")
+            # Same emphasis as VOZ target (no real font-size in terminal)
+            _emit(
+                "rich",
+                f"{lab}[bold white on #1e2a3a]{e(translated)}[/]",
+                panel="lc",
+            )
             # Blank after LC pair so it never sticks under captions chrome
             _emit_chunk_blank(panel="lc")
             return
