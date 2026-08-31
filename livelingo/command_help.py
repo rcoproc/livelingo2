@@ -44,6 +44,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "x", "group": "audio", "token": "x", "sort": "x"},
     {"id": "go", "group": "audio", "token": "go", "sort": "go"},
     {"id": "coach", "group": "audio", "token": "coach", "sort": "coach"},
+    {"id": "airespond", "group": "audio", "token": "airespond", "sort": "airespond"},
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
     {"id": "o", "group": "idiom", "token": "o", "sort": "o"},
@@ -254,7 +255,15 @@ _I18N: dict[str, dict[str, str]] = {
             "Suggest assertive **English** answers for interview questions from LiveCaptions. "
             "Panel under LC: Spoken EN + SE bullets + Architect bullets. "
             "`coach on|off|status|last|force|ask <q>`. Needs `XAI_API_KEY` (Grok). "
-            "Default OFF (`INTERVIEW_COACH_ENABLED`)."
+            "Default OFF (`INTERVIEW_COACH_ENABLED`). "
+            "Manual test without LC: `airespond <question>`."
+        ),
+        "title_airespond": "Simulate LC question → Coach",
+        "desc_airespond": (
+            "Type a question (PT or EN) as if it came from LiveCaptions, then generate the "
+            "Interview Coach answer. Example: "
+            "`airespond Me fale sobre microsserviços no padrão SAGA`. "
+            "Alias: `air`. Auto-enables Coach. Requires `XAI_API_KEY`."
         ),
         "title_f7": "Coach force (F7)",
         "desc_f7": "Force Interview Coach on the last stable LC caption (same as `coach force`).",
@@ -592,7 +601,15 @@ _I18N: dict[str, dict[str, str]] = {
             "Sugere respostas **assertivas em inglês** para perguntas de entrevista do LiveCaptions. "
             "Painel sob o LC: Spoken EN + bullets SE + Arquiteto. "
             "`coach on|off|status|last|force|ask <q>`. Precisa `XAI_API_KEY` (Grok). "
-            "Padrão OFF (`INTERVIEW_COACH_ENABLED`)."
+            "Padrão OFF (`INTERVIEW_COACH_ENABLED`). "
+            "Teste manual sem LC: `airespond <pergunta>`."
+        ),
+        "title_airespond": "Simular pergunta LC → Coach",
+        "desc_airespond": (
+            "Digite uma pergunta (PT ou EN) como se viesse do LiveCaptions e gere a "
+            "resposta do Interview Coach. Exemplo: "
+            "`airespond Me fale sobre microsserviços no padrão SAGA`. "
+            "Alias: `air`. Liga o Coach automaticamente. Precisa `XAI_API_KEY`."
         ),
         "title_f7": "Coach force (F7)",
         "desc_f7": "Força o Interview Coach no último LC estável (igual a `coach force`).",
