@@ -155,7 +155,8 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura (**só n minúsculo**) |
 | `N` | **Escuta forçada** — **N maiúsculo** só: bordas amarelas; VAD aceita **voz baixa**; **N** de novo = VAD normal |
 | `go` / `.` / `flush` / **F6** | **Flush escuta** — encerra a fala **agora** → STT (sem esperar silêncio do VAD ~1–2s) |
-| `coach` / **F7** | **Interview Coach** — sob o LC: resposta assertiva em **inglês** (SE + Arquiteto) para perguntas claras do LiveCaptions. Precisa `XAI_API_KEY`. Padrão OFF. |
+| `coach` / **F7** | **Interview Coach** — sob o LC: resposta EN (+ pt-BR). Providers: `grok`/`groq`/`deepseek`/`claude`/`gemini` (`coach provider …`). Padrão OFF. |
+| `airespond` / `air` | Teste manual: pergunta PT/EN → simula LC → resposta Coach |
 | `b` / `bypass` | **Bypass de voz** — 1ª tecla corta TTS no Cable (como `[x]`) e envia mic cru → CABLE **sem** tradução; 2ª tecla retoma escuta/tradução/TTS |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync → **OBS Virtual Camera** (requer `requirements-webcam.txt` + OBS) |
 | `cam snap closed` | **Captura / atualiza** a **foto do rosto inteiro** (boca fechada) usada por F10/F11. Preview mostra a elipse de congelamento. Aliases: `cam snap`, `cam snapshot closed` |

@@ -17,6 +17,7 @@ from .interview_llm import (
     InterviewLLM,
     InterviewLLMError,
     build_interview_llm,
+    list_interview_providers,
     parse_coach_response,
 )
 
@@ -160,6 +161,46 @@ class InterviewCoach:
         self._enabled = bool(on)
         return self._enabled
 
+    def set_provider(self, provider: str, model: str = "") -> tuple[bool, str]:
+        """
+        Switch LLM provider at runtime (``coach provider claude``).
+
+        Rebuilds the client; next ask/airespond uses the new backend.
+        """
+        prov = (provider or "").strip().lower()
+        aliases = {
+            "xai": "grok",
+            "x-ai": "grok",
+            "anthropic": "claude",
+            "google": "gemini",
+            "google-ai": "gemini",
+        }
+        prov = aliases.get(prov, prov)
+        allowed = list_interview_providers()
+        if prov not in allowed:
+            return (
+                False,
+                f"Provider inválido: {provider!r}. Use: {', '.join(allowed)}",
+            )
+        try:
+            setattr(self.cfg, "INTERVIEW_COACH_PROVIDER", prov)
+            if (model or "").strip():
+                setattr(self.cfg, "INTERVIEW_COACH_MODEL", model.strip())
+            self._llm = None  # force rebuild
+            llm = self._ensure_llm()
+            key_ok = bool(getattr(llm, "api_key", ""))
+            msg = (
+                f"Coach provider={llm.provider_name} · model={llm.model} · "
+                f"key_ok={key_ok}"
+            )
+            if not key_ok:
+                msg += " — configure a API key no .env"
+            return True, msg
+        except InterviewLLMError as exc:
+            return False, str(exc)
+        except Exception as exc:
+            return False, f"Falha ao trocar provider: {exc}"
+
     def status(self) -> dict[str, Any]:
         provider = str(getattr(self.cfg, "INTERVIEW_COACH_PROVIDER", "grok") or "grok")
         model = str(getattr(self.cfg, "INTERVIEW_COACH_MODEL", "") or "")
@@ -168,7 +209,7 @@ class InterviewCoach:
             llm = self._ensure_llm()
             key_ok = bool(getattr(llm, "api_key", ""))
             provider = getattr(llm, "provider_name", provider)
-            model = getattr(llm, "model", model)
+            model = getattr(llm, "model", model) or model
         except Exception:
             pass
         last_q = (self._last.question[:80] if self._last else "") or ""
@@ -180,6 +221,7 @@ class InterviewCoach:
             "busy": self._busy,
             "last_question": last_q,
             "mode": str(getattr(self.cfg, "INTERVIEW_QUESTION_MODE", "auto") or "auto"),
+            "providers": list_interview_providers(),
         }
 
     def remember_lc(self, n: int, en: str, pt: str = "") -> None:

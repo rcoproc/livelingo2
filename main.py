@@ -2439,10 +2439,43 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 # Same path as airespond but without LC panel simulation by default
                 ok, msg = coach.ask(rest, simulate_lc=False)
                 (ui.success if ok else ui.warn)(msg, panel="app")
+            elif action in ("provider", "prov", "engine", "model"):
+                # coach provider claude [optional-model]
+                # coach model <name> — keep provider, change model only
+                bits = (rest or "").strip().split(None, 1)
+                if action == "model":
+                    try:
+                        prov = str(
+                            getattr(coach.cfg, "INTERVIEW_COACH_PROVIDER", "grok")
+                            or "grok"
+                        )
+                    except Exception:
+                        prov = "grok"
+                    model_name = " ".join(bits).strip()
+                    if not model_name:
+                        ui.warn("Uso: coach model <nome-do-modelo>", panel="app")
+                    else:
+                        ok, msg = coach.set_provider(prov, model_name)
+                        (ui.success if ok else ui.warn)(msg, panel="app")
+                elif not bits:
+                    from livelingo.interview_llm import list_interview_providers
+
+                    ui.info(
+                        "Uso: coach provider <grok|groq|deepseek|claude|gemini> "
+                        "[model]\n"
+                        f"  disponíveis: {', '.join(list_interview_providers())}",
+                        panel="app",
+                    )
+                else:
+                    prov = bits[0]
+                    model_name = bits[1].strip() if len(bits) > 1 else ""
+                    ok, msg = coach.set_provider(prov, model_name)
+                    (ui.success if ok else ui.warn)(msg, panel="app")
             else:
                 ui.warn(
-                    "Uso: coach on|off|status|last|force|ask <pergunta> · "
-                    "ou airespond <pergunta> (simula LC)",
+                    "Uso: coach on|off|status|last|force|ask <q> | "
+                    "provider <grok|groq|deepseek|claude|gemini> [model] · "
+                    "ou airespond <pergunta>",
                     panel="app",
                 )
             try:
