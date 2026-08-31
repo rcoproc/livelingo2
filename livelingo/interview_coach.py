@@ -71,6 +71,9 @@ def _norm_key(text: str) -> str:
 SYSTEM_PROMPT = """You are a senior Software Engineer and Systems Architect preparing for a live job interview.
 The candidate will speak your answer aloud in English (~30–60 seconds).
 
+The interviewer's question may be in **English or Portuguese**. Always understand the intent,
+then produce the spoken answer **only in English**.
+
 Tone: assertive, confident, concrete. No apology openers ("Well…", "I think maybe…").
 Prefer outcome + ownership + trade-offs. Avoid buzzword salad.
 
@@ -88,9 +91,13 @@ def _build_user_prompt(
     *,
     question_pt: str = "",
     profile: str = "",
+    simulated: bool = False,
 ) -> str:
-    parts = [f"Interviewer's question (English):\n{question_en.strip()}"]
-    if (question_pt or "").strip():
+    label = "Interviewer's question (EN or PT)"
+    if simulated:
+        label += " [manual / airespond test — treat like LiveCaptions]"
+    parts = [f"{label}:\n{question_en.strip()}"]
+    if (question_pt or "").strip() and question_pt.strip() != question_en.strip():
         parts.append(f"Portuguese gloss (context only):\n{question_pt.strip()}")
     if (profile or "").strip():
         parts.append(f"Candidate profile (use if relevant):\n{profile.strip()}")
@@ -122,8 +129,11 @@ class InterviewCoach:
         self._last_lc_en: str = ""
         self._last_lc_pt: str = ""
         self._last_lc_n: int = 0
+        self._sim_n: int = 9000  # fake LC ids for airespond / coach ask
         self._gen = 0
         self._busy = False
+        # When set, next _run_job marks the prompt as simulated LC
+        self._next_simulated: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -236,20 +246,51 @@ class InterviewCoach:
             return True, f"Coach forçado no LC {n or '?'}…"
         return False, "Não agendou coach (texto vazio?)."
 
-    def ask(self, text: str) -> tuple[bool, str]:
-        """Manual: coach ask <question>."""
+    def ask(
+        self,
+        text: str,
+        *,
+        simulate_lc: bool = False,
+        translated_pt: str = "",
+    ) -> tuple[bool, str]:
+        """
+        Manual question: ``coach ask …`` / ``airespond …``.
+
+        ``simulate_lc=True`` (airespond): mirror an LC pair into the LC panel
+        then run the same coach path as a stable LiveCaptions question.
+        Accepts PT or EN — spoken answer is always English.
+        """
         q = (text or "").strip()
         if not q:
-            return False, "Uso: coach ask <pergunta em inglês>"
+            return False, "Uso: airespond <pergunta>  ou  coach ask <pergunta>"
         if not self._enabled:
             self._enabled = True
-        n = self._last_lc_n or 0
-        ok = self.maybe_handle(n, q, "", force=True)
-        return (
-            (True, "Coach pedindo resposta…")
-            if ok
-            else (False, "Falha ao agendar coach.")
-        )
+
+        with self._lock:
+            self._sim_n += 1
+            n = int(self._sim_n)
+            self._next_simulated = True
+
+        pt = (translated_pt or "").strip()
+        if simulate_lc:
+            try:
+                from . import ui
+
+                # Caption = typed question (as LC would show EN/source);
+                # Translated = PT gloss or marker so the LC column looks real.
+                tgt = pt or "[simulado · airespond]"
+                ui.live_caption_block(n, q, tgt, from_cache=None)
+                ui.dim(
+                    f"[airespond] LC simulado #{n} → Coach…",
+                    panel="app",
+                )
+            except Exception:
+                pass
+
+        ok = self.maybe_handle(n, q, pt, force=True)
+        if ok:
+            return True, f"airespond/Coach agendado (#{n}) — aguarde o painel Coach."
+        return False, "Falha ao agendar coach."
 
     def _run_job(self, gen: int, n: int, en: str, pt: str) -> None:
         from . import ui
@@ -273,13 +314,22 @@ class InterviewCoach:
             "architect": [],
         }
         provider = ""
+        simulated = False
         try:
+            with self._lock:
+                simulated = bool(self._next_simulated)
+                self._next_simulated = False
             llm = self._ensure_llm()
             provider = getattr(llm, "provider_name", "") or ""
             profile = str(getattr(self.cfg, "INTERVIEW_CANDIDATE_PROFILE", "") or "")
             raw = llm.complete(
                 SYSTEM_PROMPT,
-                _build_user_prompt(en, question_pt=pt, profile=profile),
+                _build_user_prompt(
+                    en,
+                    question_pt=pt,
+                    profile=profile,
+                    simulated=simulated,
+                ),
             )
             parsed = parse_coach_response(raw)
         except InterviewLLMError as exc:

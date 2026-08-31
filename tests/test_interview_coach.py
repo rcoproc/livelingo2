@@ -112,3 +112,65 @@ def test_maybe_handle_skips_when_disabled():
 def test_normalize_panel_coach():
     assert ui._normalize_panel("coach") == "coach"
     assert ui._normalize_panel("entrevista") == "coach"
+
+
+def test_ask_simulate_lc_schedules_and_emits_lc(monkeypatch):
+    """airespond path: fake LC block + force coach job."""
+    cfg = SimpleNamespace(
+        INTERVIEW_COACH_ENABLED=False,
+        INTERVIEW_QUESTION_MODE="auto",
+        INTERVIEW_MIN_CHARS=40,
+        INTERVIEW_COACH_PROVIDER="grok",
+        INTERVIEW_COACH_MODEL="grok-3-mini",
+        INTERVIEW_COACH_TIMEOUT_S=5,
+        XAI_API_KEY="xai-test",
+        GROK_API_KEY="",
+        INTERVIEW_CANDIDATE_PROFILE="",
+    )
+
+    class _FakeLLM:
+        provider_name = "grok"
+        api_key = "xai-test"
+        model = "grok-3-mini"
+
+        def complete(self, system, user):
+            assert "SAGA" in user or "microsserv" in user.lower() or "simulado" in user.lower()
+            return (
+                '{"spoken":"I would use choreography for SAGA with outbox.",'
+                '"software_engineer":["Idempotent consumers"],'
+                '"architect":["Prefer choreography over orchestration for loose coupling"]}'
+            )
+
+    captured: list[tuple[str, str, str]] = []
+
+    def sink(kind, text, panel="main"):
+        captured.append((kind, text, panel))
+
+    coach = InterviewCoach(cfg, llm=_FakeLLM())
+    prev = ui.get_log_sink()
+    try:
+        ui.set_log_sink(sink)
+        ok, msg = coach.ask(
+            "Me fale sobre microsserviços no padrão de integração SAGA",
+            simulate_lc=True,
+        )
+        # Wait briefly for background thread
+        import time
+
+        for _ in range(50):
+            if coach.last_result() is not None:
+                break
+            time.sleep(0.02)
+    finally:
+        ui.set_log_sink(prev)
+
+    assert ok is True
+    assert "agendado" in msg.lower() or "Coach" in msg
+    # Simulated LC pair went to lc panel
+    assert any(p == "lc" for _, _, p in captured), captured
+    last = coach.last_result()
+    assert last is not None
+    assert last.error == ""
+    assert "SAGA" in last.spoken or "choreography" in last.spoken.lower()
+    assert last.software_engineer
+    assert last.architect

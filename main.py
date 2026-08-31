@@ -2335,6 +2335,45 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.success(msg, panel="app")
         else:
             ui.warn(msg, panel="app")
+    elif cmd == "airespond" or cmd.startswith("airespond ") or cmd == "air" or cmd.startswith(
+        "air "
+    ):
+        # Manual test: simulate LC question → Interview Coach (Spoken EN + SE/Arch)
+        # Example: airespond Me fale sobre microsserviços no padrão SAGA
+        coach = getattr(pipeline, "interview_coach", None)
+        if coach is None:
+            ui.warn(
+                "Interview Coach não inicializado — reinicie a app.",
+                panel="app",
+            )
+        else:
+            raw = (raw_cmd or "").strip()
+            low = raw.lower()
+            q = ""
+            for prefix in ("airespond", "air"):
+                if low == prefix:
+                    q = ""
+                    break
+                if low.startswith(prefix + " "):
+                    q = raw[len(prefix) :].strip()
+                    break
+            if not q:
+                ui.warn(
+                    "Uso: airespond <pergunta>   "
+                    "ex: airespond Me fale sobre microsserviços no padrão SAGA",
+                    panel="app",
+                )
+            else:
+                ok, msg = coach.ask(q, simulate_lc=True)
+                (ui.success if ok else ui.warn)(msg, panel="app")
+            try:
+                if indicator is not None and hasattr(indicator, "_paint_coach_header"):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator._paint_coach_header)
+                    else:
+                        indicator._paint_coach_header()
+            except Exception:
+                pass
     elif cmd == "coach" or cmd.startswith("coach "):
         coach = getattr(pipeline, "interview_coach", None)
         if coach is None:
@@ -2381,11 +2420,13 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 ok, msg = coach.force_last()
                 (ui.success if ok else ui.warn)(msg, panel="app")
             elif action == "ask":
-                ok, msg = coach.ask(rest)
+                # Same path as airespond but without LC panel simulation by default
+                ok, msg = coach.ask(rest, simulate_lc=False)
                 (ui.success if ok else ui.warn)(msg, panel="app")
             else:
                 ui.warn(
-                    "Uso: coach on|off|status|last|force|ask <pergunta>",
+                    "Uso: coach on|off|status|last|force|ask <pergunta> · "
+                    "ou airespond <pergunta> (simula LC)",
                     panel="app",
                 )
             try:
