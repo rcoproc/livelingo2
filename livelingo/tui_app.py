@@ -871,6 +871,9 @@ class SelectableRichLog(RichLog):
         self.pane_role: str | None = kwargs.pop("pane_role", None)
         super().__init__(**kwargs)
         self._plain_lines: list[str] = []
+        # Original write() payloads (markup) so we can rebake wrap on resize.
+        self._markup_lines: list[str] = []
+        self._reflowing: bool = False
         # Last measured content width while the pane was visible (≥40).
         self._last_good_width = 0
         # Vim-style / search highlight (applied in _render_line)
@@ -928,12 +931,23 @@ class SelectableRichLog(RichLog):
         scroll_end=None,
         animate=False,
     ):
-        # Capture plain text for copy-all (logical lines, before wrap).
+        # Keep original markup for reflow after expand/restore / column resize.
         try:
             if isinstance(content, str):
-                plain = content
+                raw_src = content
             else:
-                plain = str(content)
+                raw_src = str(content)
+            if not getattr(self, "_reflowing", False):
+                self._markup_lines.append(raw_src)
+                max_n = self.max_lines
+                if max_n is not None and len(self._markup_lines) > max_n:
+                    self._markup_lines = self._markup_lines[-max_n:]
+        except Exception:
+            raw_src = str(content) if content is not None else ""
+
+        # Capture plain text for copy-all (logical lines, before wrap).
+        try:
+            plain = raw_src
             try:
                 from rich.text import Text
 
@@ -967,11 +981,83 @@ class SelectableRichLog(RichLog):
 
     def clear(self) -> None:
         self._plain_lines.clear()
+        if not getattr(self, "_reflowing", False):
+            self._markup_lines.clear()
         self.clear_search_highlight(refresh=False)
         try:
             return super().clear()
         except Exception:
             return None
+
+    def reflow(self, width: int | None = None) -> None:
+        """
+        Rebuild wrapped lines for the current (or given) panel width.
+
+        RichLog bakes wrap at write() time — after Expand→Restore the Coach
+        pane is narrower, so we must rewrite stored markup at the new width.
+        """
+        if getattr(self, "_reflowing", False):
+            return
+        sources = list(getattr(self, "_markup_lines", []) or [])
+        if not sources:
+            return
+        # Force a fresh measure (don't reuse expanded-pane last_good_width)
+        self._last_good_width = 0
+        if width is not None:
+            try:
+                width = max(20, int(width))
+                self._last_good_width = width
+            except Exception:
+                width = None
+        if width is None:
+            try:
+                region_w = int(self.scrollable_content_region.width or 0)
+            except Exception:
+                region_w = 0
+            if region_w >= 20:
+                width = max(20, region_w - 2)
+                self._last_good_width = width
+            else:
+                width = self._safe_render_width()
+
+        follow = bool(getattr(self, "auto_scroll", True))
+        self._reflowing = True
+        try:
+            self.clear_search_highlight(refresh=False)
+            self._plain_lines.clear()
+            try:
+                super().clear()
+            except Exception:
+                pass
+            # Rewrite without re-appending to _markup_lines (_reflowing=True)
+            for src in sources:
+                try:
+                    self.write(
+                        src,
+                        width=width,
+                        expand=False,
+                        shrink=False,
+                        scroll_end=False,
+                        animate=False,
+                    )
+                except Exception:
+                    pass
+            self._markup_lines = list(sources)
+            if follow:
+                try:
+                    y = int(getattr(self, "max_scroll_y", 0) or 0)
+                    self.scroll_to(0, y, animate=False)
+                except Exception:
+                    try:
+                        self.scroll_end(animate=False)
+                    except Exception:
+                        pass
+            try:
+                self.refresh()
+            except Exception:
+                pass
+        finally:
+            self._reflowing = False
 
     def set_search_highlight(
         self,
@@ -3905,14 +3991,14 @@ class LiveLingoApp(App):
             self._cmd_draft = ""
 
     def _refresh_log_width(self) -> None:
-        """Cache VOZ + LC log content widths on the UI thread."""
+        """Cache VOZ + LC + Coach log content widths on the UI thread."""
         floor = _terminal_log_width(100)
         half = max(24, floor // 2)
         # Keep min_width in sync so inactive-tab writes stay wide enough
-        for lid in ("#log", "#log-lc", "#log-app", "#log-news", "#log-cmds"):
+        for lid in ("#log", "#log-lc", "#log-coach", "#log-app", "#log-news", "#log-cmds"):
             try:
                 wlog = self.query_one(lid, SelectableRichLog)
-                if lid in ("#log", "#log-lc"):
+                if lid in ("#log", "#log-lc", "#log-coach"):
                     wlog.min_width = half
                 else:
                     wlog.min_width = floor
@@ -3922,6 +4008,13 @@ class LiveLingoApp(App):
         def _safe_w(lid: str, fallback: int) -> int:
             try:
                 wlog = self.query_one(lid, SelectableRichLog)
+                # Prefer live region (don't stick to stale expanded last_good)
+                try:
+                    region_w = int(wlog.scrollable_content_region.width or 0)
+                except Exception:
+                    region_w = 0
+                if region_w >= 12:
+                    return max(12, region_w - 2)
                 safe = int(wlog._safe_render_width())  # type: ignore[attr-defined]
                 if safe >= 12:
                     return safe
@@ -3936,8 +4029,50 @@ class LiveLingoApp(App):
                 pass
             return fallback
 
+        prev_coach = int(getattr(self, "_cached_log_width_coach", 0) or 0)
         self._cached_log_width = _safe_w("#log", half)
         self._cached_log_width_lc = _safe_w("#log-lc", half)
+        self._cached_log_width_coach = _safe_w("#log-coach", half)
+        # If Coach column width changed materially (expand/restore / sash), reflow
+        new_coach = int(self._cached_log_width_coach or 0)
+        if prev_coach >= 20 and new_coach >= 20 and abs(new_coach - prev_coach) >= 3:
+            try:
+                self._schedule_trad_log_reflow(only_coach=True)
+            except Exception:
+                pass
+
+    def _schedule_trad_log_reflow(self, *, only_coach: bool = False) -> None:
+        """Defer reflow until after layout has applied new column widths."""
+
+        def _run() -> None:
+            try:
+                self._reflow_trad_logs(only_coach=only_coach)
+            except Exception:
+                pass
+
+        try:
+            self.set_timer(0.06, _run)
+        except Exception:
+            _run()
+
+    def _reflow_trad_logs(self, *, only_coach: bool = False) -> None:
+        """Rebake RichLog wraps for Tradução panes after resize/expand."""
+        lids = ("#log-coach",) if only_coach else ("#log-coach", "#log-lc", "#log")
+        for lid in lids:
+            try:
+                log = self.query_one(lid, SelectableRichLog)
+            except Exception:
+                continue
+            try:
+                # Drop stale expanded width so reflow measures the new region
+                log._last_good_width = 0  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                if hasattr(log, "reflow"):
+                    log.reflow()
+            except Exception:
+                pass
 
     def _log_content_width(self) -> int:
         """Usable columns inside VOZ #log (thread-safe via cached value)."""
@@ -4146,6 +4281,11 @@ class LiveLingoApp(App):
                 self.refresh()
             except Exception:
                 pass
+        # RichLog wrap is baked at write time — rebake after layout settles
+        try:
+            self._schedule_trad_log_reflow()
+        except Exception:
+            pass
 
     def _apply_trad_expand_chrome(self, voz_expanded: bool) -> None:
         """
@@ -4479,6 +4619,10 @@ class LiveLingoApp(App):
             r = 0.45
         self._lc_coach_ratio = r
         self._apply_lc_coach_heights()
+        try:
+            self._schedule_trad_log_reflow(only_coach=True)
+        except Exception:
+            pass
 
     def lc_coach_set_ratio_from_screen_y(self, screen_y: int) -> None:
         """Drag sash: map Y inside #trad-lc-col → coach ratio (bottom share)."""
