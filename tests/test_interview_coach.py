@@ -38,7 +38,11 @@ def test_parse_coach_response_json():
       "spoken": "I owned the checkout outage.",
       "software_engineer": ["Root-caused N+1 queries"],
       "architect": ["Added circuit breaker at edge"],
-      "tradeoffs": "Caching cuts latency but risks stale reads under write-heavy load."
+      "tradeoffs": "Caching cuts latency but risks stale reads under write-heavy load.",
+      "spoken_pt": "Eu lidertei a interrupção do checkout.",
+      "software_engineer_pt": ["Identifiquei queries N+1"],
+      "architect_pt": ["Adicionei circuit breaker na borda"],
+      "tradeoffs_pt": "Cache reduz latência, mas arrisca leitura velha sob muita escrita."
     }
     """
     out = parse_coach_response(raw)
@@ -47,6 +51,9 @@ def test_parse_coach_response_json():
     assert "circuit" in out["architect"][0].lower()
     assert "Caching" in out["tradeoffs"]
     assert "stale" in out["tradeoffs"].lower()
+    assert "checkout" in out["spoken_pt"].lower() or "interrup" in out["spoken_pt"].lower()
+    assert out["software_engineer_pt"]
+    assert "Cache" in out["tradeoffs_pt"] or "latência" in out["tradeoffs_pt"]
 
 
 def test_parse_coach_response_fenced_and_fallback():
@@ -76,6 +83,10 @@ def test_coach_block_emits_to_coach_panel():
             ["Used EXPLAIN to find hot paths"],
             ["Introduced CQRS for reporting"],
             tradeoffs="Replicas help reads but add replication lag on writes.",
+            spoken_pt="Particionamos por tenant e adicionamos réplicas de leitura.",
+            software_engineer_pt=["Usei EXPLAIN nos caminhos quentes"],
+            architect_pt=["Introduzi CQRS para relatórios"],
+            tradeoffs_pt="Réplicas ajudam leitura, mas geram lag na escrita.",
             provider="grok",
         )
     finally:
@@ -89,6 +100,10 @@ def test_coach_block_emits_to_coach_panel():
     assert "SE" in body or "EXPLAIN" in body
     assert "Arch" in body or "CQRS" in body
     assert "Trade-offs" in body or "replication lag" in body
+    assert "pt-BR" in body or "Particionamos" in body
+    # Two blank separators between EN and PT (raw "")
+    raws = [i for i, (k, t) in enumerate([(k, t) for k, t, _ in captured]) if k == "raw"]
+    assert len([1 for k, t, _ in captured if k == "raw" and t == ""]) >= 2
 
 
 def test_maybe_handle_skips_when_disabled():
@@ -145,7 +160,11 @@ def test_ask_simulate_lc_schedules_and_emits_lc(monkeypatch):
                 '"software_engineer":["Idempotent consumers"],'
                 '"architect":["Prefer choreography over orchestration for loose coupling"],'
                 '"tradeoffs":"Choreography scales ownership but debugging spans many services; '
-                'orchestration is clearer but becomes a bottleneck."}'
+                'orchestration is clearer but becomes a bottleneck.",'
+                '"spoken_pt":"Eu usaria coreografia de SAGA com outbox.",'
+                '"software_engineer_pt":["Consumidores idempotentes"],'
+                '"architect_pt":["Prefiro coreografia à orquestração para acoplamento frouxo"],'
+                '"tradeoffs_pt":"Coreografia escala ownership, mas a depuração atravessa vários serviços."}'
             )
 
     captured: list[tuple[str, str, str]] = []
@@ -182,3 +201,6 @@ def test_ask_simulate_lc_schedules_and_emits_lc(monkeypatch):
     assert last.software_engineer
     assert last.architect
     assert "Choreography" in last.tradeoffs or "bottleneck" in last.tradeoffs.lower()
+    assert "SAGA" in last.spoken_pt or "coreografia" in last.spoken_pt.lower()
+    assert last.software_engineer_pt
+    assert last.tradeoffs_pt

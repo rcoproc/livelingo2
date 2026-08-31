@@ -7,7 +7,7 @@ MVP: xAI Grok. Interface allows Groq / Gemini / Claude later.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import requests
 
@@ -59,7 +59,7 @@ class OpenAICompatInterviewLLM(InterviewLLM):
         body = {
             "model": self.model,
             "temperature": 0.35,
-            "max_tokens": 900,
+            "max_tokens": 1400,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -70,7 +70,9 @@ class OpenAICompatInterviewLLM(InterviewLLM):
                 self.url, headers=headers, json=body, timeout=self.timeout_s
             )
         except requests.RequestException as exc:
-            raise InterviewLLMError(f"{self.provider_name}: network error: {exc}") from exc
+            raise InterviewLLMError(
+                f"{self.provider_name}: network error: {exc}"
+            ) from exc
         if resp.status_code >= 400:
             detail = (resp.text or "")[:240]
             raise InterviewLLMError(
@@ -120,7 +122,8 @@ def build_interview_llm(cfg) -> InterviewLLM:
     if provider == "groq":
         return OpenAICompatInterviewLLM(
             api_key=str(getattr(cfg, "GROQ_API_KEY", "") or "").strip(),
-            model=model or str(getattr(cfg, "GROQ_MODEL", "") or "llama-3.3-70b-versatile"),
+            model=model
+            or str(getattr(cfg, "GROQ_MODEL", "") or "llama-3.3-70b-versatile"),
             url=GROQ_URL,
             provider_name="groq",
             timeout_s=timeout,
@@ -133,11 +136,27 @@ def build_interview_llm(cfg) -> InterviewLLM:
     raise InterviewLLMError(f"Unknown INTERVIEW_COACH_PROVIDER={provider!r}")
 
 
+def _as_str_list(val: Any, *, limit: int = 4) -> List[str]:
+    if isinstance(val, str):
+        val = [val]
+    if not isinstance(val, list):
+        return []
+    return [str(x).strip() for x in val if str(x).strip()][:limit]
+
+
+def _as_paragraph(val: Any, *, limit: int = 1200) -> str:
+    if isinstance(val, list):
+        text = " ".join(str(x).strip() for x in val if str(x).strip())
+    else:
+        text = str(val or "").strip()
+    return text[:limit]
+
+
 def parse_coach_response(raw: str) -> dict[str, Any]:
     """
-    Parse LLM output into {spoken, software_engineer, architect, tradeoffs}.
+    Parse LLM output into EN fields + pt-BR mirror fields.
 
-    Prefers JSON; falls back to treating whole text as spoken.
+    Prefers JSON; falls back to treating whole text as spoken (EN).
     """
     text = (raw or "").strip()
     empty = {
@@ -145,6 +164,10 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
         "software_engineer": [],
         "architect": [],
         "tradeoffs": "",
+        "spoken_pt": "",
+        "software_engineer_pt": [],
+        "architect_pt": [],
+        "tradeoffs_pt": "",
     }
     if not text:
         return empty
@@ -164,7 +187,6 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
     try:
         data = json.loads(body)
     except Exception:
-        # Try first {...} substring
         i, j = body.find("{"), body.rfind("}")
         if i >= 0 and j > i:
             try:
@@ -174,26 +196,34 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
 
     if not isinstance(data, dict):
         return {
+            **empty,
             "spoken": text[:1200],
-            "software_engineer": [],
-            "architect": [],
-            "tradeoffs": "",
         }
 
     spoken = str(data.get("spoken") or data.get("answer") or "").strip()
-    se = data.get("software_engineer") or data.get("se") or []
-    arch = data.get("architect") or data.get("architecture") or []
-    tradeoffs = data.get("tradeoffs") or data.get("trade_offs") or data.get("trade-offs") or ""
-    if isinstance(se, str):
-        se = [se]
-    if isinstance(arch, str):
-        arch = [arch]
-    if isinstance(tradeoffs, list):
-        tradeoffs = " ".join(str(x).strip() for x in tradeoffs if str(x).strip())
-    else:
-        tradeoffs = str(tradeoffs or "").strip()
-    se = [str(x).strip() for x in se if str(x).strip()][:4]
-    arch = [str(x).strip() for x in arch if str(x).strip()][:4]
+    se = _as_str_list(data.get("software_engineer") or data.get("se") or [])
+    arch = _as_str_list(data.get("architect") or data.get("architecture") or [])
+    tradeoffs = _as_paragraph(
+        data.get("tradeoffs") or data.get("trade_offs") or data.get("trade-offs") or ""
+    )
+
+    spoken_pt = str(
+        data.get("spoken_pt")
+        or data.get("spoken_pt_br")
+        or data.get("resposta_pt")
+        or ""
+    ).strip()
+    se_pt = _as_str_list(
+        data.get("software_engineer_pt") or data.get("se_pt") or []
+    )
+    arch_pt = _as_str_list(data.get("architect_pt") or data.get("arch_pt") or [])
+    tradeoffs_pt = _as_paragraph(
+        data.get("tradeoffs_pt")
+        or data.get("trade_offs_pt")
+        or data.get("tradeoffs_pt_br")
+        or ""
+    )
+
     if not spoken:
         spoken = text[:1200]
     return {
@@ -201,4 +231,8 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
         "software_engineer": se,
         "architect": arch,
         "tradeoffs": tradeoffs[:1200],
+        "spoken_pt": spoken_pt[:1500],
+        "software_engineer_pt": se_pt,
+        "architect_pt": arch_pt,
+        "tradeoffs_pt": tradeoffs_pt[:1200],
     }
