@@ -2414,6 +2414,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         last.spoken,
                         last.software_engineer,
                         last.architect,
+                        tradeoffs=getattr(last, "tradeoffs", "") or "",
                         provider=last.provider,
                     )
             elif action in ("force", "f7", "retry"):

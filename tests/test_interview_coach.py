@@ -37,13 +37,16 @@ def test_parse_coach_response_json():
     {
       "spoken": "I owned the checkout outage.",
       "software_engineer": ["Root-caused N+1 queries"],
-      "architect": ["Added circuit breaker at edge"]
+      "architect": ["Added circuit breaker at edge"],
+      "tradeoffs": "Caching cuts latency but risks stale reads under write-heavy load."
     }
     """
     out = parse_coach_response(raw)
     assert "checkout" in out["spoken"]
     assert out["software_engineer"][0].startswith("Root-caused")
     assert "circuit" in out["architect"][0].lower()
+    assert "Caching" in out["tradeoffs"]
+    assert "stale" in out["tradeoffs"].lower()
 
 
 def test_parse_coach_response_fenced_and_fallback():
@@ -72,6 +75,7 @@ def test_coach_block_emits_to_coach_panel():
             "We partitioned by tenant and added read replicas.",
             ["Used EXPLAIN to find hot paths"],
             ["Introduced CQRS for reporting"],
+            tradeoffs="Replicas help reads but add replication lag on writes.",
             provider="grok",
         )
     finally:
@@ -84,6 +88,7 @@ def test_coach_block_emits_to_coach_panel():
     assert "Spoken" in body or "partitioned" in body
     assert "SE" in body or "EXPLAIN" in body
     assert "Arch" in body or "CQRS" in body
+    assert "Trade-offs" in body or "replication lag" in body
 
 
 def test_maybe_handle_skips_when_disabled():
@@ -138,7 +143,9 @@ def test_ask_simulate_lc_schedules_and_emits_lc(monkeypatch):
             return (
                 '{"spoken":"I would use choreography for SAGA with outbox.",'
                 '"software_engineer":["Idempotent consumers"],'
-                '"architect":["Prefer choreography over orchestration for loose coupling"]}'
+                '"architect":["Prefer choreography over orchestration for loose coupling"],'
+                '"tradeoffs":"Choreography scales ownership but debugging spans many services; '
+                'orchestration is clearer but becomes a bottleneck."}'
             )
 
     captured: list[tuple[str, str, str]] = []
@@ -174,3 +181,4 @@ def test_ask_simulate_lc_schedules_and_emits_lc(monkeypatch):
     assert "SAGA" in last.spoken or "choreography" in last.spoken.lower()
     assert last.software_engineer
     assert last.architect
+    assert "Choreography" in last.tradeoffs or "bottleneck" in last.tradeoffs.lower()

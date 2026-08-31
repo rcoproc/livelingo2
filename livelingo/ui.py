@@ -1211,6 +1211,7 @@ def coach_block(
     software_engineer=None,
     architect=None,
     *,
+    tradeoffs: str = "",
     provider: str = "",
 ):
     """
@@ -1219,13 +1220,15 @@ def coach_block(
         [Coach 3] Q: …
           ▶ Spoken (EN):
             …
-          · SE: …
-          · Arch: …
+          · SE: …          (Software Engineer)
+          · Arch: …        (Architect)
+          · Trade-offs: …  (paragraph)
     """
     q = (question_en or "").strip()
     spoken = (spoken_en or "").strip()
     se = [str(x).strip() for x in (software_engineer or []) if str(x).strip()][:4]
     arch = [str(x).strip() for x in (architect or []) if str(x).strip()][:4]
+    trades = (tradeoffs or "").strip()
     prov = (provider or "").strip()
     prefix = f"[Coach {n}] "
     with _print_lock:
@@ -1233,9 +1236,6 @@ def coach_block(
             e = _rich_escape
             _emit_chunk_blank(panel="coach")
             q_show = q if len(q) <= 160 else (q[:157] + "…")
-            head = f"{prefix}Q: {q_show}"
-            if prov:
-                head += f"  ·  {prov}"
             _emit(
                 "rich",
                 f"[bold yellow]{e(prefix)}[/][white]Q: [/][cyan]{e(q_show)}[/]"
@@ -1254,13 +1254,24 @@ def coach_block(
                         panel="coach",
                     )
             for b in se:
-                _emit("rich", f"  [magenta]· SE:[/] [white]{e(b)}[/]", panel="coach")
+                _emit(
+                    "rich",
+                    f"  [magenta]· SE[/][dim] (Software Engineer):[/] [white]{e(b)}[/]",
+                    panel="coach",
+                )
             for b in arch:
                 _emit(
                     "rich",
-                    f"  [blue]· Arch:[/] [white]{e(b)}[/]",
+                    f"  [blue]· Arch[/][dim] (Architect):[/] [white]{e(b)}[/]",
                     panel="coach",
                 )
+            if trades:
+                _emit("rich", "  [bold #e0a020]· Trade-offs:[/]", panel="coach")
+                for line in trades.splitlines() or [trades]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    _emit("rich", f"  [white]{e(line)}[/]", panel="coach")
             _emit_chunk_blank(panel="coach")
             return
         print(f"\r\033[K{Fore.YELLOW}{Style.BRIGHT}{prefix}{Style.RESET_ALL}Q: {q}")
@@ -1268,9 +1279,12 @@ def coach_block(
         if spoken:
             print(f"\r\033[K  {Fore.WHITE}{Style.BRIGHT}{spoken}{Style.RESET_ALL}")
         for b in se:
-            print(f"\r\033[K  {Fore.MAGENTA}· SE:{Style.RESET_ALL} {b}")
+            print(f"\r\033[K  {Fore.MAGENTA}· SE (Software Engineer):{Style.RESET_ALL} {b}")
         for b in arch:
-            print(f"\r\033[K  {Fore.BLUE}· Arch:{Style.RESET_ALL} {b}")
+            print(f"\r\033[K  {Fore.BLUE}· Arch (Architect):{Style.RESET_ALL} {b}")
+        if trades:
+            print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
+            print(f"\r\033[K  {Fore.WHITE}{trades}{Style.RESET_ALL}")
         print()
 
 
