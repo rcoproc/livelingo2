@@ -2388,10 +2388,16 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             rest = parts[2] if len(parts) > 2 else ""
             if action in ("on", "enable", "1", "true"):
                 coach.set_enabled(True)
-                ui.success("Interview Coach ON — perguntas LC → sugestão EN.", panel="app")
+                ui.success(
+                    "Interview Coach ON — painel visível · perguntas LC → sugestão EN.",
+                    panel="app",
+                )
             elif action in ("off", "disable", "0", "false"):
                 coach.set_enabled(False)
-                ui.info("Interview Coach OFF.", panel="app")
+                ui.info(
+                    "Interview Coach OFF — painel oculto (LC ocupa a coluna).",
+                    panel="app",
+                )
             elif action in ("status", "st"):
                 st = coach.status()
                 ui.info(
@@ -2408,6 +2414,9 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 elif last.error:
                     ui.warn(f"[Coach] last error: {last.error}", panel="app")
                 else:
+                    # Re-show panel so "last" is visible
+                    if not coach.enabled:
+                        coach.set_enabled(True)
                     ui.coach_block(
                         last.n,
                         last.question,
@@ -2431,11 +2440,21 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     panel="app",
                 )
             try:
-                if indicator is not None and hasattr(indicator, "_paint_coach_header"):
-                    if hasattr(indicator, "call_from_thread"):
-                        indicator.call_from_thread(indicator._paint_coach_header)
-                    else:
-                        indicator._paint_coach_header()
+                if indicator is not None:
+                    # Sync visibility with enabled (on → show pane, off → hide)
+                    if hasattr(indicator, "set_coach_panel_visible"):
+                        vis = bool(coach.enabled)
+                        if hasattr(indicator, "call_from_thread"):
+                            indicator.call_from_thread(
+                                indicator.set_coach_panel_visible, vis
+                            )
+                        else:
+                            indicator.set_coach_panel_visible(vis)
+                    elif hasattr(indicator, "_paint_coach_header"):
+                        if hasattr(indicator, "call_from_thread"):
+                            indicator.call_from_thread(indicator._paint_coach_header)
+                        else:
+                            indicator._paint_coach_header()
             except Exception:
                 pass
     elif cmd == "o":

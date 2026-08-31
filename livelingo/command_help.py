@@ -252,10 +252,10 @@ _I18N: dict[str, dict[str, str]] = {
         "title_coach": "Interview Coach",
         "desc_coach": (
             "Suggest assertive **English** answers for interview questions from LiveCaptions. "
-            "Panel under LC: Spoken EN + SE bullets + Architect bullets. "
-            "`coach on|off|status|last|force|ask <q>`. Needs `XAI_API_KEY` (Grok). "
-            "Default OFF (`INTERVIEW_COACH_ENABLED`). "
-            "Manual test without LC: `airespond <question>`."
+            "Panel under LC: Spoken EN + SE + Arch + Trade-offs. "
+            "`coach on` shows the pane; `coach off` **hides** it (LC fills the column). "
+            "Also: `status|last|force|ask <q>`. Needs `XAI_API_KEY` (Grok). "
+            "Default OFF. Manual test: `airespond <question>`."
         ),
         "title_airespond": "Simulate LC question → Coach",
         "desc_airespond": (
@@ -598,10 +598,10 @@ _I18N: dict[str, dict[str, str]] = {
         "title_coach": "Interview Coach",
         "desc_coach": (
             "Sugere respostas **assertivas em inglês** para perguntas de entrevista do LiveCaptions. "
-            "Painel sob o LC: Spoken EN + bullets SE + Arquiteto. "
-            "`coach on|off|status|last|force|ask <q>`. Precisa `XAI_API_KEY` (Grok). "
-            "Padrão OFF (`INTERVIEW_COACH_ENABLED`). "
-            "Teste manual sem LC: `airespond <pergunta>`."
+            "Painel sob o LC: Spoken EN + SE + Arch + Trade-offs. "
+            "`coach on` mostra o painel; `coach off` **oculta** (LC ocupa a coluna). "
+            "Também: `status|last|force|ask <q>`. Precisa `XAI_API_KEY` (Grok). "
+            "Padrão OFF. Teste: `airespond <pergunta>`."
         ),
         "title_airespond": "Simular pergunta LC → Coach",
         "desc_airespond": (

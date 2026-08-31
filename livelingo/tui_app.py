@@ -2462,6 +2462,9 @@ class LiveLingoApp(App):
         min-height: 1;
         max-height: 1;
     }
+    #log-coach.-hidden, #lc-coach-sash.-hidden {
+        display: none;
+    }
     #log, #log-lc, #log-coach, #log-app, #log-news, #log-cmds {
         height: 1fr;
         margin: 0;
@@ -3229,10 +3232,20 @@ class LiveLingoApp(App):
         self._bind_caption_service()
         self._paint_captions_panel()
         try:
-            self._apply_lc_coach_heights()
-            self._paint_coach_header()
+            # Start with coach pane matching INTERVIEW_COACH_ENABLED / runtime flag
+            enabled = False
+            try:
+                coach = getattr(self.pipeline, "interview_coach", None)
+                enabled = bool(coach is not None and getattr(coach, "enabled", False))
+            except Exception:
+                enabled = False
+            self.set_coach_panel_visible(enabled)
         except Exception:
-            pass
+            try:
+                self._apply_lc_coach_heights()
+                self._paint_coach_header()
+            except Exception:
+                pass
         # Escuta ativa ASAP — soft Mic ready (do not wait for first speech)
         try:
             self._pipe_stage = "idle"
@@ -4290,6 +4303,15 @@ class LiveLingoApp(App):
 
     def _apply_lc_coach_heights(self) -> None:
         """Apply fr heights so LC caption + coach share the left column."""
+        visible = bool(getattr(self, "_coach_panel_visible", True))
+        if not visible:
+            # Coach hidden → LC caption uses full column
+            try:
+                lc = self.query_one("#log-lc", SelectableRichLog)
+                lc.styles.height = "1fr"
+            except Exception:
+                pass
+            return
         r = float(getattr(self, "_lc_coach_ratio", 0.45) or 0.45)
         r = max(0.2, min(0.7, r))
         # Integer fr parts (e.g. 0.45 → lc 11 / coach 9)
@@ -4306,12 +4328,44 @@ class LiveLingoApp(App):
         except Exception:
             pass
 
+    def set_coach_panel_visible(self, visible: bool) -> None:
+        """
+        Show/hide Interview Coach pane under LC (`coach on` / `coach off`).
+
+        When hidden: sash + #log-coach display:none; #log-lc fills the column.
+        """
+        visible = bool(visible)
+        self._coach_panel_visible = visible
+        for sel in ("#log-coach", "#lc-coach-sash"):
+            try:
+                w = self.query_one(sel)
+                w.set_class(not visible, "-hidden")
+            except Exception:
+                try:
+                    w = self.query_one(sel)
+                    if visible:
+                        w.remove_class("-hidden")
+                    else:
+                        w.add_class("-hidden")
+                except Exception:
+                    pass
+        try:
+            self._apply_lc_coach_heights()
+        except Exception:
+            pass
+        try:
+            self._paint_coach_header()
+        except Exception:
+            pass
+
     def _paint_coach_header(self) -> None:
-        """Update Coach ON/OFF chip in LC header."""
+        """Update Coach ON/OFF chip in LC header; sync panel visibility."""
+        enabled = False
         label = "Coach OFF"
         try:
             coach = getattr(self.pipeline, "interview_coach", None)
             if coach is not None and getattr(coach, "enabled", False):
+                enabled = True
                 st = {}
                 try:
                     st = coach.status() or {}
@@ -4323,6 +4377,14 @@ class LiveLingoApp(App):
             pass
         try:
             self.query_one("#trad-lbl-coach", Static).update(label)
+        except Exception:
+            pass
+        # Keep pane visibility aligned with enabled (unless explicitly set)
+        try:
+            want = enabled
+            cur = getattr(self, "_coach_panel_visible", None)
+            if cur is None or bool(cur) != bool(want):
+                self.set_coach_panel_visible(want)
         except Exception:
             pass
 
