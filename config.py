@@ -521,6 +521,39 @@ LIVE_CAPTIONS_SOURCE_LANG = _get_str("LIVE_CAPTIONS_SOURCE_LANG", "")
 LIVE_CAPTIONS_TARGET_LANG = _get_str("LIVE_CAPTIONS_TARGET_LANG", "")
 
 # --------------------------------------------------------------------------- #
+# Interview Coach (LC questions → assertive EN answer suggestions)
+# --------------------------------------------------------------------------- #
+# Panel under LC column: spoken EN + SE bullets + Architect bullets.
+# Default OFF (API cost + privacy). Needs XAI_API_KEY (or GROK_API_KEY).
+INTERVIEW_COACH_ENABLED = _get_bool("INTERVIEW_COACH_ENABLED", False)
+# grok | groq | deepseek | claude | gemini
+INTERVIEW_COACH_PROVIDER = _get_str("INTERVIEW_COACH_PROVIDER", "grok").lower()
+# Empty → provider default (see livelingo/interview_llm._DEFAULT_MODELS)
+INTERVIEW_COACH_MODEL = _get_str("INTERVIEW_COACH_MODEL", "")
+# --- Provider keys (only the active INTERVIEW_COACH_PROVIDER is required) ---
+XAI_API_KEY = _get_str("XAI_API_KEY", "")
+GROK_API_KEY = _get_str("GROK_API_KEY", "")  # alias if XAI_API_KEY empty
+XAI_API_URL = _get_str("XAI_API_URL", "https://api.x.ai/v1/chat/completions")
+# GROQ_API_KEY already defined above (STT/translation)
+DEEPSEEK_API_KEY = _get_str("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_URL = _get_str(
+    "DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions"
+)
+ANTHROPIC_API_KEY = _get_str("ANTHROPIC_API_KEY", "")
+CLAUDE_API_KEY = _get_str("CLAUDE_API_KEY", "")  # alias
+ANTHROPIC_API_URL = _get_str("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
+GEMINI_API_KEY = _get_str("GEMINI_API_KEY", "")
+GOOGLE_API_KEY = _get_str("GOOGLE_API_KEY", "")  # alias for Gemini
+INTERVIEW_COACH_TIMEOUT_S = _get_float("INTERVIEW_COACH_TIMEOUT_S", 25.0)
+INTERVIEW_MIN_CHARS = _get_int("INTERVIEW_MIN_CHARS", 40)
+# auto = only clear questions; always = every stable LC; manual = F7/coach ask only
+INTERVIEW_QUESTION_MODE = _get_str("INTERVIEW_QUESTION_MODE", "auto").lower()
+# Fraction of LC column height for coach pane (0.25–0.7)
+INTERVIEW_COACH_PANEL_RATIO = _get_float("INTERVIEW_COACH_PANEL_RATIO", 0.45)
+# Optional 2–4 lines about you (stack, years) injected into the prompt
+INTERVIEW_CANDIDATE_PROFILE = _get_str("INTERVIEW_CANDIDATE_PROFILE", "")
+
+# --------------------------------------------------------------------------- #
 # Webcam lip-sync → virtual camera (optional; Teams/Meet)
 # --------------------------------------------------------------------------- #
 # Requires: pip install opencv-python mediapipe pyvirtualcam

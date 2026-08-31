@@ -2269,7 +2269,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 except Exception:
                     pass
         if indicator is not None:
-            # TUI: set_mic_muted(True) opens centered red mute modal (only [n] exits).
+            # TUI: set_mic_muted paints red header/borders — non-blocking (no modal).
             set_muted = getattr(indicator, "set_mic_muted", None)
             if callable(set_muted):
                 try:
@@ -2286,17 +2286,17 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             if os_ok:
                 ui.warn(
                     f"Mic MUTED (Windows): '{mic_name}'. "
-                    f"Popup vermelho na TUI — pressione [n] para desmutar.",
+                    f"Header vermelho — logs/cmds livres · [n] desmuta.",
                     panel="app",
                 )
             else:
                 ui.warn(
                     f"Mic MUTED (app only — OS mute falhou): '{mic_name}'. "
-                    f"Popup na TUI — pressione [n] para reativar.",
+                    f"Header vermelho · [n] reativa.",
                     panel="app",
                 )
             ui.dim(
-                "  (modo leitura: sem animação de escuta até o mic LIVE)",
+                "  (escuta pausada; UI permanece utilizável)",
                 panel="app",
             )
         else:
@@ -2335,6 +2335,167 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.success(msg, panel="app")
         else:
             ui.warn(msg, panel="app")
+    elif cmd == "airespond" or cmd.startswith("airespond ") or cmd == "air" or cmd.startswith(
+        "air "
+    ):
+        # Manual test: simulate LC question → Interview Coach (Spoken EN + SE/Arch)
+        # Example: airespond Me fale sobre microsserviços no padrão SAGA
+        coach = getattr(pipeline, "interview_coach", None)
+        if coach is None:
+            ui.warn(
+                "Interview Coach não inicializado — reinicie a app.",
+                panel="app",
+            )
+        else:
+            raw = (raw_cmd or "").strip()
+            low = raw.lower()
+            q = ""
+            for prefix in ("airespond", "air"):
+                if low == prefix:
+                    q = ""
+                    break
+                if low.startswith(prefix + " "):
+                    q = raw[len(prefix) :].strip()
+                    break
+            if not q:
+                ui.warn(
+                    "Uso: airespond <pergunta>   "
+                    "ex: airespond Me fale sobre microsserviços no padrão SAGA",
+                    panel="app",
+                )
+            else:
+                ok, msg = coach.ask(q, simulate_lc=True)
+                (ui.success if ok else ui.warn)(msg, panel="app")
+            try:
+                if indicator is not None and hasattr(indicator, "_paint_coach_header"):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator._paint_coach_header)
+                    else:
+                        indicator._paint_coach_header()
+            except Exception:
+                pass
+    elif cmd == "coach" or cmd.startswith("coach "):
+        coach = getattr(pipeline, "interview_coach", None)
+        if coach is None:
+            ui.warn(
+                "Interview Coach não inicializado — reinicie a app.",
+                panel="app",
+            )
+        else:
+            parts = (raw_cmd or cmd or "").strip().split(None, 2)
+            # parts: ["coach"] | ["coach", "on"] | ["coach", "ask", "…"]
+            action = (parts[1] if len(parts) > 1 else "status").strip().lower()
+            rest = parts[2] if len(parts) > 2 else ""
+            if action in ("on", "enable", "1", "true"):
+                coach.set_enabled(True)
+                ui.success(
+                    "Interview Coach ON — painel visível · perguntas LC → sugestão EN.",
+                    panel="app",
+                )
+            elif action in ("off", "disable", "0", "false"):
+                coach.set_enabled(False)
+                ui.info(
+                    "Interview Coach OFF — painel oculto (LC ocupa a coluna).",
+                    panel="app",
+                )
+            elif action in ("status", "st"):
+                st = coach.status()
+                ui.info(
+                    f"Coach enabled={st.get('enabled')} · "
+                    f"provider={st.get('provider')} · model={st.get('model')} · "
+                    f"key_ok={st.get('key_ok')} · busy={st.get('busy')} · "
+                    f"mode={st.get('mode')} · last={st.get('last_question')!r}",
+                    panel="app",
+                )
+            elif action == "last":
+                last = coach.last_result()
+                if last is None:
+                    ui.warn("Nenhuma resposta Coach ainda.", panel="app")
+                elif last.error:
+                    ui.warn(f"[Coach] last error: {last.error}", panel="app")
+                else:
+                    # Re-show panel so "last" is visible
+                    if not coach.enabled:
+                        coach.set_enabled(True)
+                    ui.coach_block(
+                        last.n,
+                        last.question,
+                        last.spoken,
+                        last.software_engineer,
+                        last.architect,
+                        tradeoffs=getattr(last, "tradeoffs", "") or "",
+                        spoken_pt=getattr(last, "spoken_pt", "") or "",
+                        software_engineer_pt=getattr(
+                            last, "software_engineer_pt", None
+                        ),
+                        architect_pt=getattr(last, "architect_pt", None),
+                        tradeoffs_pt=getattr(last, "tradeoffs_pt", "") or "",
+                        provider=last.provider,
+                    )
+            elif action in ("force", "f7", "retry"):
+                ok, msg = coach.force_last()
+                (ui.success if ok else ui.warn)(msg, panel="app")
+            elif action == "ask":
+                # Same path as airespond but without LC panel simulation by default
+                ok, msg = coach.ask(rest, simulate_lc=False)
+                (ui.success if ok else ui.warn)(msg, panel="app")
+            elif action in ("provider", "prov", "engine", "model"):
+                # coach provider claude [optional-model]
+                # coach model <name> — keep provider, change model only
+                bits = (rest or "").strip().split(None, 1)
+                if action == "model":
+                    try:
+                        prov = str(
+                            getattr(coach.cfg, "INTERVIEW_COACH_PROVIDER", "grok")
+                            or "grok"
+                        )
+                    except Exception:
+                        prov = "grok"
+                    model_name = " ".join(bits).strip()
+                    if not model_name:
+                        ui.warn("Uso: coach model <nome-do-modelo>", panel="app")
+                    else:
+                        ok, msg = coach.set_provider(prov, model_name)
+                        (ui.success if ok else ui.warn)(msg, panel="app")
+                elif not bits:
+                    from livelingo.interview_llm import list_interview_providers
+
+                    ui.info(
+                        "Uso: coach provider <grok|groq|deepseek|claude|gemini> "
+                        "[model]\n"
+                        f"  disponíveis: {', '.join(list_interview_providers())}",
+                        panel="app",
+                    )
+                else:
+                    prov = bits[0]
+                    model_name = bits[1].strip() if len(bits) > 1 else ""
+                    ok, msg = coach.set_provider(prov, model_name)
+                    (ui.success if ok else ui.warn)(msg, panel="app")
+            else:
+                ui.warn(
+                    "Uso: coach on|off|status|last|force|ask <q> | "
+                    "provider <grok|groq|deepseek|claude|gemini> [model] · "
+                    "ou airespond <pergunta>",
+                    panel="app",
+                )
+            try:
+                if indicator is not None:
+                    # Sync visibility with enabled (on → show pane, off → hide)
+                    if hasattr(indicator, "set_coach_panel_visible"):
+                        vis = bool(coach.enabled)
+                        if hasattr(indicator, "call_from_thread"):
+                            indicator.call_from_thread(
+                                indicator.set_coach_panel_visible, vis
+                            )
+                        else:
+                            indicator.set_coach_panel_visible(vis)
+                    elif hasattr(indicator, "_paint_coach_header"):
+                        if hasattr(indicator, "call_from_thread"):
+                            indicator.call_from_thread(indicator._paint_coach_header)
+                        else:
+                            indicator._paint_coach_header()
+            except Exception:
+                pass
     elif cmd == "o":
         print("Enter a word in English: ", end="", flush=True)
         word = sys.stdin.readline().strip()
@@ -4526,6 +4687,25 @@ def main():
         # --- Live Captions (Windows LiveCaptions → TUI strip; parallel to mic) ---
         # Default: build service but do NOT start (LIVE_CAPTIONS_START_ON_LAUNCH=false).
         # Escuta ativa = VOZ/mic path. LC only with [lc on] / off with [lc off].
+        # Interview Coach (LC questions → assertive EN suggestions under LC pane)
+        try:
+            from livelingo.interview_coach import build_interview_coach
+
+            pipeline.interview_coach = build_interview_coach(cfg)
+            if getattr(cfg, "INTERVIEW_COACH_ENABLED", False):
+                _log_info(
+                    "Interview Coach ON — perguntas LC → painel Coach (EN). "
+                    "[coach off] · F7 force · XAI_API_KEY required."
+                )
+            else:
+                _log_info(
+                    "Interview Coach OFF — [coach on] ou "
+                    "INTERVIEW_COACH_ENABLED=true · F7 force."
+                )
+        except Exception as exc:
+            pipeline.interview_coach = None
+            _log_warn(f"Interview Coach não iniciou: {exc}")
+
         caption_service = None
         if getattr(cfg, "LIVE_CAPTIONS_ENABLED", False):
             try:
@@ -4540,6 +4720,12 @@ def main():
                         pipeline=pipeline,
                     )
                     pipeline.caption_service = caption_service
+                    try:
+                        caption_service.interview_coach = getattr(
+                            pipeline, "interview_coach", None
+                        )
+                    except Exception:
+                        pass
                     auto_lc = bool(getattr(cfg, "LIVE_CAPTIONS_START_ON_LAUNCH", False))
                     if auto_lc:
                         caption_service.start()
