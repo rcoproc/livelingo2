@@ -2520,6 +2520,9 @@ class LiveLingoApp(App):
     #trad-btn-voz:hover {
         background: $accent-lighten-2;
     }
+    #trad-btn-voz.-hidden {
+        display: none;
+    }
     /* Coach pane under LC: log + Expand/Restore on bottom-right */
     #coach-pane {
         height: 1fr;
@@ -4194,18 +4197,36 @@ class LiveLingoApp(App):
             return
         t = _footer_i18n()
         exp = self._trad_expand
-        if exp == "voz":
-            btn.label = t.get("restore", "Restore")
+        # While Coach is maximized, hide VOZ's Expand (top-right) — only the
+        # Coach bar's Restaurar should control restore (avoids two conflicting labels).
+        if exp == "coach":
             try:
-                btn.tooltip = t.get("restore_tip", "Restore LC | VOZ split")
+                btn.display = False
             except Exception:
-                pass
+                try:
+                    btn.add_class("-hidden")
+                except Exception:
+                    pass
         else:
-            btn.label = t.get("expand", "Expand")
             try:
-                btn.tooltip = t.get("expand_tip", "Maximize VOZ panel (right)")
+                btn.display = True
             except Exception:
-                pass
+                try:
+                    btn.remove_class("-hidden")
+                except Exception:
+                    pass
+            if exp == "voz":
+                btn.label = t.get("restore", "Restore")
+                try:
+                    btn.tooltip = t.get("restore_tip", "Restore LC | VOZ split")
+                except Exception:
+                    pass
+            else:
+                btn.label = t.get("expand", "Expand")
+                try:
+                    btn.tooltip = t.get("expand_tip", "Maximize VOZ panel (right)")
+                except Exception:
+                    pass
         # Keep Coach button label in sync too
         try:
             self._update_trad_coach_expand_label()
@@ -4221,6 +4242,10 @@ class LiveLingoApp(App):
         t = _footer_i18n()
         if self._trad_expand == "coach":
             btn.label = t.get("restore", "Restore")
+            try:
+                btn.display = True
+            except Exception:
+                pass
             try:
                 btn.tooltip = t.get(
                     "coach_restore_tip", "Restore LC | Coach and VOZ"
