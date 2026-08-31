@@ -135,7 +135,7 @@ def build_interview_llm(cfg) -> InterviewLLM:
 
 def parse_coach_response(raw: str) -> dict[str, Any]:
     """
-    Parse LLM output into {spoken, software_engineer, architect}.
+    Parse LLM output into {spoken, software_engineer, architect, tradeoffs}.
 
     Prefers JSON; falls back to treating whole text as spoken.
     """
@@ -144,6 +144,7 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
         "spoken": "",
         "software_engineer": [],
         "architect": [],
+        "tradeoffs": "",
     }
     if not text:
         return empty
@@ -176,15 +177,21 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
             "spoken": text[:1200],
             "software_engineer": [],
             "architect": [],
+            "tradeoffs": "",
         }
 
     spoken = str(data.get("spoken") or data.get("answer") or "").strip()
     se = data.get("software_engineer") or data.get("se") or []
     arch = data.get("architect") or data.get("architecture") or []
+    tradeoffs = data.get("tradeoffs") or data.get("trade_offs") or data.get("trade-offs") or ""
     if isinstance(se, str):
         se = [se]
     if isinstance(arch, str):
         arch = [arch]
+    if isinstance(tradeoffs, list):
+        tradeoffs = " ".join(str(x).strip() for x in tradeoffs if str(x).strip())
+    else:
+        tradeoffs = str(tradeoffs or "").strip()
     se = [str(x).strip() for x in se if str(x).strip()][:4]
     arch = [str(x).strip() for x in arch if str(x).strip()][:4]
     if not spoken:
@@ -193,4 +200,5 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
         "spoken": spoken[:1500],
         "software_engineer": se,
         "architect": arch,
+        "tradeoffs": tradeoffs[:1200],
     }

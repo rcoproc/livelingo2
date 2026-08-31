@@ -81,7 +81,8 @@ Return ONLY valid JSON (no markdown fences) with this shape:
 {
   "spoken": "4-8 sentences the candidate can say aloud in English",
   "software_engineer": ["up to 4 short bullets — coding/delivery angle"],
-  "architect": ["up to 4 short bullets — systems/architecture angle"]
+  "architect": ["up to 4 short bullets — systems/architecture angle"],
+  "tradeoffs": "One clear paragraph in English explaining the main trade-offs of the topic (pros vs cons, when to choose A vs B, costs/risks). Not bullets — a short paragraph the candidate can skim before speaking."
 }
 """
 
@@ -112,6 +113,7 @@ class CoachResult:
     spoken: str
     software_engineer: List[str] = field(default_factory=list)
     architect: List[str] = field(default_factory=list)
+    tradeoffs: str = ""
     provider: str = ""
     error: str = ""
 
@@ -312,6 +314,7 @@ class InterviewCoach:
             "spoken": "",
             "software_engineer": [],
             "architect": [],
+            "tradeoffs": "",
         }
         provider = ""
         simulated = False
@@ -347,6 +350,7 @@ class InterviewCoach:
                 spoken=parsed.get("spoken") or "",
                 software_engineer=list(parsed.get("software_engineer") or []),
                 architect=list(parsed.get("architect") or []),
+                tradeoffs=str(parsed.get("tradeoffs") or ""),
                 provider=provider,
                 error=err,
             )
@@ -364,6 +368,7 @@ class InterviewCoach:
                     result.spoken,
                     result.software_engineer,
                     result.architect,
+                    tradeoffs=result.tradeoffs,
                     provider=provider,
                 )
         except Exception:
