@@ -621,6 +621,11 @@ Finished speaking and still waiting on silence? **`[go]` / F6** flushes STT now.
 `MONITOR_PLAYBACK` mirrors full TTS on headphones **in parallel** with Cable (not sequential).
 Pre-TTS bip lead default: `TTS_MONITOR_CUE_LEAD_S=0.3`.
 
+**Lower call latency (queue next phrase):** with headphones + VB-Cable, set
+`MUTE_CAPTURE_DURING_PLAYBACK=false` so you can speak the next line while TTS still
+plays, and `SOUND_ON_PARALLEL=true` so STT/translation of chunk N+1 runs while chunk N
+is still in TTS (Cable order preserved). See `.env.example` “Call profile”.
+
 **OBS:** while LiveLingo streams, **Stop Virtual Camera** in OBS (exclusive producer).
 LiveLingo owns the device; Teams camera = **OBS Virtual Camera**.
 
