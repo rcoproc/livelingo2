@@ -13,6 +13,8 @@ def test_normalize_panel_aliases():
     assert ui._normalize_panel("captions") == "lc"
     assert ui._normalize_panel("caption") == "lc"
     assert ui._normalize_panel("main-lc") == "lc"
+    assert ui._normalize_panel("coach") == "coach"
+    assert ui._normalize_panel("entrevista") == "coach"
     assert ui._normalize_panel("app") == "app"
     assert ui._normalize_panel("sistema") == "app"
     assert ui._normalize_panel("system") == "app"

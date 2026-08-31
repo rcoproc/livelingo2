@@ -43,6 +43,14 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "s", "group": "audio", "token": "s", "sort": "s"},
     {"id": "x", "group": "audio", "token": "x", "sort": "x"},
     {"id": "go", "group": "audio", "token": "go", "sort": "go"},
+    {"id": "coach", "group": "audio", "token": "coach", "sort": "coach"},
+    {
+        "id": "coach_provider",
+        "group": "audio",
+        "token": "coach provider",
+        "sort": "coach-provider",
+    },
+    {"id": "airespond", "group": "audio", "token": "airespond", "sort": "airespond"},
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
     {"id": "o", "group": "idiom", "token": "o", "sort": "o"},
@@ -62,6 +70,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "f4", "group": "keys", "token": "F4", "sort": "f4"},
     {"id": "f5", "group": "keys", "token": "F5", "sort": "f5"},
     {"id": "f6", "group": "keys", "token": "F6", "sort": "f6"},
+    {"id": "f7", "group": "keys", "token": "F7", "sort": "f7"},
     {"id": "search", "group": "keys", "token": "/", "sort": "search"},
     {"id": "search_n", "group": "keys", "token": "/n", "sort": "search-n"},
     {"id": "search_p", "group": "keys", "token": "/p", "sort": "search-p"},
@@ -192,9 +201,8 @@ _I18N: dict[str, dict[str, str]] = {
         "title_n": "Mic mute",
         "desc_n": (
             "Toggle microphone mute (Windows Core Audio when available + app capture gate). "
-            "In the TUI a **centered red modal** (white text) appears while muted; "
-            "only action: press **n** again (**Cmd n** / desmutar o microfone - Cmd n). "
-            "Header also shows MUTED. TUI stays open behind the popup. "
+            "In the TUI: **red header + red borders** while muted — logs and command line "
+            "stay usable (no blocking modal). Press **n** again to unmute. "
             "Case-sensitive: lowercase **n** only (capital **N** is force soft-listen)."
         ),
         "title_N": "Force soft-listen",
@@ -247,6 +255,29 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_f6": "Flush listen (F6)",
         "desc_f6": "Same as `[go]` / `.` — force VAD end → STT now without waiting for silence.",
+        "title_coach": "Interview Coach",
+        "desc_coach": (
+            "Suggest assertive **English** answers (+ pt-BR mirror) for interview questions. "
+            "Panel under LC. `coach on` shows pane; `coach off` hides it. "
+            "Also: `status|last|force|ask <q>`. Default OFF. Test: `airespond <question>`."
+        ),
+        "title_coach_provider": "Coach LLM provider",
+        "desc_coach_provider": (
+            "Switch Interview Coach backend: "
+            "`coach provider <grok|groq|deepseek|claude|gemini> [model]`. "
+            "Keys: `XAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, "
+            "`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`. "
+            "Example: `coach provider claude` · `coach provider gemini gemini-2.0-flash`."
+        ),
+        "title_airespond": "Simulate LC question → Coach",
+        "desc_airespond": (
+            "Type a question (PT or EN) as if it came from LiveCaptions, then generate the "
+            "Interview Coach answer (**Spoken always English** + pt-BR mirror). Example: "
+            "`airespond Me fale sobre microsserviços no padrão SAGA`. "
+            "Alias: `air`. Auto-enables Coach and shows the Coach pane."
+        ),
+        "title_f7": "Coach force (F7)",
+        "desc_f7": "Force Interview Coach on the last stable LC caption (same as `coach force`).",
         # Idiom
         "title_g": "Swap languages",
         "desc_g": "Swap `SOURCE_LANG` ↔ `TARGET_LANG` at runtime (STT, translator, TTS). Does not rewrite old chunks. If a chunk is in flight, the swap may be deferred until idle.",
@@ -523,8 +554,8 @@ _I18N: dict[str, dict[str, str]] = {
         "title_n": "Mudo do microfone",
         "desc_n": (
             "Liga/desliga o mute do microfone (Core Audio no Windows quando disponível + gate do app). "
-            "Na TUI abre um **popup vermelho centralizado** (texto branco) enquanto estiver mudo; "
-            "única ação: **n** de novo (**desmutar o microfone - Cmd n**). Header mostra MUTED. "
+            "Na TUI: **header vermelho + bordas vermelhas** enquanto mudo — logs e linha de "
+            "comando continuam usáveis (**sem** modal bloqueante). **n** de novo desmuta. "
             "Case-sensitive: só **n** minúsculo (**N** maiúsculo = escuta forçada)."
         ),
         "title_N": "Escuta forçada (voz baixa)",
@@ -576,6 +607,29 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_f6": "Flush escuta (F6)",
         "desc_f6": "Igual a `[go]` / `.` — força fim do VAD → STT agora, sem esperar silêncio.",
+        "title_coach": "Interview Coach",
+        "desc_coach": (
+            "Sugere respostas **assertivas em inglês** (+ espelho pt-BR) para perguntas de entrevista. "
+            "Painel sob o LC. `coach on` mostra; `coach off` oculta. "
+            "Também: `status|last|force|ask <q>`. Padrão OFF. Teste: `airespond <pergunta>`."
+        ),
+        "title_coach_provider": "Provider LLM do Coach",
+        "desc_coach_provider": (
+            "Troca o backend do Interview Coach: "
+            "`coach provider <grok|groq|deepseek|claude|gemini> [model]`. "
+            "Keys: `XAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, "
+            "`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`. "
+            "Ex.: `coach provider claude` · `coach provider gemini gemini-2.0-flash`."
+        ),
+        "title_airespond": "Simular pergunta LC → Coach",
+        "desc_airespond": (
+            "Digite uma pergunta (PT ou EN) como se viesse do LiveCaptions e gere a "
+            "resposta do Interview Coach (**Spoken sempre em inglês** + espelho pt-BR). Exemplo: "
+            "`airespond Me fale sobre microsserviços no padrão SAGA`. "
+            "Alias: `air`. Liga o Coach e mostra o painel."
+        ),
+        "title_f7": "Coach force (F7)",
+        "desc_f7": "Força o Interview Coach no último LC estável (igual a `coach force`).",
         "title_g": "Trocar idiomas",
         "desc_g": "Inverte `SOURCE_LANG` ↔ `TARGET_LANG` em tempo real (STT, tradutor, TTS). Não reescreve chunks antigos. Se houver chunk em andamento, a troca pode ser adiada.",
         "title_o": "Sinônimos / significado",

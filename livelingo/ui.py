@@ -19,7 +19,7 @@ init(autoreset=True)
 _print_lock = threading.RLock()
 
 # Optional TUI sink: callable(kind, text, panel="main") — when set, prints go there.
-# panel: "main" (VOZ + comandos) | "lc" (LiveCaptions) | "app" (Sistema / debug).
+# panel: "main" (VOZ) | "lc" (LiveCaptions) | "coach" (Interview Coach) | "app".
 _log_sink = None
 # Optional width provider: callable() -> int (usable columns inside the log panel).
 _width_provider = None
@@ -80,10 +80,12 @@ def get_width_provider():
 
 
 def _normalize_panel(panel: str = "main") -> str:
-    """Map panel aliases → main | lc | app."""
+    """Map panel aliases → main | lc | coach | app."""
     p = str(panel or "main").lower()
     if p in ("app", "sistema", "system"):
         return "app"
+    if p in ("coach", "interview", "interview_coach", "entrevista"):
+        return "coach"
     if p in ("lc", "main-lc", "livecaptions", "captions", "caption"):
         return "lc"
     return "main"
@@ -256,6 +258,7 @@ __all__ = [
     "chunk_stream_start",
     "chunk_stream_update",
     "chunk_stream_done",
+    "coach_block",
     "synonyms_result",
     "favorites_popup",
     "set_log_sink",
@@ -1199,6 +1202,157 @@ def chunk_text_preview(n, heard, translated, from_cache=None):
     _emit_voz_chunk_block(
         n, heard, translated, from_cache=from_cache, blank_after=False
     )
+
+
+def coach_block(
+    n,
+    question_en,
+    spoken_en,
+    software_engineer=None,
+    architect=None,
+    *,
+    tradeoffs: str = "",
+    spoken_pt: str = "",
+    software_engineer_pt=None,
+    architect_pt=None,
+    tradeoffs_pt: str = "",
+    provider: str = "",
+):
+    """
+    Interview Coach on the **coach** panel (under LC).
+
+    English block first (always speak EN), then two blank lines, then pt-BR mirror.
+    """
+    q = (question_en or "").strip()
+    spoken = (spoken_en or "").strip()
+    se = [str(x).strip() for x in (software_engineer or []) if str(x).strip()][:4]
+    arch = [str(x).strip() for x in (architect or []) if str(x).strip()][:4]
+    trades = (tradeoffs or "").strip()
+    spoken_br = (spoken_pt or "").strip()
+    se_br = [str(x).strip() for x in (software_engineer_pt or []) if str(x).strip()][:4]
+    arch_br = [str(x).strip() for x in (architect_pt or []) if str(x).strip()][:4]
+    trades_br = (tradeoffs_pt or "").strip()
+    has_pt = bool(spoken_br or se_br or arch_br or trades_br)
+    prov = (provider or "").strip()
+    prefix = f"[Coach {n}] "
+
+    def _emit_section_rich(
+        *,
+        spoken_label: str,
+        spoken_text: str,
+        se_items,
+        arch_items,
+        trades_text: str,
+        se_label: str,
+        arch_label: str,
+        trades_label: str,
+    ):
+        e = _rich_escape
+        _emit("rich", f"  [bold green]{e(spoken_label)}[/]", panel="coach")
+        if spoken_text:
+            for line in spoken_text.splitlines() or [spoken_text]:
+                line = line.strip()
+                if not line:
+                    continue
+                _emit(
+                    "rich",
+                    f"  [bold white on #1e2a3a]{e(line)}[/]",
+                    panel="coach",
+                )
+        for b in se_items:
+            _emit(
+                "rich",
+                f"  [magenta]· SE[/][dim] ({e(se_label)}):[/] [white]{e(b)}[/]",
+                panel="coach",
+            )
+        for b in arch_items:
+            _emit(
+                "rich",
+                f"  [blue]· Arch[/][dim] ({e(arch_label)}):[/] [white]{e(b)}[/]",
+                panel="coach",
+            )
+        if trades_text:
+            _emit(
+                "rich",
+                f"  [bold #e0a020]· {e(trades_label)}:[/]",
+                panel="coach",
+            )
+            for line in trades_text.splitlines() or [trades_text]:
+                line = line.strip()
+                if not line:
+                    continue
+                _emit("rich", f"  [white]{e(line)}[/]", panel="coach")
+
+    with _print_lock:
+        if _log_sink is not None:
+            e = _rich_escape
+            _emit_chunk_blank(panel="coach")
+            q_show = q if len(q) <= 160 else (q[:157] + "…")
+            _emit(
+                "rich",
+                f"[bold yellow]{e(prefix)}[/][white]Q: [/][cyan]{e(q_show)}[/]"
+                + (f" [dim]· {e(prov)}[/]" if prov else ""),
+                panel="coach",
+            )
+            _emit_section_rich(
+                spoken_label="▶ Spoken (EN) — diga isto:",
+                spoken_text=spoken,
+                se_items=se,
+                arch_items=arch,
+                trades_text=trades,
+                se_label="Software Engineer",
+                arch_label="Architect",
+                trades_label="Trade-offs",
+            )
+            if has_pt:
+                # Two blank paragraphs between EN and PT-BR
+                _emit_chunk_blank(panel="coach")
+                _emit_chunk_blank(panel="coach")
+                _emit(
+                    "rich",
+                    "  [bold #7aa2f7]── Versão pt-BR (leitura) ──[/]",
+                    panel="coach",
+                )
+                _emit_section_rich(
+                    spoken_label="▶ Falado (pt-BR):",
+                    spoken_text=spoken_br,
+                    se_items=se_br,
+                    arch_items=arch_br,
+                    trades_text=trades_br,
+                    se_label="Eng. de Software",
+                    arch_label="Arquiteto",
+                    trades_label="Trade-offs",
+                )
+            _emit_chunk_blank(panel="coach")
+            return
+        print(f"\r\033[K{Fore.YELLOW}{Style.BRIGHT}{prefix}{Style.RESET_ALL}Q: {q}")
+        print(f"\r\033[K  {Fore.GREEN}▶ Spoken (EN):{Style.RESET_ALL}")
+        if spoken:
+            print(f"\r\033[K  {Fore.WHITE}{Style.BRIGHT}{spoken}{Style.RESET_ALL}")
+        for b in se:
+            print(
+                f"\r\033[K  {Fore.MAGENTA}· SE (Software Engineer):{Style.RESET_ALL} {b}"
+            )
+        for b in arch:
+            print(f"\r\033[K  {Fore.BLUE}· Arch (Architect):{Style.RESET_ALL} {b}")
+        if trades:
+            print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
+            print(f"\r\033[K  {Fore.WHITE}{trades}{Style.RESET_ALL}")
+        if has_pt:
+            print()
+            print()
+            print(f"\r\033[K  {Fore.CYAN}── Versão pt-BR ──{Style.RESET_ALL}")
+            print(f"\r\033[K  {Fore.GREEN}▶ Falado (pt-BR):{Style.RESET_ALL}")
+            if spoken_br:
+                print(f"\r\033[K  {Fore.WHITE}{spoken_br}{Style.RESET_ALL}")
+            for b in se_br:
+                print(f"\r\033[K  {Fore.MAGENTA}· SE:{Style.RESET_ALL} {b}")
+            for b in arch_br:
+                print(f"\r\033[K  {Fore.BLUE}· Arch:{Style.RESET_ALL} {b}")
+            if trades_br:
+                print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
+                print(f"\r\033[K  {Fore.WHITE}{trades_br}{Style.RESET_ALL}")
+        print()
 
 
 def live_caption_block(n, original, translated, from_cache=None):
