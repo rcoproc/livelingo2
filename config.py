@@ -414,6 +414,12 @@ SENTENCE_SILENCE_SCALE_MAX = _get_float("SENTENCE_SILENCE_SCALE_MAX", 2.5)
 # Sound OFF: process STT+translation in parallel (one worker per early chunk).
 SOUND_OFF_PARALLEL = _get_bool("SOUND_OFF_PARALLEL", True)
 SOUND_OFF_WORKERS = _get_int("SOUND_OFF_WORKERS", 2)
+# Sound ON (live Cable): process next chunk's STT+Trad while previous still in TTS.
+# TTS enqueue stays serialized (_tts_lock) so Cable order is preserved.
+# Pair with MUTE_CAPTURE_DURING_PLAYBACK=false (headphones + VB-Cable) so the
+# next phrase can be *recorded* while the previous TTS plays.
+SOUND_ON_PARALLEL = _get_bool("SOUND_ON_PARALLEL", False)
+SOUND_ON_WORKERS = _get_int("SOUND_ON_WORKERS", 2)
 # Sound OFF: skip TTS entirely (text only; saves CPU — replay needs re-synthesis).
 TTS_SKIP_WHEN_MUTED = _get_bool("TTS_SKIP_WHEN_MUTED", True)
 # Base end-of-speech pause (seconds) when sound is OFF ([s] muted). Used as the

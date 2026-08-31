@@ -168,6 +168,9 @@ class Pipeline:
         self.sound_lock = threading.Lock()
         self._bg_tts_queue = queue.Queue()
         self._stt_lock = threading.Lock()
+        # Serialize TTS when SOUND_ON_PARALLEL runs multiple chunk workers —
+        # preserves Cable order (chunk N fully enqueued before N+1 TTS starts).
+        self._tts_lock = threading.Lock()
         self._playback_suppressed = False
         self._playback_suppress_lock = threading.Lock()
 
@@ -215,6 +218,9 @@ class Pipeline:
             self._interrupt_playback(force=True)
             # Sound-ON path never advances ordered release — catch up now.
             self._sync_ordered_release_cursor()
+            if self._executor is not None:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+                self._executor = None
             if getattr(self.cfg, "SOUND_OFF_PARALLEL", True):
                 self._ensure_executor()
         else:
@@ -225,8 +231,10 @@ class Pipeline:
             if self._executor is not None:
                 self._executor.shutdown(wait=False, cancel_futures=True)
                 self._executor = None
-            # After leaving parallel mode, keep cursor ready for next mute.
+            # After leaving sound-OFF parallel, optionally start sound-ON workers.
             self._sync_ordered_release_cursor()
+            if getattr(self.cfg, "SOUND_ON_PARALLEL", False):
+                self._ensure_executor()
         return enabled
 
     def _sync_ordered_release_cursor(self):
@@ -1292,7 +1300,10 @@ class Pipeline:
         if not self._use_parallel_processing():
             return None
         if self._executor is None:
-            workers = max(1, getattr(self.cfg, "SOUND_OFF_WORKERS", 2))
+            if self.is_sound_enabled():
+                workers = max(1, int(getattr(self.cfg, "SOUND_ON_WORKERS", 2) or 2))
+            else:
+                workers = max(1, int(getattr(self.cfg, "SOUND_OFF_WORKERS", 2) or 2))
             self._executor = ThreadPoolExecutor(
                 max_workers=workers, thread_name_prefix="chunk-worker"
             )
@@ -1454,9 +1465,16 @@ class Pipeline:
         return True
 
     def _use_parallel_processing(self):
-        return not self.is_sound_enabled() and getattr(
-            self.cfg, "SOUND_OFF_PARALLEL", True
-        )
+        """
+        True when chunk workers may run STT/Trad concurrently.
+
+        - Sound OFF: SOUND_OFF_PARALLEL (default on)
+        - Sound ON:  SOUND_ON_PARALLEL (default off) — next chunk STT/Trad
+          while previous still in TTS; TTS itself stays serialized via _tts_lock
+        """
+        if not self.is_sound_enabled():
+            return bool(getattr(self.cfg, "SOUND_OFF_PARALLEL", True))
+        return bool(getattr(self.cfg, "SOUND_ON_PARALLEL", False))
 
     def _use_streaming_llm_for_chunk(self):
         return self._use_streaming_llm() and not self._use_parallel_processing()
@@ -1621,6 +1639,8 @@ class Pipeline:
         return 120
 
     def _synthesize_clause(self, text, on_segment):
+        # Callers that already hold _tts_lock (sound-ON parallel) are fine —
+        # Lock is not re-entrant; overlap worker runs under the same holder.
         if hasattr(self.synthesizer, "synthesize_clause"):
             return self.synthesizer.synthesize_clause(text, on_segment)
         return self.synthesizer.synthesize_streaming(text, on_segment)
@@ -2465,17 +2485,23 @@ class Pipeline:
             self._enqueue_playback(audio, sample_rate_, False, pre_tts_cue=do_cue)
 
         will_synthesize = sound_on or (sound_off and not self._skip_tts_when_muted())
-        if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
-            self.synthesizer.begin_utterance()
 
         def tts_worker():
-            while True:
-                segment = segment_queue.get()
-                if segment is None:
-                    break
-                audio, _ = self._synthesize_clause(segment, on_segment)
-                if audio is not None and len(audio) > 0:
-                    audio_parts.append(audio)
+            # Hold TTS lock for the whole overlapped utterance so another
+            # SOUND_ON_PARALLEL chunk cannot interleave Cable audio.
+            with self._tts_lock:
+                if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
+                    try:
+                        self.synthesizer.begin_utterance()
+                    except Exception:
+                        pass
+                while True:
+                    segment = segment_queue.get()
+                    if segment is None:
+                        break
+                    audio, _ = self._synthesize_clause(segment, on_segment)
+                    if audio is not None and len(audio) > 0:
+                        audio_parts.append(audio)
 
         tts_thread = None
         if overlap_tts:
@@ -2483,6 +2509,9 @@ class Pipeline:
                 target=tts_worker, name=f"tts-{n}", daemon=True
             )
             tts_thread.start()
+        elif will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
+            # Non-overlap: begin under lock together with synthesize (below).
+            pass
 
         def _join_tail(parts):
             return " ".join((p or "").strip() for p in parts if (p or "").strip())
@@ -2674,25 +2703,32 @@ class Pipeline:
                     tts_audio = np.concatenate(audio_parts).astype(np.float32)
                 return
 
-            t_tts_start = time.perf_counter()
-            played_any = False
+            # Non-overlap TTS: lock so parallel sound-ON workers don't interleave.
+            with self._tts_lock:
+                if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
+                    try:
+                        self.synthesizer.begin_utterance()
+                    except Exception:
+                        pass
+                t_tts_start = time.perf_counter()
+                played_any = False
 
-            if self._use_streaming_tts():
+                if self._use_streaming_tts():
 
-                def on_segment_collect(audio, sample_rate_):
-                    nonlocal played_any
-                    on_segment(audio, sample_rate_)
-                    played_any = True
+                    def on_segment_collect(audio, sample_rate_):
+                        nonlocal played_any
+                        on_segment(audio, sample_rate_)
+                        played_any = True
 
-                tts_audio, sample_rate = self.synthesizer.synthesize_streaming(
-                    translated, on_segment_collect
-                )
-                if tts_audio is not None and not played_any:
-                    on_segment(tts_audio, sample_rate)
-            else:
-                tts_audio, sample_rate = self.synthesizer.synthesize(translated)
-                if tts_audio is not None:
-                    on_segment(tts_audio, sample_rate)
+                    tts_audio, sample_rate = self.synthesizer.synthesize_streaming(
+                        translated, on_segment_collect
+                    )
+                    if tts_audio is not None and not played_any:
+                        on_segment(tts_audio, sample_rate)
+                else:
+                    tts_audio, sample_rate = self.synthesizer.synthesize(translated)
+                    if tts_audio is not None:
+                        on_segment(tts_audio, sample_rate)
 
         def _build_timing(t3, include_tts=True):
             timing = {

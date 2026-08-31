@@ -260,6 +260,11 @@ com hangover curto para o eco do TTS não re-disparar STT. Voz baixa? Pressione 
 Terminou de falar e o VAD ainda espera silêncio? **`[go]` / F6** manda o STT **agora**.
 `MONITOR_PLAYBACK` espelha o TTS nos fones **em paralelo** com o Cable (não sequencial).
 Lead do bip pré-TTS: `TTS_MONITOR_CUE_LEAD_S=0.3` (padrão).
+
+**Menor latência na call (enfileirar próxima frase):** com fone + VB-Cable, use
+`MUTE_CAPTURE_DURING_PLAYBACK=false` (grava a frase 2 enquanto o TTS 1 toca) e
+`SOUND_ON_PARALLEL=true` (STT/tradução do chunk N+1 enquanto o N ainda está no TTS;
+ordem no Cable preservada). Ver bloco “Call profile” no `.env.example`.
 LiveCaptions **não** inicia sozinho — use `lc on` / `lc off`.
 
 **OBS:** com LiveLingo streaming, use **Stop Virtual Camera** no OBS (produtor
