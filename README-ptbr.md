@@ -11,7 +11,7 @@
 
 **LiveLingo2** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
 
-**Release atual: [v1.2.2](CHANGELOG.md#122---2026-07-23)** — **escuta estável** após TTS, **LiveCaptions off** no boot, **`[N]` escuta forçada** (voz baixa + bordas amarelas), **F11 tela closed inteira**, **legenda burn-in** na vcam (`[sub]`), **Sistema** limpo por chunk + timings TTS (engine/first_chunk). Completo: [`CHANGELOG.md`](CHANGELOG.md).
+**Release atual: [v1.2.3](CHANGELOG.md#123---2026-08-31)** — **Interview Coach** (EN + pt-BR sob o LC; providers Grok/Groq/DeepSeek/Claude/Gemini), **`airespond`**, **`[go]`/F6** flush STT, Cable|fones em paralelo, mute **`[n]`** sem modal. Completo: [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
   <img src="docs/screenshots/live_lingo1.png" alt="LiveLingo2 TUI — layout clássico com menu de comandos e status de áudio" width="900" />
@@ -182,7 +182,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |
 
-**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F6` / `[go]`** = flush escuta → STT agora; **`F10`** = placa de rosto closed; **`F11`** = freeze full-frame da foto closed (não maximiza TUI); **`N`** = escuta forçada (voz baixa); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência.
+**TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F6` / `[go]`** = flush escuta → STT agora; **`F7` / `[coach force]`** = Interview Coach no último LC; **`F10`** = placa de rosto closed; **`F11`** = freeze full-frame da foto closed (não maximiza TUI); **`N`** = escuta forçada (voz baixa); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência. Novidades = `CHANGELOG.md`; **Lista de comandos** inclui Coach / `airespond` / providers.
 
 **Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = ajuda agrupada.
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).

@@ -26,10 +26,10 @@ microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears 
 translation as if it were your mic. Speak **French**, others hear **English**
 (both languages configurable).
 
-**Current release: [v1.2.2](CHANGELOG.md#122---2026-07-23)** — stable **listen after TTS**,
-**LiveCaptions off** by default, **`[N]` force soft-listen** (low voice + yellow borders),
-**F11 full-frame closed freeze**, **vcam TARGET burn-in** (`[sub]`), cleaner **Sistema** per
-chunk + TTS engine/first-chunk timings. Full notes: [`CHANGELOG.md`](CHANGELOG.md).
+**Current release: [v1.2.3](CHANGELOG.md#123---2026-08-31)** — **Interview Coach** (EN + pt-BR
+under LC; providers Grok/Groq/DeepSeek/Claude/Gemini), **`airespond`**, **`[go]`/F6** flush
+STT, parallel Cable|headphones TTS, non-blocking **`[n]`** mute. Full notes:
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ```text
 🎤 mic (French)
