@@ -251,11 +251,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f6": "Same as `[go]` / `.` — force VAD end → STT now without waiting for silence.",
         "title_coach": "Interview Coach",
         "desc_coach": (
-            "Suggest assertive **English** answers for interview questions from LiveCaptions. "
-            "Panel under LC: Spoken EN + SE + Arch + Trade-offs. "
-            "`coach on` shows the pane; `coach off` **hides** it (LC fills the column). "
-            "Also: `status|last|force|ask <q>`. Needs `XAI_API_KEY` (Grok). "
-            "Default OFF. Manual test: `airespond <question>`."
+            "Suggest assertive **English** answers (+ pt-BR mirror) for interview questions. "
+            "Panel under LC. `coach on` shows pane; `coach off` hides it. "
+            "`coach provider <grok|groq|deepseek|claude|gemini> [model]` switches API. "
+            "Also: `status|last|force|ask <q>`. Keys: XAI / GROQ / DEEPSEEK / "
+            "ANTHROPIC / GEMINI. Default OFF. Test: `airespond <question>`."
         ),
         "title_airespond": "Simulate LC question → Coach",
         "desc_airespond": (
@@ -597,11 +597,11 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_f6": "Igual a `[go]` / `.` — força fim do VAD → STT agora, sem esperar silêncio.",
         "title_coach": "Interview Coach",
         "desc_coach": (
-            "Sugere respostas **assertivas em inglês** para perguntas de entrevista do LiveCaptions. "
-            "Painel sob o LC: Spoken EN + SE + Arch + Trade-offs. "
-            "`coach on` mostra o painel; `coach off` **oculta** (LC ocupa a coluna). "
-            "Também: `status|last|force|ask <q>`. Precisa `XAI_API_KEY` (Grok). "
-            "Padrão OFF. Teste: `airespond <pergunta>`."
+            "Sugere respostas **assertivas em inglês** (+ espelho pt-BR) para perguntas de entrevista. "
+            "Painel sob o LC. `coach on` mostra; `coach off` oculta. "
+            "`coach provider <grok|groq|deepseek|claude|gemini> [model]` troca a API. "
+            "Também: `status|last|force|ask <q>`. Keys: XAI / GROQ / DEEPSEEK / "
+            "ANTHROPIC / GEMINI. Padrão OFF. Teste: `airespond <pergunta>`."
         ),
         "title_airespond": "Simular pergunta LC → Coach",
         "desc_airespond": (
