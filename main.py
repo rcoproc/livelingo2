@@ -2335,6 +2335,67 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.success(msg, panel="app")
         else:
             ui.warn(msg, panel="app")
+    elif cmd == "coach" or cmd.startswith("coach "):
+        coach = getattr(pipeline, "interview_coach", None)
+        if coach is None:
+            ui.warn(
+                "Interview Coach não inicializado — reinicie a app.",
+                panel="app",
+            )
+        else:
+            parts = (raw_cmd or cmd or "").strip().split(None, 2)
+            # parts: ["coach"] | ["coach", "on"] | ["coach", "ask", "…"]
+            action = (parts[1] if len(parts) > 1 else "status").strip().lower()
+            rest = parts[2] if len(parts) > 2 else ""
+            if action in ("on", "enable", "1", "true"):
+                coach.set_enabled(True)
+                ui.success("Interview Coach ON — perguntas LC → sugestão EN.", panel="app")
+            elif action in ("off", "disable", "0", "false"):
+                coach.set_enabled(False)
+                ui.info("Interview Coach OFF.", panel="app")
+            elif action in ("status", "st"):
+                st = coach.status()
+                ui.info(
+                    f"Coach enabled={st.get('enabled')} · "
+                    f"provider={st.get('provider')} · model={st.get('model')} · "
+                    f"key_ok={st.get('key_ok')} · busy={st.get('busy')} · "
+                    f"mode={st.get('mode')} · last={st.get('last_question')!r}",
+                    panel="app",
+                )
+            elif action == "last":
+                last = coach.last_result()
+                if last is None:
+                    ui.warn("Nenhuma resposta Coach ainda.", panel="app")
+                elif last.error:
+                    ui.warn(f"[Coach] last error: {last.error}", panel="app")
+                else:
+                    ui.coach_block(
+                        last.n,
+                        last.question,
+                        last.spoken,
+                        last.software_engineer,
+                        last.architect,
+                        provider=last.provider,
+                    )
+            elif action in ("force", "f7", "retry"):
+                ok, msg = coach.force_last()
+                (ui.success if ok else ui.warn)(msg, panel="app")
+            elif action == "ask":
+                ok, msg = coach.ask(rest)
+                (ui.success if ok else ui.warn)(msg, panel="app")
+            else:
+                ui.warn(
+                    "Uso: coach on|off|status|last|force|ask <pergunta>",
+                    panel="app",
+                )
+            try:
+                if indicator is not None and hasattr(indicator, "_paint_coach_header"):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator._paint_coach_header)
+                    else:
+                        indicator._paint_coach_header()
+            except Exception:
+                pass
     elif cmd == "o":
         print("Enter a word in English: ", end="", flush=True)
         word = sys.stdin.readline().strip()
@@ -4526,6 +4587,25 @@ def main():
         # --- Live Captions (Windows LiveCaptions → TUI strip; parallel to mic) ---
         # Default: build service but do NOT start (LIVE_CAPTIONS_START_ON_LAUNCH=false).
         # Escuta ativa = VOZ/mic path. LC only with [lc on] / off with [lc off].
+        # Interview Coach (LC questions → assertive EN suggestions under LC pane)
+        try:
+            from livelingo.interview_coach import build_interview_coach
+
+            pipeline.interview_coach = build_interview_coach(cfg)
+            if getattr(cfg, "INTERVIEW_COACH_ENABLED", False):
+                _log_info(
+                    "Interview Coach ON — perguntas LC → painel Coach (EN). "
+                    "[coach off] · F7 force · XAI_API_KEY required."
+                )
+            else:
+                _log_info(
+                    "Interview Coach OFF — [coach on] ou "
+                    "INTERVIEW_COACH_ENABLED=true · F7 force."
+                )
+        except Exception as exc:
+            pipeline.interview_coach = None
+            _log_warn(f"Interview Coach não iniciou: {exc}")
+
         caption_service = None
         if getattr(cfg, "LIVE_CAPTIONS_ENABLED", False):
             try:
@@ -4540,6 +4620,12 @@ def main():
                         pipeline=pipeline,
                     )
                     pipeline.caption_service = caption_service
+                    try:
+                        caption_service.interview_coach = getattr(
+                            pipeline, "interview_coach", None
+                        )
+                    except Exception:
+                        pass
                     auto_lc = bool(getattr(cfg, "LIVE_CAPTIONS_START_ON_LAUNCH", False))
                     if auto_lc:
                         caption_service.start()

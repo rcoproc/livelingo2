@@ -498,6 +498,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `s` / `n` / `r` / `rN` | Sound, **mic mute** (lowercase **n** only), replay |
 | `N` | **Force soft-listen** (capital **N** only) — yellow borders; VAD accepts low-volume speech; press again for normal VAD |
 | `go` / `.` / `flush` / **F6** | **Flush listen** — end current speech **now** → STT (skip VAD silence wait ~1–2s) |
+| `coach` / **F7** | **Interview Coach** — under LC: assertive EN answer (SE + Architect) for clear interview questions from LiveCaptions. Needs `XAI_API_KEY`. Default OFF. |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync stream to **OBS Virtual Camera** (needs `requirements-webcam.txt` + OBS) |
 | `cam snap closed` | **Capture / update** the closed-mouth **full-face photo** used by F10/F11. Preview shows the freeze oval. Aliases: `cam snap`, `cam snapshot closed` |
 | `sub` / `sub on` / `sub off` / `cam sub` | **Burn-in TARGET** text on virtual-cam frames (frosted footer). Pixels only — not Teams CC. Default OFF; stays until next translation or `sub off` |

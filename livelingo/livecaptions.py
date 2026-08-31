@@ -1246,6 +1246,19 @@ class CaptionService:
                 except Exception:
                     pass
 
+        # Interview Coach: async suggestion for clear questions (EN caption)
+        try:
+            coach = None
+            pipe = getattr(self, "pipeline", None)
+            if pipe is not None:
+                coach = getattr(pipe, "interview_coach", None)
+            if coach is None:
+                coach = getattr(self, "interview_coach", None)
+            if coach is not None and hasattr(coach, "maybe_handle"):
+                coach.maybe_handle(n, src, tgt, force=False)
+        except Exception:
+            pass
+
         self._open_src = ""
         self._open_tgt = ""
         self._open_from_cache = False
