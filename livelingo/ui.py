@@ -1212,25 +1212,77 @@ def coach_block(
     architect=None,
     *,
     tradeoffs: str = "",
+    spoken_pt: str = "",
+    software_engineer_pt=None,
+    architect_pt=None,
+    tradeoffs_pt: str = "",
     provider: str = "",
 ):
     """
-    Interview Coach suggestion on the **coach** panel (under LC).
+    Interview Coach on the **coach** panel (under LC).
 
-        [Coach 3] Q: …
-          ▶ Spoken (EN):
-            …
-          · SE: …          (Software Engineer)
-          · Arch: …        (Architect)
-          · Trade-offs: …  (paragraph)
+    English block first (always speak EN), then two blank lines, then pt-BR mirror.
     """
     q = (question_en or "").strip()
     spoken = (spoken_en or "").strip()
     se = [str(x).strip() for x in (software_engineer or []) if str(x).strip()][:4]
     arch = [str(x).strip() for x in (architect or []) if str(x).strip()][:4]
     trades = (tradeoffs or "").strip()
+    spoken_br = (spoken_pt or "").strip()
+    se_br = [str(x).strip() for x in (software_engineer_pt or []) if str(x).strip()][:4]
+    arch_br = [str(x).strip() for x in (architect_pt or []) if str(x).strip()][:4]
+    trades_br = (tradeoffs_pt or "").strip()
+    has_pt = bool(spoken_br or se_br or arch_br or trades_br)
     prov = (provider or "").strip()
     prefix = f"[Coach {n}] "
+
+    def _emit_section_rich(
+        *,
+        spoken_label: str,
+        spoken_text: str,
+        se_items,
+        arch_items,
+        trades_text: str,
+        se_label: str,
+        arch_label: str,
+        trades_label: str,
+    ):
+        e = _rich_escape
+        _emit("rich", f"  [bold green]{e(spoken_label)}[/]", panel="coach")
+        if spoken_text:
+            for line in spoken_text.splitlines() or [spoken_text]:
+                line = line.strip()
+                if not line:
+                    continue
+                _emit(
+                    "rich",
+                    f"  [bold white on #1e2a3a]{e(line)}[/]",
+                    panel="coach",
+                )
+        for b in se_items:
+            _emit(
+                "rich",
+                f"  [magenta]· SE[/][dim] ({e(se_label)}):[/] [white]{e(b)}[/]",
+                panel="coach",
+            )
+        for b in arch_items:
+            _emit(
+                "rich",
+                f"  [blue]· Arch[/][dim] ({e(arch_label)}):[/] [white]{e(b)}[/]",
+                panel="coach",
+            )
+        if trades_text:
+            _emit(
+                "rich",
+                f"  [bold #e0a020]· {e(trades_label)}:[/]",
+                panel="coach",
+            )
+            for line in trades_text.splitlines() or [trades_text]:
+                line = line.strip()
+                if not line:
+                    continue
+                _emit("rich", f"  [white]{e(line)}[/]", panel="coach")
+
     with _print_lock:
         if _log_sink is not None:
             e = _rich_escape
@@ -1242,36 +1294,35 @@ def coach_block(
                 + (f" [dim]· {e(prov)}[/]" if prov else ""),
                 panel="coach",
             )
-            _emit("rich", "  [bold green]▶ Spoken (EN):[/]", panel="coach")
-            if spoken:
-                for line in spoken.splitlines() or [spoken]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    _emit(
-                        "rich",
-                        f"  [bold white on #1e2a3a]{e(line)}[/]",
-                        panel="coach",
-                    )
-            for b in se:
+            _emit_section_rich(
+                spoken_label="▶ Spoken (EN) — diga isto:",
+                spoken_text=spoken,
+                se_items=se,
+                arch_items=arch,
+                trades_text=trades,
+                se_label="Software Engineer",
+                arch_label="Architect",
+                trades_label="Trade-offs",
+            )
+            if has_pt:
+                # Two blank paragraphs between EN and PT-BR
+                _emit_chunk_blank(panel="coach")
+                _emit_chunk_blank(panel="coach")
                 _emit(
                     "rich",
-                    f"  [magenta]· SE[/][dim] (Software Engineer):[/] [white]{e(b)}[/]",
+                    "  [bold #7aa2f7]── Versão pt-BR (leitura) ──[/]",
                     panel="coach",
                 )
-            for b in arch:
-                _emit(
-                    "rich",
-                    f"  [blue]· Arch[/][dim] (Architect):[/] [white]{e(b)}[/]",
-                    panel="coach",
+                _emit_section_rich(
+                    spoken_label="▶ Falado (pt-BR):",
+                    spoken_text=spoken_br,
+                    se_items=se_br,
+                    arch_items=arch_br,
+                    trades_text=trades_br,
+                    se_label="Eng. de Software",
+                    arch_label="Arquiteto",
+                    trades_label="Trade-offs",
                 )
-            if trades:
-                _emit("rich", "  [bold #e0a020]· Trade-offs:[/]", panel="coach")
-                for line in trades.splitlines() or [trades]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    _emit("rich", f"  [white]{e(line)}[/]", panel="coach")
             _emit_chunk_blank(panel="coach")
             return
         print(f"\r\033[K{Fore.YELLOW}{Style.BRIGHT}{prefix}{Style.RESET_ALL}Q: {q}")
@@ -1279,12 +1330,28 @@ def coach_block(
         if spoken:
             print(f"\r\033[K  {Fore.WHITE}{Style.BRIGHT}{spoken}{Style.RESET_ALL}")
         for b in se:
-            print(f"\r\033[K  {Fore.MAGENTA}· SE (Software Engineer):{Style.RESET_ALL} {b}")
+            print(
+                f"\r\033[K  {Fore.MAGENTA}· SE (Software Engineer):{Style.RESET_ALL} {b}"
+            )
         for b in arch:
             print(f"\r\033[K  {Fore.BLUE}· Arch (Architect):{Style.RESET_ALL} {b}")
         if trades:
             print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
             print(f"\r\033[K  {Fore.WHITE}{trades}{Style.RESET_ALL}")
+        if has_pt:
+            print()
+            print()
+            print(f"\r\033[K  {Fore.CYAN}── Versão pt-BR ──{Style.RESET_ALL}")
+            print(f"\r\033[K  {Fore.GREEN}▶ Falado (pt-BR):{Style.RESET_ALL}")
+            if spoken_br:
+                print(f"\r\033[K  {Fore.WHITE}{spoken_br}{Style.RESET_ALL}")
+            for b in se_br:
+                print(f"\r\033[K  {Fore.MAGENTA}· SE:{Style.RESET_ALL} {b}")
+            for b in arch_br:
+                print(f"\r\033[K  {Fore.BLUE}· Arch:{Style.RESET_ALL} {b}")
+            if trades_br:
+                print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
+                print(f"\r\033[K  {Fore.WHITE}{trades_br}{Style.RESET_ALL}")
         print()
 
 

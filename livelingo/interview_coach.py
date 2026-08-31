@@ -71,8 +71,11 @@ def _norm_key(text: str) -> str:
 SYSTEM_PROMPT = """You are a senior Software Engineer and Systems Architect preparing for a live job interview.
 The candidate will speak your answer aloud in English (~30–60 seconds).
 
-The interviewer's question may be in **English or Portuguese**. Always understand the intent,
-then produce the spoken answer **only in English**.
+CRITICAL LANGUAGE RULES:
+- The interviewer's question may be in English OR Portuguese (including via manual airespond).
+- Fields spoken, software_engineer, architect, tradeoffs MUST be written in **English only**.
+- Fields spoken_pt, software_engineer_pt, architect_pt, tradeoffs_pt MUST be natural **Brazilian Portuguese (pt-BR)** translations of the English fields (same meaning, not literal word salad).
+- Never put Portuguese into the English fields, even if the question was in Portuguese.
 
 Tone: assertive, confident, concrete. No apology openers ("Well…", "I think maybe…").
 Prefer outcome + ownership + trade-offs. Avoid buzzword salad.
@@ -80,9 +83,13 @@ Prefer outcome + ownership + trade-offs. Avoid buzzword salad.
 Return ONLY valid JSON (no markdown fences) with this shape:
 {
   "spoken": "4-8 sentences the candidate can say aloud in English",
-  "software_engineer": ["up to 4 short bullets — coding/delivery angle"],
-  "architect": ["up to 4 short bullets — systems/architecture angle"],
-  "tradeoffs": "One clear paragraph in English explaining the main trade-offs of the topic (pros vs cons, when to choose A vs B, costs/risks). Not bullets — a short paragraph the candidate can skim before speaking."
+  "software_engineer": ["up to 4 short bullets — coding/delivery angle, English"],
+  "architect": ["up to 4 short bullets — systems/architecture angle, English"],
+  "tradeoffs": "One clear paragraph in English explaining main trade-offs (pros vs cons, when A vs B).",
+  "spoken_pt": "Same spoken answer in Brazilian Portuguese (pt-BR)",
+  "software_engineer_pt": ["same SE bullets in pt-BR"],
+  "architect_pt": ["same Arch bullets in pt-BR"],
+  "tradeoffs_pt": "Same trade-offs paragraph in Brazilian Portuguese (pt-BR)"
 }
 """
 
@@ -102,7 +109,11 @@ def _build_user_prompt(
         parts.append(f"Portuguese gloss (context only):\n{question_pt.strip()}")
     if (profile or "").strip():
         parts.append(f"Candidate profile (use if relevant):\n{profile.strip()}")
-    parts.append("Produce the JSON answer now.")
+    parts.append(
+        "Produce the JSON answer now. "
+        "Remember: English fields = English only; *_pt fields = Brazilian Portuguese. "
+        "If the question is in Portuguese, still write spoken/SE/Arch/tradeoffs in English."
+    )
     return "\n\n".join(parts)
 
 
@@ -114,6 +125,10 @@ class CoachResult:
     software_engineer: List[str] = field(default_factory=list)
     architect: List[str] = field(default_factory=list)
     tradeoffs: str = ""
+    spoken_pt: str = ""
+    software_engineer_pt: List[str] = field(default_factory=list)
+    architect_pt: List[str] = field(default_factory=list)
+    tradeoffs_pt: str = ""
     provider: str = ""
     error: str = ""
 
@@ -315,6 +330,10 @@ class InterviewCoach:
             "software_engineer": [],
             "architect": [],
             "tradeoffs": "",
+            "spoken_pt": "",
+            "software_engineer_pt": [],
+            "architect_pt": [],
+            "tradeoffs_pt": "",
         }
         provider = ""
         simulated = False
@@ -351,6 +370,10 @@ class InterviewCoach:
                 software_engineer=list(parsed.get("software_engineer") or []),
                 architect=list(parsed.get("architect") or []),
                 tradeoffs=str(parsed.get("tradeoffs") or ""),
+                spoken_pt=str(parsed.get("spoken_pt") or ""),
+                software_engineer_pt=list(parsed.get("software_engineer_pt") or []),
+                architect_pt=list(parsed.get("architect_pt") or []),
+                tradeoffs_pt=str(parsed.get("tradeoffs_pt") or ""),
                 provider=provider,
                 error=err,
             )
@@ -369,6 +392,10 @@ class InterviewCoach:
                     result.software_engineer,
                     result.architect,
                     tradeoffs=result.tradeoffs,
+                    spoken_pt=result.spoken_pt,
+                    software_engineer_pt=result.software_engineer_pt,
+                    architect_pt=result.architect_pt,
+                    tradeoffs_pt=result.tradeoffs_pt,
                     provider=provider,
                 )
         except Exception:

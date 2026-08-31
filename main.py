@@ -2424,6 +2424,12 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                         last.software_engineer,
                         last.architect,
                         tradeoffs=getattr(last, "tradeoffs", "") or "",
+                        spoken_pt=getattr(last, "spoken_pt", "") or "",
+                        software_engineer_pt=getattr(
+                            last, "software_engineer_pt", None
+                        ),
+                        architect_pt=getattr(last, "architect_pt", None),
+                        tradeoffs_pt=getattr(last, "tradeoffs_pt", "") or "",
                         provider=last.provider,
                     )
             elif action in ("force", "f7", "retry"):
