@@ -43,6 +43,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "s", "group": "audio", "token": "s", "sort": "s"},
     {"id": "x", "group": "audio", "token": "x", "sort": "x"},
     {"id": "go", "group": "audio", "token": "go", "sort": "go"},
+    {"id": "coach", "group": "audio", "token": "coach", "sort": "coach"},
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
     {"id": "o", "group": "idiom", "token": "o", "sort": "o"},
@@ -62,6 +63,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "f4", "group": "keys", "token": "F4", "sort": "f4"},
     {"id": "f5", "group": "keys", "token": "F5", "sort": "f5"},
     {"id": "f6", "group": "keys", "token": "F6", "sort": "f6"},
+    {"id": "f7", "group": "keys", "token": "F7", "sort": "f7"},
     {"id": "search", "group": "keys", "token": "/", "sort": "search"},
     {"id": "search_n", "group": "keys", "token": "/n", "sort": "search-n"},
     {"id": "search_p", "group": "keys", "token": "/p", "sort": "search-p"},
@@ -247,6 +249,15 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_f6": "Flush listen (F6)",
         "desc_f6": "Same as `[go]` / `.` — force VAD end → STT now without waiting for silence.",
+        "title_coach": "Interview Coach",
+        "desc_coach": (
+            "Suggest assertive **English** answers for interview questions from LiveCaptions. "
+            "Panel under LC: Spoken EN + SE bullets + Architect bullets. "
+            "`coach on|off|status|last|force|ask <q>`. Needs `XAI_API_KEY` (Grok). "
+            "Default OFF (`INTERVIEW_COACH_ENABLED`)."
+        ),
+        "title_f7": "Coach force (F7)",
+        "desc_f7": "Force Interview Coach on the last stable LC caption (same as `coach force`).",
         # Idiom
         "title_g": "Swap languages",
         "desc_g": "Swap `SOURCE_LANG` ↔ `TARGET_LANG` at runtime (STT, translator, TTS). Does not rewrite old chunks. If a chunk is in flight, the swap may be deferred until idle.",
@@ -576,6 +587,15 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_f6": "Flush escuta (F6)",
         "desc_f6": "Igual a `[go]` / `.` — força fim do VAD → STT agora, sem esperar silêncio.",
+        "title_coach": "Interview Coach",
+        "desc_coach": (
+            "Sugere respostas **assertivas em inglês** para perguntas de entrevista do LiveCaptions. "
+            "Painel sob o LC: Spoken EN + bullets SE + Arquiteto. "
+            "`coach on|off|status|last|force|ask <q>`. Precisa `XAI_API_KEY` (Grok). "
+            "Padrão OFF (`INTERVIEW_COACH_ENABLED`)."
+        ),
+        "title_f7": "Coach force (F7)",
+        "desc_f7": "Força o Interview Coach no último LC estável (igual a `coach force`).",
         "title_g": "Trocar idiomas",
         "desc_g": "Inverte `SOURCE_LANG` ↔ `TARGET_LANG` em tempo real (STT, tradutor, TTS). Não reescreve chunks antigos. Se houver chunk em andamento, a troca pode ser adiada.",
         "title_o": "Sinônimos / significado",

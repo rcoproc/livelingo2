@@ -689,6 +689,79 @@ class TradSash(Static):
             pass
 
 
+class LcCoachSash(Static):
+    """
+    Horizontal sash inside the LC column: Caption log (top) vs Interview Coach (bottom).
+    """
+
+    DEFAULT_CSS = """
+    LcCoachSash {
+        width: 1fr;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        background: #bb9af7 40%;
+        color: #c0caf5;
+        content-align: center middle;
+        text-style: bold;
+    }
+    LcCoachSash:hover {
+        background: #bb9af7 70%;
+    }
+    LcCoachSash.-dragging {
+        background: $warning;
+    }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__("─ ↕ coach ─", **kwargs)
+        self._dragging = False
+
+    def on_click(self, event: events.Click) -> None:
+        try:
+            if int(getattr(event, "chain", 1) or 1) >= 2:
+                event.stop()
+                if hasattr(self.app, "lc_coach_set_ratio"):
+                    import config as _cfg
+
+                    r = float(getattr(_cfg, "INTERVIEW_COACH_PANEL_RATIO", 0.45) or 0.45)
+                    self.app.lc_coach_set_ratio(r)
+        except Exception:
+            pass
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        event.stop()
+        self._dragging = True
+        self.add_class("-dragging")
+        try:
+            self.capture_mouse()
+        except Exception:
+            pass
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        self._dragging = False
+        self.remove_class("-dragging")
+        try:
+            self.release_mouse()
+        except Exception:
+            pass
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        if hasattr(self.app, "lc_coach_set_ratio_from_screen_y"):
+            try:
+                self.app.lc_coach_set_ratio_from_screen_y(int(event.screen_y))
+            except Exception:
+                pass
+
+
 class CaptionsHSash(Static):
     """
     Horizontal drag handle on the **bottom edge** of the Live Captions strip.
@@ -789,7 +862,7 @@ class SelectableRichLog(RichLog):
     We mirror the built-in Log widget: apply_offsets + get_selection + highlight,
     and force a sane render width when the pane is hidden / not laid out.
 
-    Optional ``pane_role``: \"lc\" | \"voz\" so click sets Tradução sub-focus.
+    Optional ``pane_role``: \"lc\" | \"voz\" | \"coach\" so click sets Tradução sub-focus.
     """
 
     def __init__(self, **kwargs):
@@ -809,10 +882,11 @@ class SelectableRichLog(RichLog):
     def on_click(self, event: events.Click) -> None:
         """Mark this Tradução sub-pane as focused for search/gg/copy."""
         role = getattr(self, "pane_role", None)
-        if role in ("lc", "voz"):
+        if role in ("lc", "voz", "coach"):
             try:
                 if hasattr(self.app, "set_trad_focus"):
-                    self.app.set_trad_focus(role)
+                    # Coach sits under LC — focus left column for search/copy
+                    self.app.set_trad_focus("lc" if role == "coach" else role)
             except Exception:
                 pass
 
@@ -2316,6 +2390,13 @@ class LiveLingoApp(App):
         text-style: bold;
         content-align: left middle;
     }
+    #trad-lbl-coach {
+        width: auto;
+        color: #bb9af7;
+        text-style: bold;
+        content-align: right middle;
+        padding: 0 1;
+    }
     #trad-lbl-voz {
         width: 1fr;
         color: #e0af68;
@@ -2365,7 +2446,13 @@ class LiveLingoApp(App):
         max-width: 1;
         height: 1fr;
     }
-    #log, #log-lc, #log-app, #log-news, #log-cmds {
+    #lc-coach-sash {
+        width: 1fr;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+    }
+    #log, #log-lc, #log-coach, #log-app, #log-news, #log-cmds {
         height: 1fr;
         margin: 0;
         padding: 0 1;
@@ -2709,6 +2796,13 @@ class LiveLingoApp(App):
             priority=True,
         ),
         Binding(
+            "f7",
+            "coach_force",
+            "Coach",
+            show=True,
+            priority=True,
+        ),
+        Binding(
             "f10",
             "toggle_closed_mouth",
             "Boca calada",
@@ -2771,6 +2865,15 @@ class LiveLingoApp(App):
         self._trad_ratio: float = 0.5
         self._trad_expand: str | None = None  # None = split, "lc"|"voz" = maximized
         self._trad_focus: str = "voz"  # which sub-pane search/gg/copy use
+        # LC column: Caption (top) vs Interview Coach (bottom) height ratio for coach
+        try:
+            import config as _cfg
+
+            self._lc_coach_ratio: float = float(
+                getattr(_cfg, "INTERVIEW_COACH_PANEL_RATIO", 0.45) or 0.45
+            )
+        except Exception:
+            self._lc_coach_ratio: float = 0.45
         # Live Captions strip height in rows (drag bottom edge vs middle logs)
         self._captions_height: int = 8
         # Saved captions height while Expand hides the strip (restore on Restaurar)
@@ -2911,6 +3014,11 @@ class LiveLingoApp(App):
                                 id="trad-lbl-lc",
                                 markup=False,
                             )
+                            yield Static(
+                                _fi18n.get("trad_lbl_coach", "Coach OFF"),
+                                id="trad-lbl-coach",
+                                markup=False,
+                            )
                         with Horizontal(id="trad-hdr-voz"):
                             yield Static(
                                 _fi18n.get("trad_lbl_voz", "VOICE mic + commands"),
@@ -2935,6 +3043,17 @@ class LiveLingoApp(App):
                                 max_lines=5000,
                                 min_width=max(40, _log_min_w // 2),
                                 pane_role="lc",
+                            )
+                            yield LcCoachSash(id="lc-coach-sash")
+                            yield SelectableRichLog(
+                                id="log-coach",
+                                highlight=False,
+                                markup=True,
+                                wrap=True,
+                                auto_scroll=True,
+                                max_lines=2000,
+                                min_width=max(40, _log_min_w // 2),
+                                pane_role="coach",
                             )
                         yield TradSash(id="trad-sash")
                         with Vertical(id="trad-voz-col", classes="-focused"):
@@ -3099,6 +3218,11 @@ class LiveLingoApp(App):
         self._refresh_cmd_menu()
         self._bind_caption_service()
         self._paint_captions_panel()
+        try:
+            self._apply_lc_coach_heights()
+            self._paint_coach_header()
+        except Exception:
+            pass
         # Escuta ativa ASAP — soft Mic ready (do not wait for first speech)
         try:
             self._pipe_stage = "idle"
@@ -4043,7 +4167,7 @@ class LiveLingoApp(App):
             pass
 
     def _resolve_log_widget(self, panel: str = "main"):
-        """Return SelectableRichLog for panel main|lc|app|news|cmds (fallback #log)."""
+        """Return SelectableRichLog for panel main|lc|coach|app|news|cmds."""
         p = str(panel or "main").lower()
         if p in ("cmds", "commands", "cmd", "help", "comandos"):
             log_id = "#log-cmds"
@@ -4051,6 +4175,8 @@ class LiveLingoApp(App):
             log_id = "#log-news"
         elif p in ("app", "sistema", "system"):
             log_id = "#log-app"
+        elif p in ("coach", "interview", "interview_coach", "entrevista"):
+            log_id = "#log-coach"
         elif p in ("lc", "main-lc", "livecaptions", "captions", "caption"):
             log_id = "#log-lc"
         else:
@@ -4096,7 +4222,7 @@ class LiveLingoApp(App):
         return bool(getattr(self, "_trad_follow_scroll", True))
 
     def _is_trad_panel(self, panel: str | None) -> bool:
-        """True for Tradução sub-panes (LC left / VOZ right)."""
+        """True for Tradução sub-panes (LC left / VOZ right / Coach)."""
         panel_key = str(panel or "main").lower()
         return panel_key in (
             "main",
@@ -4109,6 +4235,9 @@ class LiveLingoApp(App):
             "livecaptions",
             "captions",
             "caption",
+            "coach",
+            "interview",
+            "entrevista",
         )
 
     def _set_log_auto_scroll(self, log, enabled: bool) -> None:
@@ -4120,10 +4249,72 @@ class LiveLingoApp(App):
             pass
 
     def _apply_trad_auto_scroll_flags(self) -> None:
-        """Sync RichLog.auto_scroll on both Tradução panes with F5 state."""
+        """Sync RichLog.auto_scroll on Tradução panes with F5 state."""
         follow = self._trad_auto_scroll_enabled()
-        for panel in ("main", "lc"):
+        for panel in ("main", "lc", "coach"):
             self._set_log_auto_scroll(self._resolve_log_widget(panel), follow)
+
+    def lc_coach_set_ratio(self, ratio: float) -> None:
+        """Set coach pane fraction of LC column height (0.2–0.7)."""
+        try:
+            r = max(0.2, min(0.7, float(ratio)))
+        except Exception:
+            r = 0.45
+        self._lc_coach_ratio = r
+        self._apply_lc_coach_heights()
+
+    def lc_coach_set_ratio_from_screen_y(self, screen_y: int) -> None:
+        """Drag sash: map Y inside #trad-lc-col → coach ratio (bottom share)."""
+        try:
+            col = self.query_one("#trad-lc-col", Vertical)
+            region = col.region
+            top = int(region.y)
+            h = max(1, int(region.height))
+            # Distance from bottom → coach share
+            y = max(0, min(h, int(screen_y) - top))
+            # Coach is the bottom pane: ratio = remaining below sash
+            ratio = 1.0 - (float(y) / float(h))
+            self.lc_coach_set_ratio(ratio)
+        except Exception:
+            pass
+
+    def _apply_lc_coach_heights(self) -> None:
+        """Apply fr heights so LC caption + coach share the left column."""
+        r = float(getattr(self, "_lc_coach_ratio", 0.45) or 0.45)
+        r = max(0.2, min(0.7, r))
+        # Integer fr parts (e.g. 0.45 → lc 11 / coach 9)
+        coach_fr = max(2, int(round(r * 20)))
+        lc_fr = max(2, 20 - coach_fr)
+        try:
+            lc = self.query_one("#log-lc", SelectableRichLog)
+            lc.styles.height = f"{lc_fr}fr"
+        except Exception:
+            pass
+        try:
+            coach = self.query_one("#log-coach", SelectableRichLog)
+            coach.styles.height = f"{coach_fr}fr"
+        except Exception:
+            pass
+
+    def _paint_coach_header(self) -> None:
+        """Update Coach ON/OFF chip in LC header."""
+        label = "Coach OFF"
+        try:
+            coach = getattr(self.pipeline, "interview_coach", None)
+            if coach is not None and getattr(coach, "enabled", False):
+                st = {}
+                try:
+                    st = coach.status() or {}
+                except Exception:
+                    pass
+                prov = st.get("provider") or "on"
+                label = f"Coach ON · {prov}"
+        except Exception:
+            pass
+        try:
+            self.query_one("#trad-lbl-coach", Static).update(label)
+        except Exception:
+            pass
 
     def _follow_log_bottom(self, log, *, force: bool = False) -> None:
         """
@@ -5048,6 +5239,26 @@ class LiveLingoApp(App):
             except Exception:
                 pass
 
+    def action_coach_force(self) -> None:
+        """F7: force Interview Coach on last stable LC caption."""
+        try:
+            coach = getattr(self.pipeline, "interview_coach", None)
+            if coach is None:
+                self.post_log(
+                    "warn",
+                    "Interview Coach indisponível — reinicie a app / verifique config.",
+                    panel="app",
+                )
+                return
+            ok, msg = coach.force_last()
+            self.post_log("success" if ok else "warn", msg, panel="app")
+            self._paint_coach_header()
+        except Exception as exc:
+            try:
+                self.post_log("error", f"Coach F7: {exc}", panel="app")
+            except Exception:
+                pass
+
     def action_toggle_fullscreen(self) -> None:
         """
         Block Textual/screen fullscreen on F11.
@@ -5365,13 +5576,18 @@ class LiveLingoApp(App):
                 return False
 
     def clear_log(self) -> None:
-        """Clear LC + VOZ + Sistema logs (command [cls]). Must run on UI thread."""
+        """Clear LC + Coach + VOZ + Sistema logs (command [cls]). Must run on UI thread."""
         t = _footer_i18n()
         for log_id, key, fallback in (
             (
                 "#log-lc",
                 "cls_note_lc",
                 "[dim]LC cleared[/]",
+            ),
+            (
+                "#log-coach",
+                "cls_note_coach",
+                "[dim]Coach cleared[/]",
             ),
             (
                 "#log",
@@ -5394,7 +5610,7 @@ class LiveLingoApp(App):
         """
         Clear one Tradução column (command [cls1]/[cls2]). UI thread only.
 
-        side 1 → left  = LiveCaptions (#log-lc)
+        side 1 → left  = LiveCaptions (#log-lc) + Interview Coach (#log-coach)
         side 2 → right = VOZ mic + commands (#log)
         """
         t = _footer_i18n()
@@ -5402,6 +5618,10 @@ class LiveLingoApp(App):
             ok = self._clear_one_log(
                 "#log-lc",
                 t.get("cls1_note", "[dim]LC (left) cleared[/]"),
+            )
+            self._clear_one_log(
+                "#log-coach",
+                t.get("cls_note_coach", "[dim]Coach cleared[/]"),
             )
         elif side == 2:
             ok = self._clear_one_log(
