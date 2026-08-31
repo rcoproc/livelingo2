@@ -1431,6 +1431,8 @@ _FOOTER_I18N = {
         "restore": "Restore",
         "expand_tip": "Maximize VOZ: full width, collapse Live Captions strip, hide key-hint footer",
         "restore_tip": "Restore LC | VOZ split, captions strip, and key-hint footer",
+        "coach_expand_tip": "Maximize Coach: full width, hide LC captions log, more room to read",
+        "coach_restore_tip": "Restore LC | Coach split and VOZ column",
         "cls_note_lc": "[dim]LC cleared — stable [LC n] pairs will show here again[/]",
         "cls_note_voz": "[dim]VOZ cleared — [l] history · [lo]/[lt] · F3 System[/]",
         "cls_note_app": "[dim]System cleared — STT/translate/TTS stages will show here again[/]",
@@ -1586,6 +1588,8 @@ _FOOTER_I18N = {
         "restore": "Restaurar",
         "expand_tip": "Maximizar VOZ: largura total, colapsa faixa Live Captions, oculta atalhos do rodapé",
         "restore_tip": "Restaurar split LC | VOZ, faixa captions e atalhos do rodapé",
+        "coach_expand_tip": "Maximizar Coach: largura total, oculta log LC, mais espaço para ler",
+        "coach_restore_tip": "Restaurar split LC | Coach e coluna VOZ",
         "cls_note_lc": "[dim]LC limpo — pares estáveis [LC n] voltam a aparecer aqui[/]",
         "cls_note_voz": "[dim]VOZ limpo — [l] histórico · [lo]/[lt] · F3 Sistema[/]",
         "cls_note_app": "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
@@ -2430,6 +2434,39 @@ class LiveLingoApp(App):
     #trad-btn-voz:hover {
         background: $accent-lighten-2;
     }
+    /* Coach pane under LC: log + Expand/Restore on bottom-right */
+    #coach-pane {
+        height: 1fr;
+        width: 1fr;
+        layout: vertical;
+        min-height: 3;
+    }
+    #coach-pane.-hidden {
+        display: none;
+    }
+    #coach-bar {
+        height: 1;
+        width: 1fr;
+        layout: horizontal;
+        align: right middle;
+        background: $panel;
+    }
+    #trad-btn-coach {
+        width: auto;
+        min-width: 10;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        padding: 0 1;
+        border: none;
+        background: #bb9af7;
+        color: #1a1b26;
+        text-style: bold;
+        dock: none;
+    }
+    #trad-btn-coach:hover {
+        background: #cbb2ff;
+    }
     #trad-split {
         height: 1fr;
         width: 1fr;
@@ -2462,7 +2499,7 @@ class LiveLingoApp(App):
         min-height: 1;
         max-height: 1;
     }
-    #log-coach.-hidden, #lc-coach-sash.-hidden {
+    #log-coach.-hidden, #lc-coach-sash.-hidden, #log-lc.-hidden {
         display: none;
     }
     #log, #log-lc, #log-coach, #log-app, #log-news, #log-cmds {
@@ -2876,7 +2913,7 @@ class LiveLingoApp(App):
         self._cached_log_width_lc = 60
         # Tradução split: ratio left (LC), expand None|"lc"|"voz", focus lc|voz
         self._trad_ratio: float = 0.5
-        self._trad_expand: str | None = None  # None = split, "lc"|"voz" = maximized
+        self._trad_expand: str | None = None  # None | "lc" | "voz" | "coach"
         self._trad_focus: str = "voz"  # which sub-pane search/gg/copy use
         # LC column: Caption (top) vs Interview Coach (bottom) height ratio for coach
         try:
@@ -3058,16 +3095,24 @@ class LiveLingoApp(App):
                                 pane_role="lc",
                             )
                             yield LcCoachSash(id="lc-coach-sash")
-                            yield SelectableRichLog(
-                                id="log-coach",
-                                highlight=False,
-                                markup=True,
-                                wrap=True,
-                                auto_scroll=True,
-                                max_lines=2000,
-                                min_width=max(40, _log_min_w // 2),
-                                pane_role="coach",
-                            )
+                            with Vertical(id="coach-pane"):
+                                yield SelectableRichLog(
+                                    id="log-coach",
+                                    highlight=False,
+                                    markup=True,
+                                    wrap=True,
+                                    auto_scroll=True,
+                                    max_lines=2000,
+                                    min_width=max(40, _log_min_w // 2),
+                                    pane_role="coach",
+                                )
+                                with Horizontal(id="coach-bar"):
+                                    yield Button(
+                                        _fi18n.get("expand", "Expand"),
+                                        id="trad-btn-coach",
+                                        flat=True,
+                                        compact=True,
+                                    )
                         yield TradSash(id="trad-sash")
                         with Vertical(id="trad-voz-col", classes="-focused"):
                             yield SelectableRichLog(
@@ -4026,23 +4071,72 @@ class LiveLingoApp(App):
                 btn.tooltip = t.get("expand_tip", "Maximize VOZ panel (right)")
             except Exception:
                 pass
+        # Keep Coach button label in sync too
+        try:
+            self._update_trad_coach_expand_label()
+        except Exception:
+            pass
+
+    def _update_trad_coach_expand_label(self) -> None:
+        """Sync Expand/Restore on the Coach bottom-right button."""
+        try:
+            btn = self.query_one("#trad-btn-coach", Button)
+        except Exception:
+            return
+        t = _footer_i18n()
+        if self._trad_expand == "coach":
+            btn.label = t.get("restore", "Restore")
+            try:
+                btn.tooltip = t.get(
+                    "coach_restore_tip", "Restore LC | Coach and VOZ"
+                )
+            except Exception:
+                pass
+        else:
+            btn.label = t.get("expand", "Expand")
+            try:
+                btn.tooltip = t.get(
+                    "coach_expand_tip", "Maximize Coach panel"
+                )
+            except Exception:
+                pass
 
     def trad_toggle_expand(self, side: str | None = None) -> None:
         """
-        Expand LC or VOZ; second press restores.
+        Expand LC, VOZ, or Coach; second press restores.
 
         VOZ expand (default / button):
           - horizontal: hide LC column → VOZ full width
           - vertical: collapse Live Captions strip + hide key-hint Footer
+
+        Coach expand (bottom-right button on Coach pane):
+          - horizontal: LC column full width (hide VOZ)
+          - vertical inside LC col: hide LC log + sash → Coach fills column
+          - also collapse captions strip + footer (same chrome as VOZ expand)
         """
         if side is None:
             side = "voz"
-        side = "lc" if str(side or "").lower() == "lc" else "voz"
+        side_l = str(side or "voz").lower()
+        if side_l in ("coach", "interview"):
+            side = "coach"
+        elif side_l == "lc":
+            side = "lc"
+        else:
+            side = "voz"
+        if side == "coach" and not getattr(self, "_coach_panel_visible", True):
+            # Ensure coach pane is visible before expanding
+            try:
+                coach = getattr(self.pipeline, "interview_coach", None)
+                if coach is not None:
+                    coach.set_enabled(True)
+                self.set_coach_panel_visible(True)
+            except Exception:
+                pass
         if self._trad_expand == side:
             self._trad_expand = None
         else:
             self._trad_expand = side
-            self.set_trad_focus(side)
+            self.set_trad_focus("lc" if side == "coach" else side)
         self._apply_trad_split_layout()
         self._refresh_log_width()
         try:
@@ -4143,6 +4237,7 @@ class LiveLingoApp(App):
             except Exception:
                 pass
             lc_col.styles.width = "1fr"
+            self._apply_coach_inner_expand(False)
             self._apply_trad_expand_chrome(False)
             self._update_trad_voz_expand_label()
             return
@@ -4155,6 +4250,20 @@ class LiveLingoApp(App):
             except Exception:
                 pass
             voz_col.styles.width = "1fr"
+            self._apply_coach_inner_expand(False)
+            self._apply_trad_expand_chrome(True)
+            self._update_trad_voz_expand_label()
+            return
+        if exp == "coach":
+            # Coach: full Tradução width + Coach fills LC column height
+            lc_col.remove_class("-hidden")
+            voz_col.add_class("-hidden")
+            try:
+                sash.display = False
+            except Exception:
+                pass
+            lc_col.styles.width = "1fr"
+            self._apply_coach_inner_expand(True)
             self._apply_trad_expand_chrome(True)
             self._update_trad_voz_expand_label()
             return
@@ -4171,14 +4280,99 @@ class LiveLingoApp(App):
         right_w = max(12, 100 - left_w)
         lc_col.styles.width = f"{left_w}fr"
         voz_col.styles.width = f"{right_w}fr"
+        self._apply_coach_inner_expand(False)
         self._apply_trad_expand_chrome(False)
         self._update_trad_voz_expand_label()
+
+    def _apply_coach_inner_expand(self, coach_expanded: bool) -> None:
+        """
+        Inside LC column: when Coach is expanded, hide LC log + sash so
+        #coach-pane fills the column; otherwise restore height split.
+        """
+        try:
+            log_lc = self.query_one("#log-lc")
+        except Exception:
+            log_lc = None
+        try:
+            c_sash = self.query_one("#lc-coach-sash")
+        except Exception:
+            c_sash = None
+        try:
+            c_pane = self.query_one("#coach-pane")
+        except Exception:
+            c_pane = None
+
+        if coach_expanded:
+            if log_lc is not None:
+                try:
+                    log_lc.add_class("-hidden")
+                    log_lc.display = False
+                except Exception:
+                    pass
+            if c_sash is not None:
+                try:
+                    c_sash.add_class("-hidden")
+                    c_sash.display = False
+                except Exception:
+                    pass
+            if c_pane is not None:
+                try:
+                    c_pane.remove_class("-hidden")
+                    c_pane.display = True
+                    c_pane.styles.height = "1fr"
+                except Exception:
+                    pass
+            try:
+                coach_log = self.query_one("#log-coach", SelectableRichLog)
+                coach_log.styles.height = "1fr"
+            except Exception:
+                pass
+            return
+
+        # Restore normal LC | sash | coach visibility (respect coach on/off)
+        visible = bool(getattr(self, "_coach_panel_visible", True))
+        if log_lc is not None:
+            try:
+                log_lc.remove_class("-hidden")
+                log_lc.display = True
+            except Exception:
+                pass
+        if c_sash is not None:
+            try:
+                if visible:
+                    c_sash.remove_class("-hidden")
+                    c_sash.display = True
+                else:
+                    c_sash.add_class("-hidden")
+                    c_sash.display = False
+            except Exception:
+                pass
+        if c_pane is not None:
+            try:
+                if visible:
+                    c_pane.remove_class("-hidden")
+                    c_pane.display = True
+                else:
+                    c_pane.add_class("-hidden")
+                    c_pane.display = False
+            except Exception:
+                pass
+        try:
+            self._apply_lc_coach_heights()
+        except Exception:
+            pass
 
     @on(Button.Pressed, "#trad-btn-voz")
     def _on_trad_btn_voz(self, event: Button.Pressed) -> None:
         """Expandir/Restaurar no canto superior direito do painel VOZ."""
         event.stop()
         self.trad_toggle_expand("voz")
+
+    @on(Button.Pressed, "#trad-btn-coach")
+    def _on_trad_btn_coach(self, event: Button.Pressed) -> None:
+        """Expandir/Restaurar no canto inferior direito do painel Coach."""
+        event.stop()
+        self.trad_toggle_expand("coach")
 
     # ------------------------------------------------------------------ #
     # Logging (thread-safe via queue → UI timer)
@@ -4303,6 +4497,9 @@ class LiveLingoApp(App):
 
     def _apply_lc_coach_heights(self) -> None:
         """Apply fr heights so LC caption + coach share the left column."""
+        if getattr(self, "_trad_expand", None) == "coach":
+            # Heights owned by _apply_coach_inner_expand
+            return
         visible = bool(getattr(self, "_coach_panel_visible", True))
         if not visible:
             # Coach hidden → LC caption uses full column
@@ -4323,8 +4520,13 @@ class LiveLingoApp(App):
         except Exception:
             pass
         try:
+            pane = self.query_one("#coach-pane")
+            pane.styles.height = f"{coach_fr}fr"
+        except Exception:
+            pass
+        try:
             coach = self.query_one("#log-coach", SelectableRichLog)
-            coach.styles.height = f"{coach_fr}fr"
+            coach.styles.height = "1fr"
         except Exception:
             pass
 
@@ -4332,25 +4534,42 @@ class LiveLingoApp(App):
         """
         Show/hide Interview Coach pane under LC (`coach on` / `coach off`).
 
-        When hidden: sash + #log-coach display:none; #log-lc fills the column.
+        When hidden: sash + #coach-pane display:none; #log-lc fills the column.
         """
         visible = bool(visible)
+        # Leaving expand-coach when hiding the pane
+        if not visible and getattr(self, "_trad_expand", None) == "coach":
+            self._trad_expand = None
+            try:
+                self._apply_trad_split_layout()
+            except Exception:
+                pass
         self._coach_panel_visible = visible
-        for sel in ("#log-coach", "#lc-coach-sash"):
+        for sel in ("#coach-pane", "#lc-coach-sash"):
             try:
                 w = self.query_one(sel)
                 w.set_class(not visible, "-hidden")
+                try:
+                    w.display = bool(visible)
+                except Exception:
+                    pass
             except Exception:
                 try:
                     w = self.query_one(sel)
                     if visible:
                         w.remove_class("-hidden")
+                        w.display = True
                     else:
                         w.add_class("-hidden")
+                        w.display = False
                 except Exception:
                     pass
         try:
             self._apply_lc_coach_heights()
+        except Exception:
+            pass
+        try:
+            self._update_trad_coach_expand_label()
         except Exception:
             pass
         try:
