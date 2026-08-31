@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-08-31
+
+Tag: [`v1.2.3`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3).
+
+**Highlights:** **Interview Coach** (painel sob LC — respostas assertivas EN + espelho pt-BR para perguntas de entrevista), multi-provider (**Grok / Groq / DeepSeek / Claude / Gemini**), **`airespond`** para testar sem LiveCaptions, **`[go]`/F6** flush STT, playback Cable|fones **paralelo**, mute **`[n]`** sem modal bloqueante, VOZ com respiro SOURCE/TARGET.
+
+### Added
+
+- **Interview Coach** — painel `#log-coach` sob a coluna LC: em perguntas claras do
+  LiveCaptions (ou manuais), sugere **Spoken EN** + bullets **SE** (Software Engineer) +
+  **Arch** (Arquiteto) + parágrafo **Trade-offs**, depois **espelho pt-BR** (2 linhas em
+  branco de separação). Comandos: `coach on|off|status|last|force|ask`, **F7**.
+  Default OFF (`INTERVIEW_COACH_ENABLED`). Config: `INTERVIEW_*`, perfil opcional
+  `INTERVIEW_CANDIDATE_PROFILE`.
+- **Coach multi-provider (fase 2)** — `INTERVIEW_COACH_PROVIDER` /
+  `coach provider <nome> [model]`:
+  | Provider | Key |
+  |----------|-----|
+  | `grok` | `XAI_API_KEY` (alias `GROK_API_KEY`) |
+  | `groq` | `GROQ_API_KEY` |
+  | `deepseek` | `DEEPSEEK_API_KEY` |
+  | `claude` | `ANTHROPIC_API_KEY` (alias `CLAUDE_API_KEY`) |
+  | `gemini` | `GEMINI_API_KEY` (alias `GOOGLE_API_KEY`) |
+- **`airespond` / `air`** — digita pergunta PT ou EN; simula par LC + dispara Coach
+  (Spoken sempre em inglês mesmo se a pergunta for em português).
+- **`coach on` / `coach off`** — além de ligar/desligar a API, **mostra/oculta** o painel
+  Coach (LC ocupa a coluna inteira quando OFF).
+- **`[go]` / `.` / `flush` / F6** — force-flush do VAD: emite STT **agora** sem esperar
+  `SILENCE_DURATION`.
+- **Lista de comandos (aba)** — entradas EN/pt-BR para `[go]`, F6, `[coach]`,
+  `[airespond]`, F7, providers e mute sem modal.
+
+### Changed
+
+- **`MONITOR_PLAYBACK`** — Cable e fones recebem o TTS **em paralelo** (não 2× sequencial).
+- **`TTS_MONITOR_CUE_LEAD_S`** — default **0.3s** (era 1.0) para first-audio mais rápido
+  no Cable após o bip.
+- **Mute `[n]`** — sem popup modal: header vermelho + bordas; logs e linha de comando
+  continuam usáveis.
+- **VOZ layout** — linha em branco entre SOURCE e TARGET; TARGET com ênfase
+  (bold + fundo); labels Coach SE/Arch explicados na UI.
+
+### Docs
+
+- README (EN/pt-BR): release **v1.2.3**; comandos Coach / `airespond` / F6–F7;
+  knobs de latência e providers.
+- `.env.example`: bloco Interview Coach completo (keys multi-provider).
+
+### Tests
+
+- `tests/test_interview_coach.py` — detector, parse EN+pt-BR, `airespond` simulado.
+- `tests/test_interview_providers.py` — build/mock Grok/Groq/DeepSeek/Claude/Gemini.
+- `tests/test_flush_listen.py` — force soft-end + dual-write paralelo.
+- `tests/test_command_help.py` — `[go]` / `[coach]` / `[sub]` / `[N]` no markdown.
+
 ## [1.2.2] - 2026-07-23
 
 Tag: [`v1.2.2`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.2).
@@ -402,7 +457,8 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
 
-[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3
 [1.2.2]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.2
 [1.2.1]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1
 [1.1.0]: https://github.com/rcoproc/livelingo2/releases/tag/v1.1.0

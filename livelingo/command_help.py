@@ -44,6 +44,12 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "x", "group": "audio", "token": "x", "sort": "x"},
     {"id": "go", "group": "audio", "token": "go", "sort": "go"},
     {"id": "coach", "group": "audio", "token": "coach", "sort": "coach"},
+    {
+        "id": "coach_provider",
+        "group": "audio",
+        "token": "coach provider",
+        "sort": "coach-provider",
+    },
     {"id": "airespond", "group": "audio", "token": "airespond", "sort": "airespond"},
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
@@ -253,16 +259,22 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_coach": (
             "Suggest assertive **English** answers (+ pt-BR mirror) for interview questions. "
             "Panel under LC. `coach on` shows pane; `coach off` hides it. "
-            "`coach provider <grok|groq|deepseek|claude|gemini> [model]` switches API. "
-            "Also: `status|last|force|ask <q>`. Keys: XAI / GROQ / DEEPSEEK / "
-            "ANTHROPIC / GEMINI. Default OFF. Test: `airespond <question>`."
+            "Also: `status|last|force|ask <q>`. Default OFF. Test: `airespond <question>`."
+        ),
+        "title_coach_provider": "Coach LLM provider",
+        "desc_coach_provider": (
+            "Switch Interview Coach backend: "
+            "`coach provider <grok|groq|deepseek|claude|gemini> [model]`. "
+            "Keys: `XAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, "
+            "`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`. "
+            "Example: `coach provider claude` · `coach provider gemini gemini-2.0-flash`."
         ),
         "title_airespond": "Simulate LC question → Coach",
         "desc_airespond": (
             "Type a question (PT or EN) as if it came from LiveCaptions, then generate the "
-            "Interview Coach answer. Example: "
+            "Interview Coach answer (**Spoken always English** + pt-BR mirror). Example: "
             "`airespond Me fale sobre microsserviços no padrão SAGA`. "
-            "Alias: `air`. Auto-enables Coach. Requires `XAI_API_KEY`."
+            "Alias: `air`. Auto-enables Coach and shows the Coach pane."
         ),
         "title_f7": "Coach force (F7)",
         "desc_f7": "Force Interview Coach on the last stable LC caption (same as `coach force`).",
@@ -599,16 +611,22 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_coach": (
             "Sugere respostas **assertivas em inglês** (+ espelho pt-BR) para perguntas de entrevista. "
             "Painel sob o LC. `coach on` mostra; `coach off` oculta. "
-            "`coach provider <grok|groq|deepseek|claude|gemini> [model]` troca a API. "
-            "Também: `status|last|force|ask <q>`. Keys: XAI / GROQ / DEEPSEEK / "
-            "ANTHROPIC / GEMINI. Padrão OFF. Teste: `airespond <pergunta>`."
+            "Também: `status|last|force|ask <q>`. Padrão OFF. Teste: `airespond <pergunta>`."
+        ),
+        "title_coach_provider": "Provider LLM do Coach",
+        "desc_coach_provider": (
+            "Troca o backend do Interview Coach: "
+            "`coach provider <grok|groq|deepseek|claude|gemini> [model]`. "
+            "Keys: `XAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, "
+            "`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`. "
+            "Ex.: `coach provider claude` · `coach provider gemini gemini-2.0-flash`."
         ),
         "title_airespond": "Simular pergunta LC → Coach",
         "desc_airespond": (
             "Digite uma pergunta (PT ou EN) como se viesse do LiveCaptions e gere a "
-            "resposta do Interview Coach. Exemplo: "
+            "resposta do Interview Coach (**Spoken sempre em inglês** + espelho pt-BR). Exemplo: "
             "`airespond Me fale sobre microsserviços no padrão SAGA`. "
-            "Alias: `air`. Liga o Coach automaticamente. Precisa `XAI_API_KEY`."
+            "Alias: `air`. Liga o Coach e mostra o painel."
         ),
         "title_f7": "Coach force (F7)",
         "desc_f7": "Força o Interview Coach no último LC estável (igual a `coach force`).",

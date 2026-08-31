@@ -52,6 +52,20 @@ def test_build_commands_markdown_includes_go_flush():
     assert "stt" in md_pt.lower() or "flush" in md_pt.lower()
 
 
+def test_build_commands_markdown_includes_coach_providers():
+    md_en = build_commands_markdown("en")
+    assert "coach provider" in md_en.lower() or "`coach provider`" in md_en
+    for p in ("grok", "groq", "deepseek", "claude", "gemini"):
+        assert p in md_en.lower()
+    assert "airespond" in md_en.lower()
+    assert "F7" in md_en or "`F7`" in md_en
+
+    md_pt = build_commands_markdown("pt-BR")
+    assert "coach" in md_pt.lower()
+    assert "airespond" in md_pt.lower()
+    assert "provider" in md_pt.lower() or "gemini" in md_pt.lower()
+
+
 def test_build_commands_markdown_includes_cls_sides():
     """Tradução split: cls clears all; cls1=LC left; cls2=VOZ right."""
     md_en = build_commands_markdown("en")
