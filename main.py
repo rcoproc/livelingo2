@@ -2269,7 +2269,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                 except Exception:
                     pass
         if indicator is not None:
-            # TUI: set_mic_muted(True) opens centered red mute modal (only [n] exits).
+            # TUI: set_mic_muted paints red header/borders — non-blocking (no modal).
             set_muted = getattr(indicator, "set_mic_muted", None)
             if callable(set_muted):
                 try:
@@ -2286,17 +2286,17 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             if os_ok:
                 ui.warn(
                     f"Mic MUTED (Windows): '{mic_name}'. "
-                    f"Popup vermelho na TUI — pressione [n] para desmutar.",
+                    f"Header vermelho — logs/cmds livres · [n] desmuta.",
                     panel="app",
                 )
             else:
                 ui.warn(
                     f"Mic MUTED (app only — OS mute falhou): '{mic_name}'. "
-                    f"Popup na TUI — pressione [n] para reativar.",
+                    f"Header vermelho · [n] reativa.",
                     panel="app",
                 )
             ui.dim(
-                "  (modo leitura: sem animação de escuta até o mic LIVE)",
+                "  (escuta pausada; UI permanece utilizável)",
                 panel="app",
             )
         else:

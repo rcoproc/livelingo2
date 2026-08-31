@@ -195,9 +195,8 @@ _I18N: dict[str, dict[str, str]] = {
         "title_n": "Mic mute",
         "desc_n": (
             "Toggle microphone mute (Windows Core Audio when available + app capture gate). "
-            "In the TUI a **centered red modal** (white text) appears while muted; "
-            "only action: press **n** again (**Cmd n** / desmutar o microfone - Cmd n). "
-            "Header also shows MUTED. TUI stays open behind the popup. "
+            "In the TUI: **red header + red borders** while muted — logs and command line "
+            "stay usable (no blocking modal). Press **n** again to unmute. "
             "Case-sensitive: lowercase **n** only (capital **N** is force soft-listen)."
         ),
         "title_N": "Force soft-listen",
@@ -543,8 +542,8 @@ _I18N: dict[str, dict[str, str]] = {
         "title_n": "Mudo do microfone",
         "desc_n": (
             "Liga/desliga o mute do microfone (Core Audio no Windows quando disponível + gate do app). "
-            "Na TUI abre um **popup vermelho centralizado** (texto branco) enquanto estiver mudo; "
-            "única ação: **n** de novo (**desmutar o microfone - Cmd n**). Header mostra MUTED. "
+            "Na TUI: **header vermelho + bordas vermelhas** enquanto mudo — logs e linha de "
+            "comando continuam usáveis (**sem** modal bloqueante). **n** de novo desmuta. "
             "Case-sensitive: só **n** minúsculo (**N** maiúsculo = escuta forçada)."
         ),
         "title_N": "Escuta forçada (voz baixa)",

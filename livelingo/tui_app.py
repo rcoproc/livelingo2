@@ -51,13 +51,12 @@ from . import ui as ui_mod
 
 
 # --------------------------------------------------------------------------- #
-# Mic mute modal — red / white, centered; only [n] unmutes (TUI stays behind)
+# Legacy mute modal (popped if still on stack). Mute UI is non-blocking now.
 # --------------------------------------------------------------------------- #
 class MicMutedModal(ModalScreen[str]):
     """
-    Full-screen dim overlay with a centered red dialog while the mic is muted.
-
-    Background TUI remains visible (dimmed). Sole action: press **n** to unmute.
+    Deprecated mute dialog. Prefer red header + borders (_paint_mic_mute_chrome).
+    Kept so an accidental leftover screen can still be dismissed with [n].
     """
 
     CSS = """
@@ -2245,6 +2244,17 @@ class LiveLingoApp(App):
     #listen-header.mic-muted {
         background: #c23b3b;
         color: #ffffff;
+        text-style: bold;
+    }
+    /* [n] mute — red chrome, NON-blocking (no modal; logs/cmds stay usable) */
+    #log-tabs.-mic-muted {
+        border: solid #c23b3b;
+    }
+    #captions-panel.-mic-muted {
+        border: solid #c23b3b;
+    }
+    #cmd-box.-mic-muted {
+        border: round #c23b3b;
     }
     /* [N] force soft-listen — yellow chrome (escuta forçada / voz baixa) */
     #listen-header.-hot-listen {
@@ -4613,7 +4623,10 @@ class LiveLingoApp(App):
         except Exception:
             pass
         if self._mic_muted and self._pipe_stage in ("idle", "mic"):
-            markup = f"[dim]○ {t.get('pipe_muted', 'Mic muted')}[/]"
+            markup = (
+                f"[bold #ff6b6b]🔇 {t.get('pipe_muted', 'Mic MUTED')}[/] "
+                f"[dim]· [n][/]"
+            )
             if self._pipe_lc_active:
                 lc_lab = (
                     t.get("pipe_lc_active", "LC●")
@@ -4829,135 +4842,64 @@ class LiveLingoApp(App):
 
     def set_mic_muted(self, muted: bool, mic_name: str = "") -> None:
         """
-        Sync UI with mic mute state.
+        Sync UI with mic mute state — **non-blocking**.
 
-        When muted: show a centered red modal (only [n] unmutes).
-        When unmuted: dismiss that modal if open.
-        Safe to call from a worker thread.
+        Muted: red header + red borders on tabs/cmd (logs and commands stay usable).
+        No modal overlay. Safe to call from a worker thread.
         """
         self._mic_muted = bool(muted)
         if mic_name:
             self._mic_mute_name = str(mic_name)
         try:
-            if muted:
-                self.call_from_thread(self._show_mic_mute_modal)
-            else:
-                self.call_from_thread(self._dismiss_mic_mute_modal)
+            self.call_from_thread(self._apply_mic_mute_ui)
         except Exception:
             try:
-                if muted:
-                    self._show_mic_mute_modal()
-                else:
-                    self._dismiss_mic_mute_modal()
+                self._apply_mic_mute_ui()
             except Exception:
                 pass
 
-    def _mic_mute_i18n(self) -> dict[str, str]:
-        """Title / body / hint for the mute modal (SOURCE_LANG)."""
-        lang = _source_lang_code()
-        if lang == "pt":
-            return {
-                "title": "MIC MUDO",
-                "message": "Microfone mutado — escuta e tradução pausadas.",
-                "message2": "",
-                "hint": "[n]  desmutar o microfone - Cmd n",
-            }
-        if lang == "es":
-            return {
-                "title": "MIC MUTEADO",
-                "message": "Micrófono silenciado — escucha y traducción en pausa.",
-                "message2": "",
-                "hint": "[n]  activar el micrófono - Cmd n",
-            }
-        return {
-            "title": "MIC MUTED",
-            "message": "Microphone muted — listening and translation paused.",
-            "message2": "",
-            "hint": "[n]  unmute microphone - Cmd n",
-        }
-
-    def _show_mic_mute_modal(self) -> None:
-        """UI thread: push centered red mute dialog if not already open."""
-        try:
-            if isinstance(self.screen, MicMutedModal):
-                return
-        except Exception:
-            pass
-        pack = self._mic_mute_i18n()
-        name = getattr(self, "_mic_mute_name", "") or ""
-        try:
-            if not name and hasattr(self.pipeline, "mic_endpoint_name"):
-                name = self.pipeline.mic_endpoint_name() or ""
-        except Exception:
-            name = name or ""
-        modal = MicMutedModal(
-            title=pack["title"],
-            mic_name=name,
-            message=pack.get("message", ""),
-            message2=pack.get("message2", ""),
-            hint=pack["hint"],
-        )
-        try:
-            self.push_screen(modal, self._on_mic_mute_modal_dismiss)
-        except Exception:
-            pass
-
-    def _dismiss_mic_mute_modal(self) -> None:
-        """UI thread: pop mute modal if it is the top screen."""
+    def _apply_mic_mute_ui(self) -> None:
+        """UI thread: paint mute chrome; dismiss legacy mute modal if still open."""
         try:
             if isinstance(self.screen, MicMutedModal):
                 self.pop_screen()
         except Exception:
             pass
-
-    def _on_mic_mute_modal_dismiss(self, result: str | None) -> None:
-        """
-        After [n] on the modal: force unmute + refresh header/log.
-
-        If the mic was already unmuted another way, just clean UI state.
-        """
         try:
-            still_muted = bool(self.pipeline.is_mic_muted())
+            self._paint_mic_mute_chrome(self._mic_muted)
         except Exception:
-            still_muted = True
-        if still_muted:
-            try:
-                muted_now, os_ok, mic_name = self.pipeline.set_mic_muted(False)
-            except Exception as exc:
-                try:
-                    self.post_log("error", f"[n] Unmute failed: {exc}")
-                except Exception:
-                    pass
-                self._mic_muted = False
-                return
-            self._mic_muted = bool(muted_now)
-            self._mic_mute_name = mic_name or ""
-            if not muted_now:
-                if os_ok:
-                    self.post_log(
-                        "success",
-                        f"Mic LIVE (Windows): '{mic_name}'. "
-                        f"Escuta ativa retomada. Pode falar.",
-                    )
-                else:
-                    self.post_log(
-                        "success",
-                        f"Mic LIVE (app gate): '{mic_name}'. Escuta ativa retomada.",
-                    )
-                try:
-                    self.post_log("raw", "")
-                except Exception:
-                    pass
-        else:
-            self._mic_muted = False
+            pass
         try:
             self._tick_status()
+        except Exception:
+            pass
+        try:
+            self._paint_pipe_bar(force=True)
         except Exception:
             pass
         try:
             self._refocus_cmd_if_idle()
         except Exception:
             pass
+
+    def _paint_mic_mute_chrome(self, on: bool | None = None) -> None:
+        """Red borders while muted — does not steal focus / block input."""
+        if on is None:
+            on = bool(getattr(self, "_mic_muted", False))
+        on = bool(on)
+        for sel in ("#log-tabs", "#captions-panel", "#cmd-box"):
+            try:
+                w = self.query_one(sel)
+                w.set_class(on, "-mic-muted")
+            except Exception:
+                try:
+                    w = self.query_one(sel)
+                    if on:
+                        w.add_class("-mic-muted")
+                    else:
+                        w.remove_class("-mic-muted")
+                except Exception:
+                    pass
 
     def set_passthrough(self, active: bool) -> None:
         """UI cue: direct voice bypass ([b]) is active."""
@@ -6487,6 +6429,12 @@ class LiveLingoApp(App):
 
         header.set_class(self._sound_on and not self._mic_muted, "sound-on")
         header.set_class(self._mic_muted, "mic-muted")
+        # Mute chrome (red borders) — clear when live again
+        try:
+            if not self._mic_muted:
+                self._paint_mic_mute_chrome(False)
+        except Exception:
+            pass
         # [N] force soft-listen chrome (yellow borders)
         try:
             fl = bool(getattr(self, "_force_soft_listen", False))
@@ -6528,10 +6476,19 @@ class LiveLingoApp(App):
             return
 
         if self._mic_muted:
-            muted_line = f"🔇  MIC MUTED   {lang_block_short}   |  escuta pausada  |  [n] reativar"
-            if getattr(self, "_last_header_line", None) != muted_line:
-                self._last_header_line = muted_line
-                header.update(muted_line)
+            # Pulse so mute stays obvious without a blocking modal
+            pulse = "🔇" if (self._frame_i % 2) == 0 else "🚫"
+            muted_line = (
+                f"{pulse}  MIC MUDO   {lang_block_short}   |  "
+                f"escuta pausada — logs/cmds OK  |  [n] reativar"
+            )
+            self._frame_i = (self._frame_i + 1) % 8
+            self._last_header_line = muted_line
+            header.update(muted_line)
+            try:
+                self._paint_mic_mute_chrome(True)
+            except Exception:
+                pass
             return
 
         if fl and not playing:
