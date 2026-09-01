@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from livelingo.command_help import _alpha_key, build_commands_markdown, tab_title
+from livelingo.command_help import (
+    _GROUP_IDS,
+    _alpha_key,
+    build_commands_markdown,
+    command_by_id,
+    iter_command_menu,
+    tab_title,
+)
 
 
 def test_alpha_key_strips_accents():
@@ -25,6 +32,44 @@ def test_build_commands_markdown_en_has_core_commands():
     assert "`[g]`" in md or "[g]" in md
     # Groups present
     assert "##" in md
+    assert "## Coach" in md
+
+
+def test_group_order_and_coach_membership():
+    assert _GROUP_IDS == (
+        "audio",
+        "sentence",
+        "idiom",
+        "coach",
+        "keys",
+        "session",
+    )
+    rows = iter_command_menu("en")
+    kinds = [r["kind"] for r in rows]
+    assert "group" in kinds and "cmd" in kinds
+    group_titles = [r["title"] for r in rows if r["kind"] == "group"]
+    assert group_titles[0].lower().startswith("audio") or "Audio" in group_titles[0]
+    assert any(t.lower() == "coach" for t in group_titles)
+    coach_ids = {
+        r["id"]
+        for r in rows
+        if r["kind"] == "cmd"
+        and r["id"] in ("coach", "coach_provider", "airespond", "interview", "f7")
+    }
+    assert coach_ids == {
+        "coach",
+        "coach_provider",
+        "airespond",
+        "interview",
+        "f7",
+    }
+    # F7 must not appear under Keyboard anymore
+    f7 = command_by_id("f7", "en")
+    assert f7 is not None
+    assert f7["token"] == "F7"
+    assert command_by_id("interview", "pt")["token"] == "interview"
+    air = command_by_id("airespond", "pt")
+    assert air is not None and air["token"] == "airespond"
 
 
 def test_build_commands_markdown_includes_n_force_and_sub():

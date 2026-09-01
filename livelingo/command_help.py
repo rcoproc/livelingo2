@@ -3,12 +3,14 @@ command_help.py
 ===============
 Catalog of LiveLingo menu commands for the TUI "Command list" tab.
 
-Descriptions follow SOURCE_LANG. Groups and commands are ordered
-alphabetically (group title A–Z, then command token A–Z).
+Descriptions follow SOURCE_LANG. Groups follow a fixed UX order
+(Audio → Sentence → Language → Coach → Keyboard → Session); commands
+inside each group are A–Z by sort key.
 """
 
 from __future__ import annotations
 
+from typing import Any, Optional
 import unicodedata
 
 # --------------------------------------------------------------------------- #
@@ -22,7 +24,7 @@ def _alpha_key(text: str) -> str:
     return "".join(c for c in s if not unicodedata.combining(c))
 
 
-# group: audio | idiom | keys | sentence | session
+# group: audio | sentence | idiom | coach | keys | session
 _COMMANDS: list[dict[str, str]] = [
     # --- Audio ---
     {"id": "a", "group": "audio", "token": "a", "sort": "a"},
@@ -43,24 +45,26 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "s", "group": "audio", "token": "s", "sort": "s"},
     {"id": "x", "group": "audio", "token": "x", "sort": "x"},
     {"id": "go", "group": "audio", "token": "go", "sort": "go"},
-    {"id": "coach", "group": "audio", "token": "coach", "sort": "coach"},
-    {
-        "id": "coach_provider",
-        "group": "audio",
-        "token": "coach provider",
-        "sort": "coach-provider",
-    },
-    {"id": "airespond", "group": "audio", "token": "airespond", "sort": "airespond"},
-    {
-        "id": "interview",
-        "group": "session",
-        "token": "interview",
-        "sort": "interview",
-    },
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
     {"id": "o", "group": "idiom", "token": "o", "sort": "o"},
     {"id": "t", "group": "idiom", "token": "t", "sort": "t"},
+    # --- Coach ---
+    {"id": "coach", "group": "coach", "token": "coach", "sort": "coach"},
+    {
+        "id": "coach_provider",
+        "group": "coach",
+        "token": "coach provider",
+        "sort": "coach-provider",
+    },
+    {"id": "airespond", "group": "coach", "token": "airespond", "sort": "airespond"},
+    {
+        "id": "interview",
+        "group": "coach",
+        "token": "interview",
+        "sort": "interview",
+    },
+    {"id": "f7", "group": "coach", "token": "F7", "sort": "f7"},
     # --- Keyboard ---
     {"id": "ctrl_c", "group": "keys", "token": "Ctrl+C", "sort": "ctrl+c"},
     {"id": "ctrl_q", "group": "keys", "token": "Ctrl+Q", "sort": "ctrl+q"},
@@ -76,7 +80,6 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "f4", "group": "keys", "token": "F4", "sort": "f4"},
     {"id": "f5", "group": "keys", "token": "F5", "sort": "f5"},
     {"id": "f6", "group": "keys", "token": "F6", "sort": "f6"},
-    {"id": "f7", "group": "keys", "token": "F7", "sort": "f7"},
     {"id": "search", "group": "keys", "token": "/", "sort": "search"},
     {"id": "search_n", "group": "keys", "token": "/n", "sort": "search-n"},
     {"id": "search_p", "group": "keys", "token": "/p", "sort": "search-p"},
@@ -172,7 +175,8 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "view", "group": "session", "token": "view", "sort": "view"},
 ]
 
-_GROUP_IDS = ("audio", "idiom", "keys", "sentence", "session")
+# Fixed UX order (not A–Z of localized titles).
+_GROUP_IDS = ("audio", "sentence", "idiom", "coach", "keys", "session")
 
 # --------------------------------------------------------------------------- #
 # i18n packs: tab title, intro, group titles, per-command title + description
@@ -182,14 +186,16 @@ _I18N: dict[str, dict[str, str]] = {
     "en": {
         "tab": "Command list",
         "intro": (
-            "All LiveLingo menu commands, **grouped** by area. "
-            "Groups and commands are ordered **alphabetically**. "
-            "Type a command in the box below and press **Enter**."
+            "Browse commands with **↑↓** (description below). "
+            "**Enter** fills the command box — then press Enter again to run. "
+            "Groups: Audio · Sentence · Language · Coach · Keyboard · Session."
         ),
+        "menu_hint": "↑↓ navigate · Enter on group = expand/collapse · Enter on command = fill #cmd",
         "group_audio": "Audio",
-        "group_idiom": "Language",
-        "group_keys": "Keyboard",
         "group_sentence": "Sentence",
+        "group_idiom": "Language",
+        "group_coach": "Coach",
+        "group_keys": "Keyboard",
         "group_session": "Session",
         # Audio
         "title_a": "Copy audio path",
@@ -296,7 +302,8 @@ _I18N: dict[str, dict[str, str]] = {
         "title_interview": "Interview preset",
         "desc_interview": (
             "One-shot setup for interviews: **sound OFF** (`s`), **cam off**, **lc on**, "
-            "**coach on**, then **hides** the Coach pane in the TUI (Coach stays ON). "
+            "**coach on**, then **minimizes** the Coach log to a thin bar (Coach stays ON). "
+            "Header shows `- Interview Mode` until `interview off`. "
             "VOZ log reminds: `airespond` + `python main.py view coach`. Alias: `iv`."
         ),
         "title_f7": "Coach force (F7)",
@@ -565,14 +572,16 @@ _I18N: dict[str, dict[str, str]] = {
     "pt": {
         "tab": "Lista de comandos",
         "intro": (
-            "Todos os comandos do menu do LiveLingo, **agrupados** por área. "
-            "Grupos e comandos em ordem **alfabética**. "
-            "Digite o comando na caixa abaixo e pressione **Enter**."
+            "Navegue com **↑↓** (descrição embaixo). "
+            "**Enter** preenche o campo de comando — Enter de novo executa. "
+            "Grupos: Áudio · Frase · Idioma · Coach · Teclado · Sessão."
         ),
+        "menu_hint": "↑↓ navega · Enter no grupo = abrir/fechar · Enter no comando = preencher #cmd",
         "group_audio": "Áudio",
-        "group_idiom": "Idioma",
-        "group_keys": "Teclado",
         "group_sentence": "Frase",
+        "group_idiom": "Idioma",
+        "group_coach": "Coach",
+        "group_keys": "Teclado",
         "group_session": "Sessão",
         "title_a": "Copiar caminho do áudio",
         "desc_a": "Copia o caminho absoluto **completo** do áudio do **último** chunk (host; WSL; sem reticências no meio).",
@@ -677,7 +686,8 @@ _I18N: dict[str, dict[str, str]] = {
         "title_interview": "Preset de entrevista",
         "desc_interview": (
             "Atalho para entrevista: **som OFF** (`s`), **cam off**, **lc on**, **coach on**, "
-            "depois **oculta** o painel Coach na TUI (Coach continua ON). "
+            "depois **minimiza** o log do Coach (barra fina; Coach continua ON). "
+            "No header: `- Interview Mode` até `interview off`. "
             "No log VOZ: `airespond` + `python main.py view coach`. Alias: `iv`."
         ),
         "title_f7": "Coach force (F7)",
@@ -946,9 +956,10 @@ _I18N: dict[str, dict[str, str]] = {
             "Escriba el comando abajo y pulse **Enter**."
         ),
         "group_audio": "Audio",
-        "group_idiom": "Idioma",
-        "group_keys": "Teclado",
         "group_sentence": "Frase",
+        "group_idiom": "Idioma",
+        "group_coach": "Coach",
+        "group_keys": "Teclado",
         "group_session": "Sesión",
         "title_a": "Copiar ruta de audio",
         "desc_a": "Copia la ruta absoluta del audio del **último** chunk al portapapeles.",
@@ -1080,9 +1091,10 @@ _I18N: dict[str, dict[str, str]] = {
             "Tapez la commande ci-dessous puis **Entrée**."
         ),
         "group_audio": "Audio",
-        "group_idiom": "Langue",
-        "group_keys": "Clavier",
         "group_sentence": "Phrase",
+        "group_idiom": "Langue",
+        "group_coach": "Coach",
+        "group_keys": "Clavier",
         "group_session": "Session",
         "title_a": "Copier le chemin audio",
         "desc_a": "Copie le chemin absolu de l'audio du **dernier** chunk dans le presse-papiers.",
@@ -1192,9 +1204,10 @@ _I18N: dict[str, dict[str, str]] = {
             "Befehl unten eingeben und **Enter**."
         ),
         "group_audio": "Audio",
-        "group_idiom": "Sprache",
-        "group_keys": "Tastatur",
         "group_sentence": "Satz",
+        "group_idiom": "Sprache",
+        "group_coach": "Coach",
+        "group_keys": "Tastatur",
         "group_session": "Sitzung",
         "title_a": "Audiopfad kopieren",
         "desc_a": "Kopiert den absoluten Pfad des **letzten** Chunk-Audios in die Zwischenablage.",
@@ -1304,9 +1317,10 @@ _I18N: dict[str, dict[str, str]] = {
             "Digita il comando sotto e premi **Invio**."
         ),
         "group_audio": "Audio",
-        "group_idiom": "Lingua",
-        "group_keys": "Tastiera",
         "group_sentence": "Frase",
+        "group_idiom": "Lingua",
+        "group_coach": "Coach",
+        "group_keys": "Tastiera",
         "group_session": "Sessione",
         "title_a": "Copia percorso audio",
         "desc_a": "Copia il percorso assoluto dell'audio dell'**ultimo** chunk negli appunti.",
@@ -1416,9 +1430,10 @@ _I18N: dict[str, dict[str, str]] = {
             "在下方输入命令并按 **Enter**。"
         ),
         "group_audio": "音频",
-        "group_idiom": "语言",
-        "group_keys": "键盘",
         "group_sentence": "句子",
+        "group_idiom": "语言",
+        "group_coach": "Coach",
+        "group_keys": "键盘",
         "group_session": "会话",
         "title_a": "复制音频路径",
         "desc_a": "将**最后**一个 chunk 音频的绝对路径复制到剪贴板。",
@@ -1528,9 +1543,10 @@ _I18N: dict[str, dict[str, str]] = {
             "下の欄にコマンドを入力して **Enter**。"
         ),
         "group_audio": "音声",
-        "group_idiom": "言語",
-        "group_keys": "キーボード",
         "group_sentence": "文",
+        "group_idiom": "言語",
+        "group_coach": "Coach",
+        "group_keys": "キーボード",
         "group_session": "セッション",
         "title_a": "音声パスをコピー",
         "desc_a": "**最後**の chunk 音声の絶対パスをクリップボードへ。",
@@ -1660,24 +1676,81 @@ def tab_title(lang: str = "en") -> str:
     return _pack_for(lang).get("tab", "Command list")
 
 
-def build_commands_markdown(lang: str = "en") -> str:
-    """
-    Build a Markdown document: groups A–Z by localized group title,
-    commands A–Z within each group by sort key.
-    """
-    pack = _pack_for(lang)
-    # Bucket commands by group
+def menu_hint(lang: str = "en") -> str:
+    """Short footer hint for the TUI command browser."""
+    return _pack_for(lang).get(
+        "menu_hint",
+        "↑↓ navigate · Enter fills command box",
+    )
+
+
+def _commands_by_group() -> dict[str, list[dict[str, str]]]:
     by_group: dict[str, list[dict[str, str]]] = {g: [] for g in _GROUP_IDS}
     for cmd in _COMMANDS:
         g = cmd["group"]
         if g in by_group:
             by_group[g].append(cmd)
+    for g in by_group:
+        by_group[g].sort(key=lambda c: _alpha_key(c.get("sort") or c["token"]))
+    return by_group
 
-    # Sort groups by localized title (accent-insensitive A–Z)
-    group_order = sorted(
-        _GROUP_IDS,
-        key=lambda gid: _alpha_key(pack.get(f"group_{gid}", gid) or gid),
-    )
+
+def iter_command_menu(lang: str = "en") -> list[dict[str, Any]]:
+    """
+    Flat menu rows for the TUI browser.
+
+    Each row is either:
+      {"kind": "group", "id": "<gid>", "title": "..."}
+      {"kind": "cmd", "id": "...", "token": "...", "title": "...", "description": "..."}
+    Groups follow ``_GROUP_IDS`` order; commands A–Z within each group.
+    """
+    pack = _pack_for(lang)
+    rows: list[dict[str, Any]] = []
+    by_group = _commands_by_group()
+    for gid in _GROUP_IDS:
+        cmds = by_group.get(gid) or []
+        if not cmds:
+            continue
+        rows.append(
+            {
+                "kind": "group",
+                "id": gid,
+                "title": pack.get(f"group_{gid}", gid),
+            }
+        )
+        for cmd in cmds:
+            cid = cmd["id"]
+            token = cmd["token"]
+            rows.append(
+                {
+                    "kind": "cmd",
+                    "id": cid,
+                    "token": token,
+                    "title": pack.get(f"title_{cid}", token),
+                    "description": pack.get(f"desc_{cid}", "") or "",
+                }
+            )
+    return rows
+
+
+def command_by_id(cid: str, lang: str = "en") -> Optional[dict[str, Any]]:
+    """Return a cmd menu row for ``cid``, or None."""
+    want = (cid or "").strip()
+    if not want:
+        return None
+    for row in iter_command_menu(lang):
+        if row.get("kind") == "cmd" and row.get("id") == want:
+            return row
+    return None
+
+
+def build_commands_markdown(lang: str = "en") -> str:
+    """
+    Build a Markdown document: groups in fixed UX order,
+    commands A–Z within each group by sort key.
+    """
+    pack = _pack_for(lang)
+    by_group = _commands_by_group()
 
     lines: list[str] = [
         f"# {pack.get('tab', 'Command list')}",
@@ -1688,20 +1761,18 @@ def build_commands_markdown(lang: str = "en") -> str:
         "",
     ]
 
-    for gid in group_order:
+    for gid in _GROUP_IDS:
+        cmds = by_group.get(gid) or []
+        if not cmds:
+            continue
         gtitle = pack.get(f"group_{gid}", gid)
         lines.append(f"## {gtitle}")
         lines.append("")
-        cmds = sorted(
-            by_group.get(gid) or [],
-            key=lambda c: _alpha_key(c.get("sort") or c["token"]),
-        )
         for cmd in cmds:
             cid = cmd["id"]
             token = cmd["token"]
             title = pack.get(f"title_{cid}", token)
             desc = pack.get(f"desc_{cid}", "")
-            # Markdown: ### `[token]` — short title
             lines.append(f"### `[{token}]` — {title}")
             lines.append("")
             if desc:
@@ -1710,7 +1781,6 @@ def build_commands_markdown(lang: str = "en") -> str:
         lines.append("---")
         lines.append("")
 
-    # Drop trailing separator whitespace
     while lines and lines[-1] in ("", "---"):
         lines.pop()
     lines.append("")

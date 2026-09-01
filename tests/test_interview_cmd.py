@@ -50,7 +50,14 @@ def test_cmd_interview_forces_sound_off_and_runs_subcommands(main_mod):
     pipeline.interview_coach = None
 
     # No call_from_thread → direct set_* path (TUI classic / unit)
-    indicator = MagicMock(spec=["set_sound_on", "set_coach_panel_visible"])
+    indicator = MagicMock(
+        spec=[
+            "set_sound_on",
+            "set_coach_panel_visible",
+            "set_coach_minimized",
+            "set_interview_mode",
+        ]
+    )
     synonym_lookup = MagicMock()
     dispatched = []
 
@@ -67,7 +74,9 @@ def test_cmd_interview_forces_sound_off_and_runs_subcommands(main_mod):
 
     pipeline.set_sound_enabled.assert_called_once_with(False)
     indicator.set_sound_on.assert_called_once_with(False)
-    indicator.set_coach_panel_visible.assert_called_once_with(False)
+    indicator.set_coach_panel_visible.assert_called_once_with(True)
+    indicator.set_coach_minimized.assert_called_once_with(True)
+    indicator.set_interview_mode.assert_called_once_with(True)
     warn.assert_any_call(
         "Sound OFF — só texto (TTS omitido se TTS_SKIP_WHEN_MUTED). "
         "Pressione [s] para ouvir de novo.",
@@ -80,7 +89,7 @@ def test_cmd_interview_forces_sound_off_and_runs_subcommands(main_mod):
         ("coach on", "coach on"),
     ]
     success.assert_any_call(
-        "Modo interview: som OFF · cam OFF · LC ON · Coach ON · painel oculto",
+        "Modo interview: som OFF · cam OFF · LC ON · Coach ON · minimizado",
         indent=3,
         panel="app",
     )
@@ -124,3 +133,13 @@ def test_dispatch_interview_alias_iv(main_mod):
             MagicMock(), MagicMock(), "interview", "interview", None
         )
     mock_iv.assert_called_once()
+
+
+def test_dispatch_interview_off(main_mod):
+    ind = MagicMock(spec=["set_interview_mode"])
+    with patch.object(main_mod.ui, "info") as info:
+        main_mod._dispatch_command(
+            MagicMock(), MagicMock(), "interview off", "interview off", ind
+        )
+    ind.set_interview_mode.assert_called_once_with(False)
+    assert any("Interview Mode OFF" in str(c) for c in info.call_args_list)
