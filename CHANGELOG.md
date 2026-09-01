@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-09-01
+
+Tag: [`v1.2.4`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.4).
+
+**Highlights:** Coach persistido no SQLite (`coach_results`) + **`l`** no painel coach;
+**`session-info`** / `si` com tabela de sessões (LC/VOZ/Coach + tamanho do DB);
+**`enew [LANG]`** com destino tipado opcional. Header TUI mostra **`v1.2.4`**.
+
+### Added
+
+- **Coach no SQLite + comando `l`** — cada resposta bem-sucedida do Interview Coach
+  (Spoken/SE/Arch/Trade-offs em **EN** e espelho **pt-BR**) é gravada em
+  `coach_results` por sessão. O comando **`l`** lista o histórico no painel
+  **coach** (além de LC e VOZ), com contagem `Coach: N` no cabeçalho.
+- **`session-info`** (`sessioninfo` / `si`) — no painel **Sistema**, lista todas as
+  sessões do SQLite em **tabela alinhada**
+  (`CREATED_AT ID TITLE LC VOZ COACH TOTAL`), totais gerais e tamanho de
+  `livelingo.db` (sem prefixo de data/hora repetido em cada linha).
+
+### Changed
+
+- **`enew [LANG] <texto>`** — destino opcional após o comando (fonte continua PT).
+  Exemplos: `enew Olá` → PT→EN (default); `enew ES Bom dia` → PT→ES;
+  `enew FR …` / `DE` / `IT` / `ZH` / `JA`. Código desconhecido de 2 letras
+  (`XX …`) conta como texto. TTS troca a voz temporariamente para o destino.
+
 ## [1.2.3] - 2026-08-31
 
 Tag: [`v1.2.3`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3).
@@ -511,7 +537,8 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
 
-[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.4
 [1.2.3]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3
 [1.2.2]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.2
 [1.2.1]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.1

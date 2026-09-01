@@ -44,10 +44,11 @@ class _ChunkSkip:
 
 class TypedTextItem:
     """
-    Typed translation job (``enew``): skips STT, always uses fixed lang pair.
+    Typed translation job (``enew``): skips STT, uses a fixed lang pair.
 
-    Default pair is Portuguese → English, independent of system SOURCE/TARGET.
-    Processed ahead of mic chunks via ``_typed_queue``.
+    Default pair is Portuguese → English (or ``enew LANG text`` → PT→LANG),
+    independent of system SOURCE/TARGET. Processed ahead of mic chunks via
+    ``_typed_queue``.
     """
 
     __slots__ = ("text", "source_lang", "target_lang")
@@ -56,6 +57,88 @@ class TypedTextItem:
         self.text = " ".join((text or "").split()).strip()
         self.source_lang = (source_lang or "pt").strip().lower() or "pt"
         self.target_lang = (target_lang or "en").strip().lower() or "en"
+
+
+# Full-name / alias → ISO code (shared by normalize_lang_code + enew parse).
+_LANG_ALIASES = {
+    "english": "en",
+    "ingles": "en",
+    "inglês": "en",
+    "portuguese": "pt",
+    "portugues": "pt",
+    "português": "pt",
+    "spanish": "es",
+    "espanol": "es",
+    "español": "es",
+    "french": "fr",
+    "frances": "fr",
+    "français": "fr",
+    "german": "de",
+    "alemao": "de",
+    "alemão": "de",
+    "deutsch": "de",
+    "italian": "it",
+    "italiano": "it",
+    "chinese": "zh",
+    "chines": "zh",
+    "chinês": "zh",
+    "mandarin": "zh",
+    "japanese": "ja",
+    "japones": "ja",
+    "japonês": "ja",
+    "jp": "ja",
+    "cn": "zh",
+    "ger": "de",
+    "deu": "de",
+    "ita": "it",
+}
+
+
+def parse_enew_args(raw: str) -> tuple:
+    """
+    Parse ``enew`` payload into ``(target_lang, text)``.
+
+    Optional first token is TARGET only (source stays ``pt`` at the caller):
+      ``enew Olá``          → (\"en\", \"Olá\")
+      ``enew ES Bom dia``   → (\"es\", \"Bom dia\")
+      ``enew XX olá``       → (\"en\", \"XX olá\")  # unknown code = text
+      ``enew FRANCE is…``   → (\"en\", \"FRANCE is…\")  # long word ≠ lang
+    """
+    text_all = (raw or "").strip()
+    if not text_all:
+        return "en", ""
+    parts = text_all.split(None, 1)
+    token = parts[0]
+    rest = parts[1] if len(parts) == 2 else ""
+    code = _enew_token_as_target(token)
+    if code:
+        return code, rest.strip()
+    return "en", text_all
+
+
+def _enew_token_as_target(token: str) -> str:
+    """
+    Return a TARGET_LANG_CHOICES code if ``token`` is an intentional lang
+    specifier; otherwise \"\" (caller treats token as text).
+    """
+    raw = (token or "").strip().lower()
+    if not raw:
+        return ""
+    if raw in _LANG_ALIASES:
+        code = _LANG_ALIASES[raw]
+    elif "-" in raw or "_" in raw:
+        # BCP-47 / locale tag (pt-BR, en-US)
+        primary = raw.replace("_", "-").split("-", 1)[0]
+        primary = "".join(ch for ch in primary if ch.isalpha())
+        code = primary[:2] if len(primary) >= 2 else primary
+    elif len(raw) == 2 and raw.isalpha():
+        code = raw
+    else:
+        # Longer bare words (FRANCE, ESPAÑA…) stay as text — do not slice [:2].
+        return ""
+    if code in Pipeline.TARGET_LANG_CHOICES:
+        return code
+    return ""
 
 
 from .tts_segments import StreamingSegmentFeeder
@@ -112,7 +195,7 @@ class Pipeline:
         self._typed_queue = queue.Queue()
         self.playback_queue = queue.Queue()
         self.stop_event = threading.Event()
-        # Serialize temporary SOURCE/TARGET rebinds (enew PT→EN vs live pair).
+        # Serialize temporary SOURCE/TARGET rebinds (enew PT→LANG vs live pair).
         self._translate_lang_lock = threading.Lock()
 
         self.mic = MicController(device_name=self.input_device_name)
@@ -1148,41 +1231,8 @@ class Pipeline:
         raw = (code or "").strip().lower()
         if not raw:
             return ""
-        # Full names / aliases
-        aliases = {
-            "english": "en",
-            "ingles": "en",
-            "inglês": "en",
-            "portuguese": "pt",
-            "portugues": "pt",
-            "português": "pt",
-            "spanish": "es",
-            "espanol": "es",
-            "español": "es",
-            "french": "fr",
-            "frances": "fr",
-            "français": "fr",
-            "german": "de",
-            "alemao": "de",
-            "alemão": "de",
-            "deutsch": "de",
-            "italian": "it",
-            "italiano": "it",
-            "chinese": "zh",
-            "chines": "zh",
-            "chinês": "zh",
-            "mandarin": "zh",
-            "japanese": "ja",
-            "japones": "ja",
-            "japonês": "ja",
-            "jp": "ja",
-            "cn": "zh",
-            "ger": "de",
-            "deu": "de",
-            "ita": "it",
-        }
-        if raw in aliases:
-            return aliases[raw]
+        if raw in _LANG_ALIASES:
+            return _LANG_ALIASES[raw]
         # BCP-47 → primary subtag
         if "-" in raw or "_" in raw:
             raw = raw.replace("_", "-").split("-", 1)[0]
@@ -2489,8 +2539,8 @@ class Pipeline:
         """
         Queue a high-priority typed translation (``enew``).
 
-        Always intended as Portuguese → English unless callers override.
-        Returns False if text is empty after normalize.
+        Default Portuguese → English; callers may override ``target_lang``
+        (e.g. ``enew ES …`` → PT→ES). Returns False if text is empty after normalize.
         """
         job = TypedTextItem(text, source_lang=source_lang, target_lang=target_lang)
         if not job.text:
@@ -2716,7 +2766,7 @@ class Pipeline:
         t0 = time.perf_counter()
         typed_job = item if isinstance(item, TypedTextItem) else None
         text_only = typed_job is not None or isinstance(item, str)
-        # enew: always PT→EN (independent of system SOURCE/TARGET)
+        # enew: fixed pair (default PT→EN, or PT→LANG from ``enew LANG …``)
         force_src = typed_job.source_lang if typed_job is not None else None
         force_tgt = typed_job.target_lang if typed_job is not None else None
         strip_note = ""
@@ -2814,7 +2864,7 @@ class Pipeline:
             self._interrupt_playback()
 
         # --- Translation (+ optional overlapped TTS) ---
-        # enew (forced lang pair): use non-overlap TTS so we can swap to EN voice
+        # enew (forced lang pair): use non-overlap TTS so we can swap target voice
         # cleanly without racing the overlap worker.
         overlap_tts = (
             self._use_tts_overlap() and sound_on and not (force_src and force_tgt)
@@ -3106,19 +3156,23 @@ class Pipeline:
 
         def _synthesize_chunk_audio(announce=True):
             nonlocal tts_audio, sample_rate, t_tts_start
-            # enew PT→EN: temporarily use an English voice when system TARGET ≠ en
+            # enew forced target: temporarily use a matching voice when system
+            # TARGET differs (PT→ES/FR/EN/… independent of live pair).
             tts_voice_override = None
             prev_voice = None
-            if force_tgt and str(force_tgt).lower().split("-")[0] == "en":
+            if force_tgt:
+                force_primary = str(force_tgt).lower().split("-")[0]
                 sys_tgt = (
                     getattr(self.cfg, "TARGET_LANG", "") or ""
                 ).lower().split("-")[0]
-                if sys_tgt != "en":
+                if force_primary and force_primary != sys_tgt:
                     try:
                         from .synthesize import default_edge_voice_for_lang
 
-                        tts_voice_override = default_edge_voice_for_lang("en")
+                        tts_voice_override = default_edge_voice_for_lang(force_primary)
                     except Exception:
+                        tts_voice_override = None
+                    if not tts_voice_override and force_primary == "en":
                         tts_voice_override = "en-US-AriaNeural"
             if announce:
                 ts_tts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]

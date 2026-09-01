@@ -26,9 +26,8 @@ microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears 
 translation as if it were your mic. Speak **French**, others hear **English**
 (both languages configurable).
 
-**Current release: [v1.2.3](CHANGELOG.md#123---2026-08-31)** — **Interview Coach** (EN + pt-BR
-under LC; providers Grok/Groq/DeepSeek/Claude/Gemini), **`airespond`**, **`[go]`/F6** flush
-STT, parallel Cable|headphones TTS, non-blocking **`[n]`** mute. Full notes:
+**Current release: [v1.2.4](CHANGELOG.md#124---2026-09-01)** — Coach no SQLite + **`l`**
+(histórico no painel coach), **`session-info`/`si`**, **`enew [LANG]`**. Full notes:
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ```text
@@ -499,12 +498,12 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `/text` · `/n` · `/p` | Search in the focused log pane (aliases: `find text`, `s?text`) |
 | `g` | Swap SOURCE ↔ TARGET |
 | `t` / `t EN` | Change TARGET only (codes forced UPPERCASE) |
-| `enew <text>` | Priority typed translation **always PT→EN** (ignores system SOURCE/TARGET; no mic); TTS if sound ON |
+| `enew [LANG] <text>` | Priority typed translation **PT→LANG** (default EN; e.g. `enew ES …`); ignores system SOURCE/TARGET; no mic; TTS if sound ON |
 | `e` / `eN` | Edit last / chunk N (TUI pre-fills the sentence in the command field) |
 | `gg` / `GG` (or `gt` / `gf`) | Go top / go bottom of the **focused** log pane. `GG` is case-sensitive. |
 | `cls` | Clear LC + VOZ + Sistema |
 | `cls1` / `cls2` | Clear only left **LC** / right **VOZ** |
-| `l` / `lo` / `lt` | List session (into matching panes) / source-only / target-only |
+| `l` / `lo` / `lt` | List session (LC + VOZ + Coach EN/pt-BR into matching panes) / source-only / target-only |
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
 | `s` / `n` / `r` / `rN` | Sound, **mic mute** (lowercase **n** only), replay |
 | `N` | **Force soft-listen** (capital **N** only) — yellow borders; VAD accepts low-volume speech; press again for normal VAD |
@@ -519,6 +518,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `lav` | List all edge-tts voices (`edge-tts --list-voices`) into the log |
 | `lv` | List filtered voices (`en-US|en-GB|es-ES|es-MX|fr-FR`) into the log |
 | `ctts <ShortName>` | Change `TTS_VOICE` (one-liner or prompt; no modal) |
+| `session-info` / `si` | List all SQLite sessions (LC/VOZ/Coach counts + DB size) on Sistema panel |
 | `q` | Quit |
 
 ### Faster per-phrase text (sentence split)

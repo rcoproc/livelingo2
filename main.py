@@ -35,7 +35,7 @@ import config as cfg
 from livelingo import db, devices, ui
 from livelingo.groq_transcribe import GroqSTTError, GroqTranscriber
 from livelingo.llm import GROQ_KEY_HELP, LLMError, LLMTranslator
-from livelingo.pipeline import Pipeline
+from livelingo.pipeline import Pipeline, parse_enew_args
 from livelingo.synonyms import SynonymError, build_synonym_lookup
 from livelingo.synthesize import build_synthesizer
 from livelingo.transcribe import Transcriber
@@ -1212,6 +1212,7 @@ def _print_menu(pipeline=None):
         "Session",
         [
             "[pc] Phrase cache (pc …)",
+            "[session-info] All sessions LC/VOZ/Coach + DB size (si)",
             "[v]  Switch session",
             "[m]  Show this menu",
             "[u]  Compact UI (F4)",
@@ -1255,10 +1256,58 @@ def _entry_heard(entry):
 
 def _is_livecaptions_entry(timing) -> bool:
     """True when chunk came from Windows LiveCaptions (inbound strip)."""
-    if not isinstance(timing, dict):
-        return False
-    src = (timing.get("source") or timing.get("origin") or "").strip().lower()
-    return src in ("livecaptions", "lc", "captions")
+    return db.is_livecaptions_timing(timing)
+
+
+def _cmd_session_info():
+    """
+    List all SQLite sessions with LC / VOZ / Coach counts on the Sistema panel
+    as a fixed-width column table (CREATED_AT first; no repeated clock prefix).
+    """
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        rows = db.list_session_stats()
+    except Exception as exc:
+        ui.warn(f"session-info: falha ao ler o banco ({exc})", panel="app")
+        return
+
+    n_sess = len(rows)
+    ui.info(
+        f"SESSION-INFO · {n_sess} sessão(ões) · gerado em {stamp}",
+        panel="app",
+    )
+    if not rows:
+        ui.warn("Nenhuma sessão no banco.", panel="app")
+    else:
+        ui.dim(db.format_session_info_header(), panel="app")
+        ui.dim(db.format_session_info_rule(), panel="app")
+        for row in rows:
+            ui.info(db.format_session_info_row(row), panel="app")
+        ui.dim(db.format_session_info_rule(), panel="app")
+
+    sum_lc = sum(int(r.get("lc") or 0) for r in rows)
+    sum_voz = sum(int(r.get("voz") or 0) for r in rows)
+    sum_coach = sum(int(r.get("coach") or 0) for r in rows)
+    sum_all = sum_lc + sum_voz + sum_coach
+    ui.success(
+        f"{db.format_session_info_totals(sum_lc, sum_voz, sum_coach, sum_all)}"
+        f"  · sessões={n_sess}",
+        panel="app",
+    )
+
+    try:
+        size_b = db.database_file_size_bytes()
+        size_h = db.format_byte_size(size_b)
+        db_path = os.path.abspath(db.DB_PATH)
+    except Exception:
+        size_b = 0
+        size_h = "0 B"
+        db_path = getattr(db, "DB_PATH", "livelingo.db")
+    ui.info(
+        f"DB · {os.path.basename(db_path)} · {size_h} ({size_b} bytes) · {db_path}",
+        panel="app",
+    )
+    ui.raw("", panel="app")
 
 
 def _display_lang_label(code: str) -> str:
@@ -1378,7 +1427,7 @@ def _input_loop(pipeline, synonym_lookup, indicator=None):
       a / aN  -> Copy chunk audio file path to clipboard
       p / pN  -> Open Explorer on chunk audio file/folder
       e       -> Edit the last transcribed chunk
-      enew    -> New translation from typed text (no mic); TTS if sound ON
+      enew    -> New typed translation PT→LANG (default EN; e.g. enew ES …); TTS if sound ON
     """
     while not pipeline.stop_event.is_set():
         try:
@@ -1797,19 +1846,26 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             indicator.set_sound_on(pipeline.is_sound_enabled())
     elif cmd == "enew" or cmd.startswith("enew "):
         # New translation from typed text only (no mic / STT).
+        # Optional TARGET after command: ``enew ES texto`` → PT→ES (default EN).
         # Audio TTS follows current sound mode: ON → synthesize + play; OFF → text
         # (optional background TTS if TTS_SKIP_WHEN_MUTED is false).
         parts = (raw_cmd or "").split(None, 1)
-        text = (parts[1] if len(parts) == 2 else "").strip()
+        payload = (parts[1] if len(parts) == 2 else "").strip()
+        target_lang, text = parse_enew_args(payload)
         if not text:
-            print("Texto a traduzir (enew): ", end="", flush=True)
+            lang_hint = (
+                f" (destino {target_lang.upper()})"
+                if payload and target_lang != "en"
+                else ""
+            )
+            print(f"Texto a traduzir (enew){lang_hint}: ", end="", flush=True)
             try:
                 text = sys.stdin.readline().strip()
             except (KeyboardInterrupt, EOFError):
                 text = ""
         if not text:
             ui.warn(
-                "enew: informe o texto. Uso: enew <texto a traduzir>",
+                "enew: informe o texto. Uso: enew [LANG] <texto a traduzir>",
                 indent=3,
             )
             return
@@ -1818,12 +1874,16 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         if not text:
             ui.warn("enew: texto vazio.", indent=3)
             return
-        # Always Portuguese → English (ignores system SOURCE/TARGET).
+        # Portuguese → LANG (default EN); ignores system SOURCE/TARGET.
         # Priority queue — does not wait behind mic/TTS backlog.
         ok = False
         try:
             if hasattr(pipeline, "enqueue_typed_text"):
-                ok = bool(pipeline.enqueue_typed_text(text, source_lang="pt", target_lang="en"))
+                ok = bool(
+                    pipeline.enqueue_typed_text(
+                        text, source_lang="pt", target_lang=target_lang
+                    )
+                )
             else:
                 pipeline.chunk_queue.put(text)
                 ok = True
@@ -1835,14 +1895,15 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             return
         sound_on = bool(pipeline.is_sound_enabled())
         preview = text if len(text) <= 80 else text[:77] + "…"
+        pair = f"PT→{target_lang.upper()}"
         if sound_on:
             ui.success(
-                f'enew PT→EN (prioridade) — traduz + áudio: "{preview}"',
+                f'enew {pair} (prioridade) — traduz + áudio: "{preview}"',
                 indent=3,
             )
         else:
             ui.info(
-                f'enew PT→EN (prioridade) — só texto (sound OFF; [s] p/ ouvir): '
+                f'enew {pair} (prioridade) — só texto (sound OFF; [s] p/ ouvir): '
                 f'"{preview}"',
                 indent=3,
             )
@@ -2733,8 +2794,19 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.error(f"Error saving share file: {exc}", panel="app")
     elif cmd == "l":
         full_trans = pipeline.get_full_transcript()
-        if not full_trans:
-            ui.warn("Nenhuma frase nesta sessão ainda. Fale no microfone primeiro.")
+        coach_rows = []
+        try:
+            coach_rows = db.load_session_coach_results(
+                getattr(pipeline, "session_id", None)
+            )
+        except Exception:
+            coach_rows = []
+        n_coach = len(coach_rows)
+        if not full_trans and not coach_rows:
+            ui.warn(
+                "Nenhuma frase nesta sessão ainda. "
+                "Fale no microfone / LC, ou aguarde o Coach."
+            )
             return
 
         audio_map = pipeline.get_audio_path_map()
@@ -2752,7 +2824,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         n_voz = len(full_trans) - n_lc
         ui.info(
             f"Historico — {len(full_trans)} frase(s) "
-            f"(LC entrada: {n_lc} · VOZ mic: {n_voz}):"
+            f"(LC entrada: {n_lc} · VOZ mic: {n_voz} · Coach: {n_coach}):"
         )
 
         margin = 3
@@ -3083,6 +3155,47 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.rich(f"{pad}[bold cyan]{e(rule)}[/]", panel="main")
             tot = f"Total VOZ: {n_voz}  ·  sessão {len(full_trans)} (LC+VOZ)"
             ui.rich(f"{pad}[bold cyan]{e(_title_line(tot))}[/]", panel="main")
+
+            # Coach history → panel coach (EN + pt-BR separated, same as live)
+            ui.rich(f"{pad}[bold yellow]{e(rule)}[/]", panel="coach")
+            ui.rich(
+                f"{pad}[bold yellow]"
+                f"{e(_title_line(f'HISTORICO COACH · {n_coach} resposta(s)'))}"
+                f"[/]",
+                panel="coach",
+            )
+            ui.rich(f"{pad}[bold yellow]{e(rule)}[/]", panel="coach")
+            if not coach_rows:
+                ui.dim(f"{pad}(nenhuma resposta do Coach nesta sessão)", panel="coach")
+            else:
+                for row in coach_rows:
+                    ui.coach_block(
+                        row.get("coach_num"),
+                        row.get("question") or "",
+                        row.get("spoken_en") or "",
+                        row.get("software_engineer_en") or [],
+                        row.get("architect_en") or [],
+                        tradeoffs=row.get("tradeoffs_en") or "",
+                        spoken_pt=row.get("spoken_pt") or "",
+                        software_engineer_pt=row.get("software_engineer_pt") or [],
+                        architect_pt=row.get("architect_pt") or [],
+                        tradeoffs_pt=row.get("tradeoffs_pt") or "",
+                        provider=row.get("provider") or "",
+                    )
+                    recorded = (
+                        ui.format_recorded_stamp(row.get("created_at") or "")
+                        if row.get("created_at")
+                        else ""
+                    )
+                    if recorded:
+                        ui.dim(f"{pad}  gravado: {recorded}", panel="coach")
+            ui.rich(f"{pad}[bold yellow]{e(rule)}[/]", panel="coach")
+            ui.rich(
+                f"{pad}[bold yellow]"
+                f"{e(_title_line(f'Total COACH: {n_coach}'))}"
+                f"[/]",
+                panel="coach",
+            )
             return
 
         # ------------------------------------------------------------------ #
@@ -3270,10 +3383,49 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
 
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
         _print_plain(
-            f"Total: {len(full_trans)}  ·  LC◄ {n_lc}  ·  VOZ► {n_voz}",
+            f"Total: {len(full_trans)}  ·  LC◄ {n_lc}  ·  VOZ► {n_voz}"
+            f"  ·  Coach {n_coach}",
             Fore.CYAN + Style.BRIGHT,
         )
         print(pad + Fore.CYAN + rule + Style.RESET_ALL)
+        print()
+
+        # Coach history (EN + pt-BR) after dual-rail LC/VOZ
+        print(pad + Fore.YELLOW + rule + Style.RESET_ALL)
+        _print_plain(
+            _title_line(f"HISTORICO COACH · {n_coach} resposta(s)"),
+            Fore.YELLOW + Style.BRIGHT,
+        )
+        print(pad + Fore.YELLOW + rule + Style.RESET_ALL)
+        if not coach_rows:
+            print(pad + Style.DIM + "(nenhuma resposta do Coach nesta sessão)" + Style.RESET_ALL)
+        else:
+            for row in coach_rows:
+                ui.coach_block(
+                    row.get("coach_num"),
+                    row.get("question") or "",
+                    row.get("spoken_en") or "",
+                    row.get("software_engineer_en") or [],
+                    row.get("architect_en") or [],
+                    tradeoffs=row.get("tradeoffs_en") or "",
+                    spoken_pt=row.get("spoken_pt") or "",
+                    software_engineer_pt=row.get("software_engineer_pt") or [],
+                    architect_pt=row.get("architect_pt") or [],
+                    tradeoffs_pt=row.get("tradeoffs_pt") or "",
+                    provider=row.get("provider") or "",
+                )
+                recorded = (
+                    ui.format_recorded_stamp(row.get("created_at") or "")
+                    if row.get("created_at")
+                    else ""
+                )
+                if recorded:
+                    print(pad + Style.DIM + f"  gravado: {recorded}" + Style.RESET_ALL)
+        print(pad + Fore.YELLOW + rule + Style.RESET_ALL)
+        _print_plain(
+            _title_line(f"Total COACH: {n_coach}"),
+            Fore.YELLOW + Style.BRIGHT,
+        )
         print()
     elif cmd == "a" or (cmd.startswith("a") and len(cmd) > 1 and cmd[1:].isdigit()):
         # Copy audio file path to clipboard (last or aN).
@@ -3606,6 +3758,8 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             text = " ".join((translated or "").split()).strip()
             if text:
                 ui.raw(text)
+    elif cmd in ("session-info", "sessioninfo", "si"):
+        _cmd_session_info()
     elif cmd == "v":
         print(
             "Are you sure you want to switch or restart the session? (y/n): ",
@@ -4119,7 +4273,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             f"r/rN, rs/rsN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
             f"lc (Live Captions), cam (webcam lip-sync), a/aN (copy audio path), "
             f"p/pN (open audio folder), "
-            f"n (mic), b (bypass voice), x, o, c, l, lo, lt, ld, lav, lv, ctts, "
+            f"n (mic), b (bypass voice), x, o, c, l, lo, lt, session-info, ld, lav, lv, ctts, "
             f"co/coN, codN, cls/cls1/cls2, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
             indent=3,
         )
@@ -4809,7 +4963,9 @@ def main():
         try:
             from livelingo.interview_coach import build_interview_coach
 
-            pipeline.interview_coach = build_interview_coach(cfg)
+            pipeline.interview_coach = build_interview_coach(
+                cfg, session_id=session_id
+            )
             if getattr(cfg, "INTERVIEW_COACH_ENABLED", False):
                 _log_info(
                     "Interview Coach ON — perguntas LC → painel Coach (EN). "

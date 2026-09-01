@@ -11,7 +11,9 @@
 
 **LiveLingo2** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
 
-**Release atual: [v1.2.3](CHANGELOG.md#123---2026-08-31)** — **Interview Coach** (EN + pt-BR sob o LC; providers Grok/Groq/DeepSeek/Claude/Gemini), **`airespond`**, **`[go]`/F6** flush STT, Cable|fones em paralelo, mute **`[n]`** sem modal. Completo: [`CHANGELOG.md`](CHANGELOG.md).
+**Release atual: [v1.2.4](CHANGELOG.md#124---2026-09-01)** — Coach no SQLite + **`l`**
+(histórico no painel coach), **`session-info`/`si`**, **`enew [LANG]`**. Completo:
+[`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
   <img src="docs/screenshots/live_lingo1.png" alt="LiveLingo2 TUI — layout clássico com menu de comandos e status de áudio" width="900" />
@@ -144,7 +146,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 |---------|------|
 | `r` / `rN` | Repetir áudio do último chunk ou do chunk N (gera TTS sob demanda se faltar WAV) |
 | `e` / `eN` | Editar e retraduzir frase (TUI: campo já vem com o texto da frase) |
-| `enew <texto>` | Tradução prioritária **sempre PT→EN** (ignora SOURCE/TARGET; sem mic); TTS se som ON |
+| `enew [LANG] <texto>` | Tradução prioritária **PT→LANG** (default EN; ex.: `enew ES …`); ignora SOURCE/TARGET; sem mic; TTS se som ON |
 | `d` / `dN` | Deletar chunk (com confirmação) |
 | `f` / `fN` | Favoritar frase |
 | `F` | Listar favoritos (modal) |
@@ -165,7 +167,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `sub` / `sub on` / `sub off` / `cam sub` | **Legenda burn-in TARGET** no rodapé da vcam (pixels — não é CC do Teams). Padrão OFF; fica até a próxima tradução ou `sub off` |
 | `x` | Interromper leitura TTS em andamento |
 | `o` | Buscar sinônimos / significado de palavra |
-| `l` | Listar mensagens da sessão (timing, timestamp, comentários `#id`) |
+| `l` | Listar mensagens da sessão (LC + VOZ + Coach EN/pt-BR; timing, timestamp, comentários `#id`) |
 | `lo` / `lt` | Listar só source (ouvido) / só target (traduzido) |
 | `co` / `coN` / `coN texto` | Comentar o último chunk ou o chunk N (SQLite; aparece no `l`) |
 | `codN` | Apagar comentário pela PK `#N` (sem confirmação) |
@@ -178,6 +180,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `lav` | Listar todas as vozes edge-tts (`edge-tts --list-voices`) no log |
 | `lv` | Listar vozes filtradas (`en-US|en-GB|es-ES|es-MX|fr-FR`) no log |
 | `ctts <ShortName>` | Alterar `TTS_VOICE` (one-liner ou prompt; **sem** popup modal) |
+| `session-info` / `si` | Listar todas as sessões do SQLite (LC/VOZ/Coach + tamanho do DB) no painel Sistema |
 | `v` | Trocar ou reiniciar sessão |
 | `m` | Mostrar menu de comandos |
 | `q` | Sair da aplicação |

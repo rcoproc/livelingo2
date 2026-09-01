@@ -238,9 +238,16 @@ class CoachResult:
 class InterviewCoach:
     """Orchestrates question detection + async LLM coaching."""
 
-    def __init__(self, config, llm: Optional[InterviewLLM] = None):
+    def __init__(
+        self,
+        config,
+        llm: Optional[InterviewLLM] = None,
+        *,
+        session_id: str | None = None,
+    ):
         self.cfg = config
         self._llm = llm
+        self.session_id = (session_id or "").strip() or None
         self._lock = threading.Lock()
         self._enabled = bool(getattr(config, "INTERVIEW_COACH_ENABLED", False))
         self._seen: set[str] = set()
@@ -258,6 +265,10 @@ class InterviewCoach:
         self._context_path: Optional[Path] = None
         self._context_mtime: float = 0.0
         self.reload_context(quiet=True)
+
+    def set_session_id(self, session_id: str | None) -> None:
+        """Bind (or rebind) the active LiveLingo session for SQLite persistence."""
+        self.session_id = (session_id or "").strip() or None
 
     @property
     def enabled(self) -> bool:
@@ -588,6 +599,9 @@ class InterviewCoach:
             self._last = result
             self._busy = False
 
+        if not err:
+            self._persist_result(result)
+
         try:
             if err:
                 ui.warn(f"[Coach {n}] {err}", panel="coach")
@@ -612,6 +626,44 @@ class InterviewCoach:
             except Exception:
                 pass
 
+    def _persist_result(self, result: CoachResult) -> None:
+        """Write successful coach answer to SQLite (best-effort)."""
+        sid = self.session_id
+        if not sid or not result:
+            return
+        if (result.error or "").strip():
+            return
+        try:
+            from . import db
 
-def build_interview_coach(config) -> InterviewCoach:
-    return InterviewCoach(config)
+            db.insert_coach_result(
+                sid,
+                result.n,
+                result.question,
+                spoken_en=result.spoken,
+                software_engineer_en=result.software_engineer,
+                architect_en=result.architect,
+                tradeoffs_en=result.tradeoffs,
+                spoken_pt=result.spoken_pt,
+                software_engineer_pt=result.software_engineer_pt,
+                architect_pt=result.architect_pt,
+                tradeoffs_pt=result.tradeoffs_pt,
+                provider=result.provider,
+                error="",
+            )
+        except Exception:
+            try:
+                from . import ui
+
+                ui.warn(
+                    f"[Coach {result.n}] falha ao gravar no banco",
+                    panel="app",
+                )
+            except Exception:
+                pass
+
+
+def build_interview_coach(
+    config, *, session_id: str | None = None
+) -> InterviewCoach:
+    return InterviewCoach(config, session_id=session_id)

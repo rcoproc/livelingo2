@@ -155,6 +155,12 @@ _COMMANDS: list[dict[str, str]] = [
     },
     {"id": "pc_undo", "group": "session", "token": "pc undo", "sort": "pc-undo"},
     {"id": "q", "group": "session", "token": "q", "sort": "q"},
+    {
+        "id": "session_info",
+        "group": "session",
+        "token": "session-info",
+        "sort": "session-info",
+    },
     {"id": "u", "group": "session", "token": "u", "sort": "u"},
     {"id": "v", "group": "session", "token": "v", "sort": "v"},
     {"id": "view", "group": "session", "token": "view", "sort": "view"},
@@ -372,7 +378,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Edit chunk N",
         "desc_eN": "Edit **chunk N** the same way as `e`. Example: `e4`.",
         "title_enew": "New text (no mic)",
-        "desc_enew": "Priority typed translation **always Portuguese → English** (ignores system SOURCE/TARGET; no mic/STT). Example: `enew Olá mundo`. TTS follows sound mode (`s`) with an English voice.",
+        "desc_enew": "Priority typed translation **Portuguese → LANG** (ignores system SOURCE/TARGET; no mic/STT). Optional target after the command: `enew Olá` → PT→EN (default); `enew ES Bom dia` → PT→ES; also FR/DE/IT/ZH/JA. TTS follows sound mode (`s`) with a matching voice.",
         "title_f": "Favorite last",
         "desc_f": "Mark the **last** chunk as a favorite.",
         "title_fN": "Favorite chunk N",
@@ -386,9 +392,10 @@ _I18N: dict[str, dict[str, str]] = {
         "title_l": "List messages",
         "desc_l": (
             "List all session phrases (chronological). **Split panes:** "
-            "LiveCaptions → **left** log (magenta), LiveLingo VOZ → **right** log (yellow). "
+            "LiveCaptions → **left** log (magenta), LiveLingo VOZ → **right** log (yellow), "
+            "Interview Coach → **coach** panel (EN + pt-BR). "
             "Drag the sash to resize; Expandir/Restaurar maximizes a side. "
-            "Header shows LC vs VOZ counts. Timing, stamp, audio path, comments (`#id`)."
+            "Header shows LC vs VOZ vs Coach counts. Timing, stamp, audio path, comments (`#id`)."
         ),
         "title_lc": "Live Captions pause/resume",
         "desc_lc": (
@@ -520,6 +527,13 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_q": "Quit",
         "desc_q": "Stop the session and exit. The session id is printed so you can resume later with `livelingo <id>`.",
+        "title_session_info": "Session DB stats",
+        "desc_session_info": (
+            "List **all** SQLite sessions on the **Sistema** panel with per-session "
+            "counts of **LC**, **VOZ**, and **Coach**, plus grand totals and "
+            "`livelingo.db` file size (bytes + human). Each line includes date/time. "
+            "Aliases: `sessioninfo`, `si`."
+        ),
         "title_u": "Compact UI",
         "desc_u": "Toggle compact TUI: hide the multi-line command menu; keep the command input. Same as **F4**. Aliases: `ui`, `compact`.",
         "title_v": "Switch session",
@@ -736,7 +750,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Editar chunk N",
         "desc_eN": "Edita o **chunk N** como o `e`. Exemplo: `e4`.",
         "title_enew": "Novo texto (sem mic)",
-        "desc_enew": "Tradução prioritária **sempre português → inglês** (ignora SOURCE/TARGET do sistema; sem mic/STT). Exemplo: `enew Olá mundo`. O TTS segue o som (`s`) com voz em inglês.",
+        "desc_enew": "Tradução prioritária **português → LANG** (ignora SOURCE/TARGET do sistema; sem mic/STT). Destino opcional: `enew Olá` → PT→EN (default); `enew ES Bom dia` → PT→ES; também FR/DE/IT/ZH/JA. O TTS segue o som (`s`) com voz do destino.",
         "title_f": "Favoritar último",
         "desc_f": "Marca o **último** chunk como favorito.",
         "title_fN": "Favoritar chunk N",
@@ -750,9 +764,10 @@ _I18N: dict[str, dict[str, str]] = {
         "title_l": "Listar mensagens",
         "desc_l": (
             "Lista todas as frases da sessão (cronológico). **Painéis separados:** "
-            "LiveCaptions → log **esquerdo** (magenta), LiveLingo VOZ → log **direito** (amarelo). "
+            "LiveCaptions → log **esquerdo** (magenta), LiveLingo VOZ → log **direito** (amarelo), "
+            "Interview Coach → painel **coach** (EN + pt-BR). "
             "Arraste a barra ║ para redimensionar; Expandir/Restaurar maximiza um lado. "
-            "Cabeçalho com contagem LC vs VOZ. Timing, data, path de áudio, comentários (`#id`)."
+            "Cabeçalho com contagem LC vs VOZ vs Coach. Timing, data, path de áudio, comentários (`#id`)."
         ),
         "title_lc": "Live Captions pausar/retomar",
         "desc_lc": (
@@ -882,6 +897,13 @@ _I18N: dict[str, dict[str, str]] = {
         ),
         "title_q": "Sair",
         "desc_q": "Encerra a sessão e sai. O id da sessão é impresso para retomar depois com `livelingo <id>`.",
+        "title_session_info": "Estatísticas das sessões (DB)",
+        "desc_session_info": (
+            "Lista **todas** as sessões do SQLite no painel **Sistema**, com totais "
+            "de **LC**, **VOZ** e **Coach** por sessão, totais gerais e tamanho do "
+            "arquivo `livelingo.db` (bytes + legível). Cada linha traz data/hora. "
+            "Aliases: `sessioninfo`, `si`."
+        ),
         "title_u": "UI compacta",
         "desc_u": "Alterna TUI compacta: esconde o menu multilinha; mantém a entrada de comando. Igual a **F4**. Aliases: `ui`, `compact`.",
         "title_v": "Trocar sessão",
@@ -987,7 +1009,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Editar chunk N",
         "desc_eN": "Edita el **chunk N**. Ejemplo: `e4`.",
         "title_enew": "Texto nuevo (sin mic)",
-        "desc_enew": "Traduce solo texto escrito, sin micrófono. Ejemplo: `enew Hola`. TTS según `s`.",
+        "desc_enew": "Traduce texto escrito PT→LANG (sin mic). Opcional: `enew ES …`, `enew FR …` (default EN). TTS según `s`.",
         "title_f": "Favorito último",
         "desc_f": "Marca el **último** chunk como favorito.",
         "title_fN": "Favorito chunk N",
@@ -1000,8 +1022,8 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_GG": "Salta al final y reactiva auto-scroll (`GG` / `gf`).",
         "title_l": "Listar mensajes",
         "desc_l": (
-            "Lista frases (cronológico). **Dos raíles:** LiveCaptions izquierda (magenta), "
-            "VOZ mic derecha (amarillo). Timing, audio y comentarios."
+            "Lista frases (cronológico). **Paneles:** LiveCaptions izquierda (magenta), "
+            "VOZ mic derecha (amarillo), Coach (EN + pt-BR). Timing, audio y comentarios."
         ),
         "title_lc": "Live Captions pausar/reanudar",
         "desc_lc": (
@@ -1118,7 +1140,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Éditer le chunk N",
         "desc_eN": "Édite le **chunk N**. Exemple : `e4`.",
         "title_enew": "Nouveau texte (sans micro)",
-        "desc_enew": "Traduit un texte saisi, sans micro. Exemple : `enew Bonjour`. TTS selon `s`.",
+        "desc_enew": "Traduit un texte saisi PT→LANG (sans micro). Optionnel : `enew ES …`, `enew FR …` (défaut EN). TTS selon `s`.",
         "title_f": "Favori dernier",
         "desc_f": "Marque le **dernier** chunk en favori.",
         "title_fN": "Favori chunk N",
@@ -1230,7 +1252,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Chunk N bearbeiten",
         "desc_eN": "Bearbeitet **Chunk N**. Beispiel: `e4`.",
         "title_enew": "Neuer Text (ohne Mikro)",
-        "desc_enew": "Übersetzung nur aus getipptem Text. Beispiel: `enew Hallo`. TTS folgt `s`.",
+        "desc_enew": "Übersetzung getippter Text PT→LANG (ohne Mikro). Optional: `enew ES …`, `enew FR …` (Standard EN). TTS folgt `s`.",
         "title_f": "Favorit letzter",
         "desc_f": "Markiert den **letzten** Chunk als Favorit.",
         "title_fN": "Favorit Chunk N",
@@ -1342,7 +1364,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Modifica chunk N",
         "desc_eN": "Modifica il **chunk N**. Esempio: `e4`.",
         "title_enew": "Nuovo testo (senza mic)",
-        "desc_enew": "Traduce solo testo digitato. Esempio: `enew Ciao`. TTS segue `s`.",
+        "desc_enew": "Traduce testo digitato PT→LANG (senza mic). Opzionale: `enew ES …`, `enew FR …` (default EN). TTS segue `s`.",
         "title_f": "Preferito ultimo",
         "desc_f": "Segna l'**ultimo** chunk come preferito.",
         "title_fN": "Preferito chunk N",

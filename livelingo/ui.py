@@ -965,7 +965,7 @@ def _emit_voz_chunk_block(
                           EN [CACHE]: tr…     (TARGET)
 
     Order always follows system SOURCE → TARGET (heard then translated),
-    unless ``source_lang`` / ``target_lang`` override (e.g. ``enew`` PT→EN).
+    unless ``source_lang`` / ``target_lang`` override (e.g. ``enew`` PT→LANG).
     from_cache: True=CACHE (magenta), False=LIVE (cyan), None=no badge.
 
     Always ends with a blank line (and optional blank before) so the last
@@ -1232,7 +1232,7 @@ def chunk_text_preview(
         <right> [Chunk N] BR: heard…
                           EN [CACHE]: translated…
     Blank line comes after audio meta (see chunk_timings).
-    Optional source_lang/target_lang override labels (``enew`` always PT→EN).
+    Optional source_lang/target_lang override labels (``enew`` PT→LANG).
     """
     _emit_voz_chunk_block(
         n,
