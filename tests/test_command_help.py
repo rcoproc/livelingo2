@@ -66,6 +66,21 @@ def test_build_commands_markdown_includes_coach_providers():
     assert "provider" in md_pt.lower() or "gemini" in md_pt.lower()
 
 
+def test_build_commands_markdown_includes_interview_preset():
+    """interview / iv: sound off + cam off + lc on + coach on + hide pane."""
+    md_en = build_commands_markdown("en")
+    assert "`[interview]`" in md_en or "[interview]" in md_en
+    assert "airespond" in md_en.lower()
+    assert "view coach" in md_en.lower()
+    assert "cam off" in md_en.lower() or "coach on" in md_en.lower()
+
+    md_pt = build_commands_markdown("pt-BR")
+    assert "interview" in md_pt.lower()
+    assert "airespond" in md_pt.lower()
+    assert "view coach" in md_pt.lower()
+    assert "cam off" in md_pt.lower() or "coach on" in md_pt.lower() or "som" in md_pt.lower()
+
+
 def test_build_commands_markdown_includes_view_viewer():
     """v1.2.3: detached panel viewers (view lc|coach|voz) + copy/export."""
     md_en = build_commands_markdown("en")

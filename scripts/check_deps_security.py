@@ -38,6 +38,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+
+def _configure_stdio_utf8() -> None:
+    """Avoid UnicodeEncodeError on Windows cp1252 consoles (box-drawing, ✓/✗)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_configure_stdio_utf8()
+
 # ---------------------------------------------------------------------------
 # Paths / colors
 # ---------------------------------------------------------------------------
@@ -72,11 +86,15 @@ KNOWN_FALSE_POSITIVES: dict[str, str] = {
     ),
 }
 
-# Minimum versions required for known CVEs that affect LiveLingo direct deps.
+# Minimum versions required for known CVEs that affect LiveLingo direct deps
+# (and critical transitive / toolchain packages kept in --project-only scans).
 SECURITY_FLOORS: dict[str, str] = {
     "python-dotenv": "1.2.2",  # CVE-2026-28684
     "requests": "2.33.0",  # CVE-2026-25645
     "urllib3": "2.7.0",  # decompress/DoS chain CVEs
+    "aiohttp": "3.14.3",  # CVE-2026-69244 / 69243 / 59881 (via edge-tts)
+    "nltk": "3.10.2",  # CVE-2026-62383
+    "pip": "26.2",  # CVE-2026-13346 (doubly-encoded package URLs)
 }
 
 

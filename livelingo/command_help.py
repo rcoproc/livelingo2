@@ -51,6 +51,12 @@ _COMMANDS: list[dict[str, str]] = [
         "sort": "coach-provider",
     },
     {"id": "airespond", "group": "audio", "token": "airespond", "sort": "airespond"},
+    {
+        "id": "interview",
+        "group": "session",
+        "token": "interview",
+        "sort": "interview",
+    },
     # --- Idiom / language ---
     {"id": "g", "group": "idiom", "token": "g", "sort": "g"},
     {"id": "o", "group": "idiom", "token": "o", "sort": "o"},
@@ -286,6 +292,12 @@ _I18N: dict[str, dict[str, str]] = {
             "Interview Coach answer (**Spoken always English** + pt-BR mirror). Example: "
             "`airespond Me fale sobre microsserviços no padrão SAGA`. "
             "Alias: `air`. Auto-enables Coach and shows the Coach pane."
+        ),
+        "title_interview": "Interview preset",
+        "desc_interview": (
+            "One-shot setup for interviews: **sound OFF** (`s`), **cam off**, **lc on**, "
+            "**coach on**, then **hides** the Coach pane in the TUI (Coach stays ON). "
+            "VOZ log reminds: `airespond` + `python main.py view coach`. Alias: `iv`."
         ),
         "title_f7": "Coach force (F7)",
         "desc_f7": "Force Interview Coach on the last stable LC caption (same as `coach force`).",
@@ -661,6 +673,12 @@ _I18N: dict[str, dict[str, str]] = {
             "resposta do Interview Coach (**Spoken sempre em inglês** + espelho pt-BR). Exemplo: "
             "`airespond Me fale sobre microsserviços no padrão SAGA`. "
             "Alias: `air`. Liga o Coach e mostra o painel."
+        ),
+        "title_interview": "Preset de entrevista",
+        "desc_interview": (
+            "Atalho para entrevista: **som OFF** (`s`), **cam off**, **lc on**, **coach on**, "
+            "depois **oculta** o painel Coach na TUI (Coach continua ON). "
+            "No log VOZ: `airespond` + `python main.py view coach`. Alias: `iv`."
         ),
         "title_f7": "Coach force (F7)",
         "desc_f7": "Força o Interview Coach no último LC estável (igual a `coach force`).",

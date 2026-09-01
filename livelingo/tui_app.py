@@ -5064,12 +5064,12 @@ class LiveLingoApp(App):
                 pass
         except Exception:
             pass
-        # Keep pane visibility aligned with enabled (unless explicitly set)
+        # Hide pane when Coach is OFF. Do **not** force-show when ON —
+        # `coach on` / startup show explicitly; `interview` may hide the pane
+        # while Coach stays enabled (use `view coach` / Restaurar / coach on).
         try:
-            want = enabled
-            cur = getattr(self, "_coach_panel_visible", None)
-            if cur is None or bool(cur) != bool(want):
-                self.set_coach_panel_visible(want)
+            if not enabled and bool(getattr(self, "_coach_panel_visible", False)):
+                self.set_coach_panel_visible(False)
         except Exception:
             pass
 

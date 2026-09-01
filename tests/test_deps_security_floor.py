@@ -20,6 +20,9 @@ SECURITY_FLOORS = {
     "python-dotenv": "1.2.2",  # CVE-2026-28684
     "requests": "2.33.0",  # CVE-2026-25645
     "urllib3": "2.7.0",  # decompress / DoS advisories
+    "aiohttp": "3.14.3",  # CVE-2026-69244 / 69243 / 59881
+    "nltk": "3.10.2",  # CVE-2026-62383
+    "pip": "26.2",  # CVE-2026-13346
 }
 
 
@@ -50,10 +53,15 @@ def test_requirements_declare_security_floors():
     assert "python-dotenv" in text
     assert "requests" in text
     assert "urllib3" in text
+    assert "aiohttp" in text
+    assert "nltk" in text
     # Floor markers present so future edits don't silently drop them
     assert "1.2.2" in text or ">=1.2.2" in text
     assert "2.33" in text or ">=2.33" in text
     assert "2.7" in text or ">=2.7" in text
+    assert "3.14.3" in text or ">=3.14.3" in text
+    assert "3.10.2" in text or ">=3.10.2" in text
+    assert "26.2" in text  # pip floor documented in install comment
 
 
 def test_dotenv_load_api_still_works(tmp_path, monkeypatch):

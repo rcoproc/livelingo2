@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+### Added
+
+- **`interview`** (`iv`) — preset de entrevista: **som OFF**, **cam off**, **lc on**,
+  **coach on**, **oculta o painel Coach** na TUI (Coach continua ON); no log VOZ:
+  `Use comando airespond de simulação para coach!` e
+  `Use comando > python main.py view coach`.
+
+### Security
+
+- Bumped **`aiohttp` ≥ 3.14.3** (CVE-2026-69244 / 69243 / 59881; via `edge-tts`).
+- Bumped **`nltk` ≥ 3.10.2** (CVE-2026-62383 symlink file read).
+- Toolchain floor **`pip` ≥ 26.2** (CVE-2026-13346 doubly-encoded index URLs).
+- `SECURITY_FLOORS` / README tables updated (`check_deps_security.py`, tests).
+
 ## [1.2.4] - 2026-09-01
 
 Tag: [`v1.2.4`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.4).

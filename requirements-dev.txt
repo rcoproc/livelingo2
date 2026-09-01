@@ -1,7 +1,9 @@
 # Dev / CI test dependencies (not required to run LiveLingo)
+#   python -m pip install -U "pip>=26.2"   # CVE-2026-13346
 #   pip install -r requirements-dev.txt
 #   bash scripts/run_checks.sh
 -r requirements.txt
+pip>=26.2
 pytest>=8.0,<9
 pip-audit>=2.7
 ruff>=0.8.0

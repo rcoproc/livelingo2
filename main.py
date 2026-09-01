@@ -1213,6 +1213,7 @@ def _print_menu(pipeline=None):
         [
             "[pc] Phrase cache (pc …)",
             "[session-info] All sessions LC/VOZ/Coach + DB size (si)",
+            "[interview] som OFF · cam OFF · LC+Coach ON · painel oculto (iv)",
             "[v]  Switch session",
             "[m]  Show this menu",
             "[u]  Compact UI (F4)",
@@ -1257,6 +1258,74 @@ def _entry_heard(entry):
 def _is_livecaptions_entry(timing) -> bool:
     """True when chunk came from Windows LiveCaptions (inbound strip)."""
     return db.is_livecaptions_timing(timing)
+
+
+def _cmd_interview(pipeline, synonym_lookup, indicator=None):
+    """
+    Interview preset: sound OFF, cam off, LC on, Coach on, hide Coach pane.
+
+    Coach stays enabled (answers still generated); the in-TUI Coach pane is
+    hidden so LC uses the column — follow along with ``view coach``.
+    Prints VOZ reminders for ``airespond`` and the detached viewer CLI.
+    """
+    # 1) Sound OFF — force off (do not toggle like bare [s])
+    was_sound_on = bool(pipeline.is_sound_enabled())
+    pipeline.set_sound_enabled(False)
+    if indicator is not None and hasattr(indicator, "set_sound_on"):
+        try:
+            if hasattr(indicator, "call_from_thread"):
+                indicator.call_from_thread(indicator.set_sound_on, False)
+            else:
+                indicator.set_sound_on(False)
+        except Exception:
+            pass
+    if was_sound_on:
+        ui.warn(
+            "Sound OFF — só texto (TTS omitido se TTS_SKIP_WHEN_MUTED). "
+            "Pressione [s] para ouvir de novo.",
+            indent=3,
+            panel="app",
+        )
+    else:
+        ui.info("Sound já OFF.", indent=3, panel="app")
+
+    # 2–4) Reuse existing handlers for consistent feedback / panel sync
+    _dispatch_command(pipeline, synonym_lookup, "cam off", "cam off", indicator)
+    _dispatch_command(pipeline, synonym_lookup, "lc on", "lc on", indicator)
+    _dispatch_command(pipeline, synonym_lookup, "coach on", "coach on", indicator)
+
+    # 5) Hide Coach pane in TUI (Coach API stays ON — use view coach)
+    if indicator is not None and hasattr(indicator, "set_coach_panel_visible"):
+        try:
+            if hasattr(indicator, "call_from_thread"):
+                indicator.call_from_thread(indicator.set_coach_panel_visible, False)
+            else:
+                indicator.set_coach_panel_visible(False)
+        except Exception:
+            pass
+        ui.info(
+            "Painel Coach oculto na TUI (Coach continua ON). "
+            "Ver: python main.py view coach · ou coach on para mostrar de novo.",
+            indent=3,
+            panel="app",
+        )
+
+    ui.success(
+        "Modo interview: som OFF · cam OFF · LC ON · Coach ON · painel oculto",
+        indent=3,
+        panel="app",
+    )
+    # VOZ / log da tradução
+    ui.info(
+        "Use comando airespond de simulação para coach!",
+        indent=3,
+        panel="main",
+    )
+    ui.info(
+        "Use comando > python main.py view coach",
+        indent=3,
+        panel="main",
+    )
 
 
 def _cmd_session_info():
@@ -2415,6 +2484,9 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.success(msg, panel="app")
         else:
             ui.warn(msg, panel="app")
+    elif cmd in ("interview", "iv"):
+        # Preset: s(off) + cam off + lc on + coach on + hint on VOZ log
+        _cmd_interview(pipeline, synonym_lookup, indicator)
     elif cmd == "airespond" or cmd.startswith("airespond ") or cmd == "air" or cmd.startswith(
         "air "
     ):
@@ -4273,7 +4345,8 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             f"r/rN, rs/rsN, e/eN, enew, d/dN, f/fN, F, s, g (swap), t (TARGET), "
             f"lc (Live Captions), cam (webcam lip-sync), a/aN (copy audio path), "
             f"p/pN (open audio folder), "
-            f"n (mic), b (bypass voice), x, o, c, l, lo, lt, session-info, ld, lav, lv, ctts, "
+            f"n (mic), b (bypass voice), x, o, c, l, lo, lt, session-info, interview, "
+            f"ld, lav, lv, ctts, "
             f"co/coN, codN, cls/cls1/cls2, gg/gt (top), GG/gf (bottom), u (compact UI), v, m, q.",
             indent=3,
         )

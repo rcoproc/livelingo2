@@ -119,6 +119,9 @@ Python deps declared in [`requirements.txt`](requirements.txt).
 | `python-dotenv` | **≥ 1.2.2** | CVE-2026-28684 (symlink follow in `set_key` / `unset_key`) |
 | `requests` | **≥ 2.33.0** | CVE-2026-25645 (predictable temp path in zip extract helper) |
 | `urllib3` | **≥ 2.7.0** | Transitive floor for known decompress / DoS advisories |
+| `aiohttp` | **≥ 3.14.3** | CVE-2026-69244 / 69243 / 59881 (via `edge-tts`) |
+| `nltk` | **≥ 3.10.2** | CVE-2026-62383 (symlink file read in corpus reader) |
+| `pip` | **≥ 26.2** | CVE-2026-13346 (doubly-encoded package URLs from indexes) |
 
 `deep-translator==1.11.4` is the latest legitimate release. Advisory
 **PYSEC-2022-252** is a *historical* PyPI account-takeover report with **no

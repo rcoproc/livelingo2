@@ -523,6 +523,9 @@ para as deps Python em [`requirements.txt`](requirements.txt).
 | `python-dotenv` | **≥ 1.2.2** | CVE-2026-28684 (symlink em `set_key` / `unset_key`) |
 | `requests` | **≥ 2.33.0** | CVE-2026-25645 (caminho temporário previsível na extração zip) |
 | `urllib3` | **≥ 2.7.0** | Piso transitivo para advisories de decompress / DoS |
+| `aiohttp` | **≥ 3.14.3** | CVE-2026-69244 / 69243 / 59881 (via `edge-tts`) |
+| `nltk` | **≥ 3.10.2** | CVE-2026-62383 (leitura via symlink no corpus reader) |
+| `pip` | **≥ 26.2** | CVE-2026-13346 (URLs de pacote duplamente encoded no index) |
 
 `deep-translator==1.11.4` é a última release legítima. O advisory
 **PYSEC-2022-252** é *histórico* (tomada de conta no PyPI) e **não tem versão
@@ -1001,8 +1004,8 @@ Com GPU NVIDIA + CUDA/cuDNN: `WHISPER_DEVICE=cuda` e `WHISPER_COMPUTE_TYPE=float
 ```text
 faster-whisper, deep-translator, edge-tts, piper-tts, onnxruntime,
 sounddevice, soundfile, numpy, python-dotenv (≥1.2.2), colorama,
-requests (≥2.33), urllib3 (≥2.7), nltk (sinônimos WordNet),
-pycaw + comtypes (Windows, mute [n])
+requests (≥2.33), urllib3 (≥2.7), aiohttp (≥3.14.3),
+nltk (≥3.10.2, sinônimos WordNet), pycaw + comtypes (Windows, mute [n])
 ```
 
 Opcional webcam (v1.1+): `opencv-python`, `mediapipe`, `pyvirtualcam` via `requirements-webcam.txt`  
