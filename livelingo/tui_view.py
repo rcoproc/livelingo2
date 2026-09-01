@@ -11,6 +11,9 @@ Connects to the host log bus started by the main LiveLingo TUI:
 Copy: mouse-select + Ctrl+C (selection) · Ctrl+Shift+C / ``a`` / ``copy`` (entire log)
 Export: ``e`` / Ctrl+S / ``export`` → ``YYYY-MM-DD_livelingo-view-<panel>.md``
 Search (same as main TUI): /texto · /n · /p · aliases find/search/s?
+
+Coach viewer extras: Spoken EN teleprompter (WPM timed) — Space start/pause,
+``r`` restart, Esc stop. Speed: ``COACH_FOLLOW_WPM`` in ``.env``.
 """
 
 from __future__ import annotations
@@ -27,10 +30,17 @@ from typing import Optional
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.selection import Selection
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
+from .coach_follow import (
+    CoachFollowEngine,
+    FollowState,
+    line_index_for_cursor,
+    render_current_word_banner,
+    render_spoken_markup,
+)
 from .log_bus import (
     format_view_markup,
     iter_events,
@@ -601,6 +611,52 @@ class PanelViewApp(App):
         width: 1fr;
         layout: vertical;
     }
+    #spoken-follow-wrap {
+        /* Fixed-ish pane so long Spoken scrolls instead of clipping */
+        height: 18;
+        max-height: 50%;
+        min-height: 10;
+        width: 1fr;
+        layout: vertical;
+        border: tall $accent;
+        background: $surface;
+        padding: 0 1;
+    }
+    #spoken-follow-wrap.-hidden {
+        display: none;
+        height: 0;
+        min-height: 0;
+        max-height: 0;
+    }
+    #spoken-follow-bar {
+        height: 1;
+        width: 1fr;
+        color: $text-muted;
+        content-align: left middle;
+    }
+    /* ~3× row height ≈ 250–300% visual size (terminals have fixed cell fonts) */
+    #spoken-current {
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        width: 1fr;
+        content-align: center middle;
+        text-style: bold;
+        background: $boost;
+        color: $accent;
+        padding: 0 2;
+    }
+    #spoken-follow-scroll {
+        height: 1fr;
+        min-height: 4;
+        width: 1fr;
+        scrollbar-size: 1 1;
+    }
+    #spoken-follow {
+        height: auto;
+        width: 1fr;
+        padding: 0 0 1 0;
+    }
     #log {
         height: 1fr;
         width: 1fr;
@@ -650,7 +706,9 @@ class PanelViewApp(App):
         ),
         Binding("ctrl+s", "export_md", "Exportar .md", show=True, priority=True),
         # a / e / slash / n / p live on ViewRichLog (log focused only).
-        Binding("escape", "clear_search", "Limpar busca", show=False),
+        Binding("escape", "escape_view", "Esc", show=False),
+        Binding("space", "follow_toggle", "Leitura", show=True),
+        Binding("r", "follow_restart", "Reiniciar leitura", show=False),
     ]
 
     TITLE = "LiveLingo View"
@@ -677,6 +735,13 @@ class PanelViewApp(App):
         self._search_hits: list[int] = []
         self._search_i: int = -1
         self.sub_title = _PANEL_TITLES.get(self.panel, self.panel)
+        self._follow: Optional[CoachFollowEngine] = None
+        self._follow_enabled = self.panel == "coach"
+        self._spoken_plain: str = ""
+        self._tradeoffs_plain: str = ""
+        # Session history of Spoken+Trade-offs received in this viewer
+        self._spoken_history: list[dict] = []
+        self._spoken_hist_i: int = -1
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -686,6 +751,24 @@ class PanelViewApp(App):
             classes="-wait",
         )
         with Vertical(id="view-body"):
+            if self._follow_enabled:
+                with Vertical(id="spoken-follow-wrap"):
+                    yield Static(
+                        "Spoken (EN) · Space=ler (WPM)  r=reiniciar  Esc=parar",
+                        id="spoken-follow-bar",
+                        markup=True,
+                    )
+                    yield Static(
+                        "[dim]—[/]",
+                        id="spoken-current",
+                        markup=True,
+                    )
+                    with VerticalScroll(id="spoken-follow-scroll"):
+                        yield Static(
+                            "[dim](aguarde um Spoken EN do Coach)[/]",
+                            id="spoken-follow",
+                            markup=True,
+                        )
             yield ViewRichLog(
                 id="log",
                 highlight=True,
@@ -717,6 +800,8 @@ class PanelViewApp(App):
             self._last_width_for_reflow = int(getattr(self.size, "width", 0) or 0)
         except Exception:
             self._last_width_for_reflow = 0
+        if self._follow_enabled:
+            self._init_follow_engine()
         # Focus log so mouse selection / Ctrl+C work immediately
         try:
             self.query_one("#log", ViewRichLog).focus()
@@ -725,6 +810,11 @@ class PanelViewApp(App):
 
     def on_unmount(self) -> None:
         self._stop.set()
+        try:
+            if self._follow is not None:
+                self._follow.stop()
+        except Exception:
+            pass
 
     def on_resize(self, event) -> None:  # noqa: ARG002
         """Reflow wrapped lines when the viewer terminal width changes."""
@@ -807,8 +897,22 @@ class PanelViewApp(App):
             pass
         self._handle_log_search("/p")
 
+    def action_escape_view(self) -> None:
+        """Esc — stop follow-along if active, else clear search."""
+        try:
+            if self._follow is not None and self._follow.state.running:
+                self._follow.stop()
+                try:
+                    self.notify("Leitura parada", severity="information", timeout=2)
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+        self.action_clear_search()
+
     def action_clear_search(self) -> None:
-        """Esc — clear highlights; blur search box back to the log."""
+        """Clear search highlights; blur search box back to the log."""
         self._search_query = ""
         self._search_hits = []
         self._search_i = -1
@@ -830,6 +934,519 @@ class PanelViewApp(App):
             self.notify("Busca limpa", severity="information", timeout=1.5)
         except Exception:
             pass
+
+    def action_follow_toggle(self) -> None:
+        """Space — start / pause Spoken EN teleprompter (coach viewer)."""
+        try:
+            if isinstance(self.focused, Input):
+                return
+        except Exception:
+            pass
+        if not self._follow_enabled:
+            return
+        if self._follow is None:
+            self._init_follow_engine()
+        eng = self._follow
+        if eng is None:
+            return
+        if eng.state.running:
+            eng.toggle_pause()
+            try:
+                self.notify(
+                    "Leitura pausada" if eng.state.paused else "Leitura retomada",
+                    severity="information",
+                    timeout=1.5,
+                )
+            except Exception:
+                pass
+            return
+        ok, msg = eng.start()
+        try:
+            self.notify(
+                msg if ok else f"Follow: {msg}",
+                severity="information" if ok else "warning",
+                timeout=3,
+            )
+        except Exception:
+            pass
+
+    def action_follow_restart(self) -> None:
+        """``r`` — restart Spoken from the first word and start reading again."""
+        try:
+            if isinstance(self.focused, Input):
+                return
+        except Exception:
+            pass
+        if self._follow is None:
+            return
+        eng = self._follow
+        was_running = bool(eng.state.running)
+        if was_running:
+            eng.stop()
+        eng.restart()
+        ok, msg = eng.start()
+        try:
+            self.notify(
+                msg if ok else f"Follow: {msg}",
+                severity="information" if ok else "warning",
+                timeout=2,
+            )
+        except Exception:
+            pass
+
+    def on_key(self, event) -> None:  # type: ignore[no-untyped-def]
+        """↑/↓ browse Spoken history when reading is done/ready (else let RichLog scroll)."""
+        try:
+            key = getattr(event, "key", "") or ""
+        except Exception:
+            return
+        if key not in ("up", "down"):
+            return
+        if not self._can_browse_spoken_history():
+            return
+        self._browse_spoken_history(-1 if key == "up" else +1)
+        try:
+            event.stop()
+            event.prevent_default()
+        except Exception:
+            pass
+
+    def _can_browse_spoken_history(self) -> bool:
+        if not self._follow_enabled:
+            return False
+        try:
+            if isinstance(self.focused, Input):
+                return False
+        except Exception:
+            pass
+        if len(self._spoken_history) < 2:
+            return False
+        eng = self._follow
+        if eng is None:
+            return True
+        if eng.state.running:
+            return False
+        return (eng.state.status or "") in ("done", "ready", "idle", "empty")
+
+    def _browse_spoken_history(self, delta: int) -> None:
+        if not self._can_browse_spoken_history():
+            return
+        n = len(self._spoken_history)
+        if n <= 0:
+            return
+        if self._spoken_hist_i < 0:
+            self._spoken_hist_i = n - 1
+        self._spoken_hist_i = max(0, min(n - 1, self._spoken_hist_i + int(delta)))
+        self._load_spoken_history_entry(self._spoken_hist_i, notify=True)
+
+    def _load_spoken_history_entry(self, index: int, *, notify: bool = False) -> None:
+        if index < 0 or index >= len(self._spoken_history):
+            return
+        entry = self._spoken_history[index]
+        self._spoken_hist_i = index
+        self._spoken_plain = str(entry.get("spoken") or "").strip()
+        self._tradeoffs_plain = str(entry.get("tradeoffs") or "").strip()
+        if self._follow is None:
+            self._init_follow_engine()
+        eng = self._follow
+        if eng is not None:
+            try:
+                if eng.state.running:
+                    eng.stop()
+                eng.set_spoken(self._spoken_plain)
+                eng.set_tradeoffs(self._tradeoffs_plain)
+            except Exception:
+                pass
+        if notify:
+            label = self._spoken_history_label(index)
+            try:
+                self.notify(
+                    f"{label}  ·  Space/r = ler de novo  ·  ↑↓ trocar",
+                    severity="information",
+                    timeout=2.5,
+                )
+            except Exception:
+                pass
+
+    def _spoken_history_label(self, index: int) -> str:
+        n = len(self._spoken_history)
+        if index < 0 or index >= n:
+            return f"Spoken —/{n}"
+        entry = self._spoken_history[index]
+        coach_n = entry.get("n")
+        if coach_n is not None:
+            return f"Spoken {index + 1}/{n} · Coach {coach_n}"
+        return f"Spoken {index + 1}/{n}"
+
+    def _push_spoken_history(
+        self,
+        spoken: str,
+        tradeoffs: str = "",
+        *,
+        n: Optional[int] = None,
+        question: str = "",
+    ) -> None:
+        spoken = (spoken or "").strip()
+        if not spoken:
+            return
+        tradeoffs = (tradeoffs or "").strip()
+        question = (question or "").strip()
+        # Replace last entry if same coach n (regenerated answer)
+        if (
+            n is not None
+            and self._spoken_history
+            and self._spoken_history[-1].get("n") == n
+        ):
+            self._spoken_history[-1] = {
+                "spoken": spoken,
+                "tradeoffs": tradeoffs,
+                "n": n,
+                "question": question,
+            }
+            self._spoken_hist_i = len(self._spoken_history) - 1
+            return
+        # Skip exact duplicate of current tip
+        if self._spoken_history:
+            last = self._spoken_history[-1]
+            if last.get("spoken") == spoken and last.get("tradeoffs") == tradeoffs:
+                self._spoken_hist_i = len(self._spoken_history) - 1
+                return
+        self._spoken_history.append(
+            {
+                "spoken": spoken,
+                "tradeoffs": tradeoffs,
+                "n": n,
+                "question": question,
+            }
+        )
+        self._spoken_hist_i = len(self._spoken_history) - 1
+
+    def _init_follow_engine(self) -> None:
+        if not self._follow_enabled or self._follow is not None:
+            return
+        try:
+            import config as cfg
+
+            enabled = bool(getattr(cfg, "COACH_FOLLOW_ENABLED", True))
+            if not enabled:
+                self._follow_enabled = False
+                try:
+                    w = self.query_one("#spoken-follow-wrap")
+                    w.add_class("-hidden")
+                except Exception:
+                    pass
+                return
+            wpm = float(getattr(cfg, "COACH_FOLLOW_WPM", 130.0) or 130.0)
+        except Exception:
+            wpm = 130.0
+        self._follow = CoachFollowEngine(
+            on_update=self._on_follow_update,
+            wpm=wpm,
+        )
+        if self._spoken_plain:
+            self._follow.set_spoken(self._spoken_plain)
+            self._follow.set_tradeoffs(self._tradeoffs_plain)
+
+    def _on_follow_update(self, state: FollowState) -> None:
+        """Called from STT worker — marshal to UI thread."""
+        try:
+            self.call_from_thread(self._apply_follow_state, state)
+        except Exception:
+            try:
+                self._apply_follow_state(state)
+            except Exception:
+                pass
+
+    def _apply_follow_state(self, state: FollowState) -> None:
+        try:
+            body = self.query_one("#spoken-follow", Static)
+            bar = self.query_one("#spoken-follow-bar", Static)
+        except Exception:
+            return
+        n = len(state.words or [])
+        cur = int(state.cursor or 0)
+        st = state.status or "idle"
+        sp_len = int(getattr(state, "spoken_len", n) or 0)
+        trades = (
+            (getattr(state, "tradeoffs_plain", None) or self._tradeoffs_plain or "")
+        ).strip()
+        done = st == "done" or (n > 0 and cur >= n)
+        in_tradeoffs = st == "tradeoffs" or (sp_len < n and cur >= sp_len and not done)
+        markup = render_spoken_markup(
+            state.words or [],
+            cur,
+            tradeoffs=trades,
+            spoken_len=sp_len,
+            show_tradeoffs=bool(done and sp_len >= n),  # empty-tradeoffs edge
+        )
+        try:
+            body.update(markup)
+        except Exception:
+            pass
+        try:
+            big = self.query_one("#spoken-current", Static)
+            big.update(
+                render_current_word_banner(
+                    state.words or [], cur, spoken_len=sp_len
+                )
+            )
+        except Exception:
+            pass
+        self._schedule_spoken_scroll(
+            list(state.words or []),
+            cur,
+            spoken_len=sp_len,
+            in_tradeoffs=bool(in_tradeoffs or done),
+        )
+        err = (state.error or "").strip()
+        try:
+            wpm = float(getattr(state, "wpm", 0) or 0) or float(
+                getattr(self._follow, "wpm", 130) or 130
+            )
+        except Exception:
+            wpm = 130.0
+        wpm_note = f" · {wpm:.0f} WPM"
+        if err:
+            short = err if len(err) <= 48 else (err[:45] + "…")
+            safe = short.replace("[", "\\[")
+            label = f"Spoken (EN) · [red]erro[/] {safe}"
+        elif st in ("reading", "listening"):
+            label = (
+                f"Spoken (EN) · reading {min(cur, sp_len)}/{sp_len}{wpm_note}  ·  "
+                f"Space=pausa  r=reinicia  Esc=parar"
+            )
+        elif st == "tradeoffs":
+            # Progress within title + tradeoff words
+            t_total = max(1, n - sp_len)
+            t_cur = min(t_total, max(0, cur - sp_len))
+            label = (
+                f"Trade-offs · reading {t_cur}/{t_total}{wpm_note}  ·  "
+                f"Space=pausa  r=reinicia  Esc=parar"
+            )
+        elif st == "paused":
+            section = "Trade-offs" if in_tradeoffs else "Spoken (EN)"
+            label = (
+                f"{section} · pausado {min(cur, n)}/{n}{wpm_note}  ·  "
+                f"Space=retomar"
+            )
+        elif st == "done":
+            hist = self._spoken_history_label(self._spoken_hist_i)
+            nav = "  ·  ↑↓ trocar" if len(self._spoken_history) > 1 else ""
+            label = f"Concluído · {hist}{wpm_note}{nav}  ·  Space/r=relê"
+        elif st == "ready":
+            extra = " + Trade-offs" if sp_len < n else ""
+            hist = ""
+            if len(self._spoken_history) > 1 and self._spoken_hist_i >= 0:
+                hist = f" · {self._spoken_history_label(self._spoken_hist_i)}"
+                hist += "  ·  ↑↓"
+            label = (
+                f"Spoken (EN) · pronto {sp_len} palavras{extra}{hist}{wpm_note}  ·  "
+                f"Space=ler"
+            )
+        else:
+            label = "Spoken (EN) · Space=ler  r=reinicia  Esc=parar"
+        try:
+            bar.update(label)
+        except Exception:
+            pass
+
+    def _schedule_spoken_scroll(
+        self,
+        words: list,
+        cursor: int,
+        *,
+        spoken_len: int = 0,
+        in_tradeoffs: bool = False,
+    ) -> None:
+        """Scroll down after layout so the current line stays readable."""
+        try:
+            self.call_after_refresh(
+                self._scroll_spoken_vertical,
+                words,
+                cursor,
+                spoken_len,
+                in_tradeoffs,
+            )
+        except Exception:
+            try:
+                self._scroll_spoken_vertical(
+                    words, cursor, spoken_len, in_tradeoffs
+                )
+            except Exception:
+                pass
+
+    def _scroll_spoken_vertical(
+        self,
+        words: list,
+        cursor: int,
+        spoken_len: int = 0,
+        in_tradeoffs: bool = False,
+    ) -> None:
+        try:
+            scroller = self.query_one("#spoken-follow-scroll", VerticalScroll)
+        except Exception:
+            return
+        try:
+            try:
+                width = int(scroller.size.width) or 60
+            except Exception:
+                width = 60
+            col_w = max(20, width - 2)
+            try:
+                view_h = int(scroller.size.height) or 6
+            except Exception:
+                view_h = 6
+            from .coach_follow import wrap_words_to_lines
+
+            sp_len = max(0, min(int(spoken_len), len(words)))
+            spoken_words = words[:sp_len]
+            spoken_lines = (
+                len(wrap_words_to_lines(spoken_words, col_w)) if spoken_words else 0
+            )
+            if in_tradeoffs or cursor >= sp_len:
+                # Spoken block + blank + title (+ tradeoff wrap lines)
+                rel = max(0, cursor - sp_len)
+                trade_words = words[sp_len + 1 :] if sp_len < len(words) else []
+                # title is one line after blank
+                title_line = spoken_lines + 1
+                if rel <= 0:
+                    line = title_line
+                else:
+                    # rel=1 is first tradeoff word
+                    tw_line = line_index_for_cursor(
+                        trade_words, max(0, rel - 1), col_w
+                    )
+                    line = title_line + 1 + tw_line
+            else:
+                line = line_index_for_cursor(spoken_words, cursor, col_w)
+            target = max(0, line - max(1, view_h // 3))
+            scroller.scroll_to(y=target, animate=False)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_coach_spoken_payload(
+        raw: str,
+    ) -> tuple[str, str, Optional[int], str]:
+        """Return (spoken, tradeoffs, n, question). JSON bundle or plain text."""
+        text = (raw or "").strip()
+        if not text:
+            return "", "", None, ""
+        if text.startswith("{"):
+            try:
+                import json
+
+                data = json.loads(text)
+                if isinstance(data, dict) and (
+                    "spoken" in data or "tradeoffs" in data
+                ):
+                    n_raw = data.get("n")
+                    try:
+                        n_val: Optional[int] = (
+                            int(n_raw) if n_raw is not None else None
+                        )
+                    except Exception:
+                        n_val = None
+                    return (
+                        str(data.get("spoken") or "").strip(),
+                        str(data.get("tradeoffs") or "").strip(),
+                        n_val,
+                        str(data.get("question") or "").strip(),
+                    )
+            except Exception:
+                pass
+        return text, "", None, ""
+
+    def _set_spoken_text(self, text: str) -> None:
+        spoken, trades, coach_n, question = self._parse_coach_spoken_payload(text)
+        self._spoken_plain = spoken
+        # Prefer bundled tradeoffs; plain legacy spoken clears trades.
+        if text.strip().startswith("{"):
+            self._tradeoffs_plain = trades
+        else:
+            self._tradeoffs_plain = ""
+        self._push_spoken_history(
+            spoken,
+            self._tradeoffs_plain,
+            n=coach_n,
+            question=question,
+        )
+        if self._follow is None:
+            self._init_follow_engine()
+        if self._follow is not None:
+            was_running = bool(self._follow.state.running)
+            self._follow.set_spoken(self._spoken_plain)
+            self._follow.set_tradeoffs(self._tradeoffs_plain)
+            if was_running and self._spoken_plain:
+                # Keep teleprompter running on new coach answer
+                self._follow.start()
+        else:
+            try:
+                from .coach_follow import build_follow_script
+
+                body = self.query_one("#spoken-follow", Static)
+                script, sp_len = build_follow_script(
+                    self._spoken_plain, self._tradeoffs_plain
+                )
+                body.update(
+                    render_spoken_markup(script, 0, spoken_len=sp_len)
+                    if script
+                    else "[dim](aguarde um Spoken EN do Coach)[/]"
+                )
+                try:
+                    self.query_one(
+                        "#spoken-follow-scroll", VerticalScroll
+                    ).scroll_home(animate=False)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _set_tradeoffs_text(self, text: str) -> None:
+        self._tradeoffs_plain = (text or "").strip()
+        # Update tip of history if tradeoffs arrived separately
+        if self._spoken_history and self._spoken_hist_i == len(self._spoken_history) - 1:
+            self._spoken_history[-1]["tradeoffs"] = self._tradeoffs_plain
+        eng = self._follow
+        if eng is not None:
+            try:
+                eng.set_tradeoffs(self._tradeoffs_plain)
+            except Exception:
+                try:
+                    self._apply_follow_state(eng.state)
+                except Exception:
+                    pass
+
+    def _set_spoken_error(self, err: str) -> None:
+        """Coach API failed — show reason in the follow pane (no Spoken yet)."""
+        err = (err or "").strip()
+        short = err if len(err) <= 180 else (err[:177] + "…")
+        safe = short.replace("[", "\\[")
+        try:
+            bar = self.query_one("#spoken-follow-bar", Static)
+            bar.update("Spoken (EN) · [red]Coach falhou[/] — sem texto para ler")
+        except Exception:
+            pass
+        try:
+            big = self.query_one("#spoken-current", Static)
+            big.update("[red]!—![/]")
+        except Exception:
+            pass
+        try:
+            body = self.query_one("#spoken-follow", Static)
+            body.update(
+                f"[yellow]{safe}[/]\n\n"
+                f"[dim]Dica: aumente INTERVIEW_COACH_TIMEOUT_S=90 no .env, "
+                f"ou `coach provider groq`, e tente de novo (airespond / F7).[/]"
+            )
+        except Exception:
+            pass
+        if self._follow is not None:
+            try:
+                self._follow.stop()
+                self._follow.set_spoken("")
+            except Exception:
+                pass
 
     @on(Input.Submitted, "#search")
     def on_search_submitted(self, event: Input.Submitted) -> None:
@@ -1214,17 +1831,20 @@ class PanelViewApp(App):
         except Exception:
             return
         title = _PANEL_TITLES.get(self.panel, self.panel)
+        follow_hint = ""
+        if self._follow_enabled:
+            follow_hint = "  ·  Space leitura"
         if connected:
             st.update(
                 f"● {title}  ·  {self.host}:{self.port}  ·  "
-                f"/ busca  ·  a copiar  ·  e/.md  ·  Ctrl+S  ·  [q]"
+                f"/ busca  ·  a copiar  ·  e/.md  ·  Ctrl+S{follow_hint}  ·  [q]"
             )
             st.set_class(True, "-ok")
             st.set_class(False, "-wait")
         else:
             st.update(
                 f"○ {title}  ·  reconectando {self.host}:{self.port} …  ·  "
-                f"/ busca  ·  [q] sair"
+                f"/ busca{follow_hint}  ·  [q] sair"
             )
             st.set_class(False, "-ok")
             st.set_class(True, "-wait")
@@ -1290,6 +1910,19 @@ class PanelViewApp(App):
                 self._search_hits = []
                 self._search_i = -1
                 continue
+            if kind == "coach_spoken":
+                if self._follow_enabled:
+                    self._set_spoken_text(str(text or ""))
+                continue
+            if kind == "coach_tradeoffs":
+                if self._follow_enabled:
+                    self._set_tradeoffs_text(str(text or ""))
+                continue
+            if kind == "coach_error":
+                if self._follow_enabled:
+                    self._tradeoffs_plain = ""
+                    self._set_spoken_error(str(text or ""))
+                continue
             markup = format_view_markup(kind, text if text is not None else "")
             if markup is None:
                 continue
@@ -1300,6 +1933,16 @@ class PanelViewApp(App):
                     log.write(str(text or ""))
                 except Exception:
                     pass
+            # Fallback: scrape Spoken EN from rich label if no coach_spoken yet
+            if (
+                self._follow_enabled
+                and kind == "rich"
+                and isinstance(text, str)
+                and "Spoken (EN)" in text
+                and "diga isto" in text.lower()
+            ):
+                # Next non-empty body lines arrive separately — handled by coach_spoken
+                pass
 
 
 def run_panel_view(panel: str, *, host: str = "127.0.0.1", port: int = 8765) -> int:

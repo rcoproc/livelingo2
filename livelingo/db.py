@@ -860,6 +860,60 @@ def insert_coach_result(
     return created_at
 
 
+def update_coach_result_pt(
+    session_id,
+    coach_num,
+    *,
+    spoken_pt="",
+    software_engineer_pt=None,
+    architect_pt=None,
+    tradeoffs_pt="",
+):
+    """
+    Fill pt-BR fields on the latest coach_results row for ``coach_num``.
+
+    Used when EN is persisted first and pt-BR arrives from a background LLM call.
+    Returns True if a row was updated.
+    """
+    if not session_id:
+        return False
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+    SELECT id FROM coach_results
+    WHERE session_id = ? AND coach_num = ?
+    ORDER BY id DESC LIMIT 1
+    """,
+        (session_id, int(coach_num)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False
+    row_id = row[0]
+    cursor.execute(
+        """
+    UPDATE coach_results SET
+        spoken_pt = ?,
+        software_engineer_pt = ?,
+        architect_pt = ?,
+        tradeoffs_pt = ?
+    WHERE id = ?
+    """,
+        (
+            (spoken_pt or "").strip(),
+            _coach_list_to_json(software_engineer_pt),
+            _coach_list_to_json(architect_pt),
+            (tradeoffs_pt or "").strip(),
+            row_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
 def load_session_coach_results(session_id):
     """
     Return list of dicts for coach answers in a session, chronological by id.

@@ -572,7 +572,11 @@ CLAUDE_API_KEY = _get_str("CLAUDE_API_KEY", "")  # alias
 ANTHROPIC_API_URL = _get_str("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
 GEMINI_API_KEY = _get_str("GEMINI_API_KEY", "")
 GOOGLE_API_KEY = _get_str("GOOGLE_API_KEY", "")  # alias for Gemini
-INTERVIEW_COACH_TIMEOUT_S = _get_float("INTERVIEW_COACH_TIMEOUT_S", 25.0)
+# Grok/Claude/etc. can exceed 25s with long COACH.md context — default 60s.
+INTERVIEW_COACH_TIMEOUT_S = _get_float("INTERVIEW_COACH_TIMEOUT_S", 60.0)
+# true = emit English coach answer first, translate pt-BR in a background call
+# (faster Spoken / teleprompter). false = wait for EN+PT before showing.
+INTERVIEW_COACH_PT_ASYNC = _get_bool("INTERVIEW_COACH_PT_ASYNC", True)
 INTERVIEW_MIN_CHARS = _get_int("INTERVIEW_MIN_CHARS", 40)
 # auto = only clear questions; always = every stable LC; manual = F7/coach ask only
 INTERVIEW_QUESTION_MODE = _get_str("INTERVIEW_QUESTION_MODE", "auto").lower()
@@ -583,6 +587,15 @@ INTERVIEW_CANDIDATE_PROFILE = _get_str("INTERVIEW_CANDIDATE_PROFILE", "")
 # Markdown file with full interview context (role, stack, constraints). Empty =
 # auto-discover COACH.md, then AGENT.md, then .livelingo/coach-context.md
 INTERVIEW_COACH_CONTEXT_FILE = _get_str("INTERVIEW_COACH_CONTEXT_FILE", "")
+# view coach — Spoken EN teleprompter (timed word highlight; you read along)
+COACH_FOLLOW_ENABLED = _get_bool("COACH_FOLLOW_ENABLED", True)
+# Reading speed in words per minute (typical interview pace ~110–150).
+# Higher = faster highlight. Clamp applied in engine (~40–300).
+COACH_FOLLOW_WPM = _get_float("COACH_FOLLOW_WPM", 130.0)
+# Legacy STT knobs (unused — follow is timed teleprompter, not mic-driven)
+COACH_FOLLOW_STT = _get_str("COACH_FOLLOW_STT", "off").lower()
+COACH_FOLLOW_CHUNK_MS = _get_int("COACH_FOLLOW_CHUNK_MS", 400)
+COACH_FOLLOW_MATCH_THRESHOLD = _get_float("COACH_FOLLOW_MATCH_THRESHOLD", 0.75)
 
 # --------------------------------------------------------------------------- #
 # Webcam lip-sync → virtual camera (optional; Teams/Meet)

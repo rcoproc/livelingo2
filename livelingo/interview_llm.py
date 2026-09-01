@@ -64,15 +64,20 @@ class OpenAICompatInterviewLLM(InterviewLLM):
         model: str,
         url: str,
         provider_name: str = "openai-compat",
-        timeout_s: float = 25.0,
+        timeout_s: float = 60.0,
         key_hint: str = "",
     ):
         self.api_key = (api_key or "").strip()
         self.model = (model or "").strip()
         self.url = (url or "").strip()
         self.provider_name = provider_name
-        self.timeout_s = float(timeout_s or 25.0)
+        self.timeout_s = float(timeout_s or 60.0)
         self._key_hint = key_hint or f"{provider_name.upper()}_API_KEY"
+
+    def _request_timeout(self):
+        """(connect, read) — connect stays short; read uses INTERVIEW_COACH_TIMEOUT_S."""
+        read = max(15.0, float(self.timeout_s or 60.0))
+        return (10.0, read)
 
     def complete(self, system: str, user: str) -> str:
         if not self.api_key:
@@ -92,14 +97,35 @@ class OpenAICompatInterviewLLM(InterviewLLM):
                 {"role": "user", "content": user},
             ],
         }
-        try:
-            resp = requests.post(
-                self.url, headers=headers, json=body, timeout=self.timeout_s
-            )
-        except requests.RequestException as exc:
+        last_exc: Exception | None = None
+        resp = None
+        for attempt in range(2):
+            try:
+                resp = requests.post(
+                    self.url,
+                    headers=headers,
+                    json=body,
+                    timeout=self._request_timeout(),
+                )
+                last_exc = None
+                break
+            except requests.Timeout as exc:
+                last_exc = exc
+                if attempt == 0:
+                    continue  # one retry on read/connect timeout
+                raise InterviewLLMError(
+                    f"{self.provider_name}: timeout after {self.timeout_s:.0f}s "
+                    f"(tente INTERVIEW_COACH_TIMEOUT_S=90 ou provider groq). "
+                    f"Detalhe: {exc}"
+                ) from exc
+            except requests.RequestException as exc:
+                raise InterviewLLMError(
+                    f"{self.provider_name}: network error: {exc}"
+                ) from exc
+        if resp is None:
             raise InterviewLLMError(
-                f"{self.provider_name}: network error: {exc}"
-            ) from exc
+                f"{self.provider_name}: network error: {last_exc}"
+            )
         if resp.status_code >= 400:
             detail = (resp.text or "")[:240]
             raise InterviewLLMError(
@@ -138,14 +164,14 @@ class AnthropicInterviewLLM(InterviewLLM):
         api_key: str,
         model: str,
         url: str = ANTHROPIC_URL,
-        timeout_s: float = 25.0,
+        timeout_s: float = 60.0,
         max_tokens: int = 1400,
     ):
         self.api_key = (api_key or "").strip()
         self.model = (model or "").strip()
         self.url = (url or ANTHROPIC_URL).strip()
         self.provider_name = "claude"
-        self.timeout_s = float(timeout_s or 25.0)
+        self.timeout_s = float(timeout_s or 60.0)
         self.max_tokens = int(max_tokens or 1400)
 
     def complete(self, system: str, user: str) -> str:
@@ -165,10 +191,15 @@ class AnthropicInterviewLLM(InterviewLLM):
             "system": system or "",
             "messages": [{"role": "user", "content": user}],
         }
+        read = max(15.0, float(self.timeout_s or 60.0))
         try:
             resp = requests.post(
-                self.url, headers=headers, json=body, timeout=self.timeout_s
+                self.url, headers=headers, json=body, timeout=(10.0, read)
             )
+        except requests.Timeout as exc:
+            raise InterviewLLMError(
+                f"claude: timeout after {self.timeout_s:.0f}s ({exc})"
+            ) from exc
         except requests.RequestException as exc:
             raise InterviewLLMError(f"claude: network error: {exc}") from exc
         if resp.status_code >= 400:
@@ -203,12 +234,12 @@ class GeminiInterviewLLM(InterviewLLM):
         *,
         api_key: str,
         model: str,
-        timeout_s: float = 25.0,
+        timeout_s: float = 60.0,
     ):
         self.api_key = (api_key or "").strip()
         self.model = (model or "").strip()
         self.provider_name = "gemini"
-        self.timeout_s = float(timeout_s or 25.0)
+        self.timeout_s = float(timeout_s or 60.0)
 
     def complete(self, system: str, user: str) -> str:
         if not self.api_key:
@@ -234,10 +265,15 @@ class GeminiInterviewLLM(InterviewLLM):
             body["systemInstruction"] = {
                 "parts": [{"text": system.strip()}],
             }
+        read = max(15.0, float(self.timeout_s or 60.0))
         try:
             resp = requests.post(
-                url, params=params, json=body, timeout=self.timeout_s
+                url, params=params, json=body, timeout=(10.0, read)
             )
+        except requests.Timeout as exc:
+            raise InterviewLLMError(
+                f"gemini: timeout after {self.timeout_s:.0f}s ({exc})"
+            ) from exc
         except requests.RequestException as exc:
             raise InterviewLLMError(f"gemini: network error: {exc}") from exc
         if resp.status_code >= 400:
@@ -285,7 +321,7 @@ def build_interview_llm(cfg) -> InterviewLLM:
     if provider in ("google", "google-ai"):
         provider = "gemini"
 
-    timeout = float(getattr(cfg, "INTERVIEW_COACH_TIMEOUT_S", 25.0) or 25.0)
+    timeout = float(getattr(cfg, "INTERVIEW_COACH_TIMEOUT_S", 60.0) or 60.0)
     model = str(getattr(cfg, "INTERVIEW_COACH_MODEL", "") or "").strip()
     default_model = _DEFAULT_MODELS.get(provider, "grok-3-mini")
 
@@ -430,6 +466,78 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
         "software_engineer": se,
         "architect": arch,
         "tradeoffs": tradeoffs[:1200],
+        "spoken_pt": spoken_pt[:2000],
+        "software_engineer_pt": se_pt,
+        "architect_pt": arch_pt,
+        "tradeoffs_pt": tradeoffs_pt[:1200],
+    }
+
+
+def parse_coach_pt_response(raw: str) -> dict[str, Any]:
+    """
+    Parse background pt-BR translation JSON (spoken_pt / SE_pt / Arch_pt / tradeoffs_pt).
+    """
+    empty = {
+        "spoken_pt": "",
+        "software_engineer_pt": [],
+        "architect_pt": [],
+        "tradeoffs_pt": "",
+    }
+    text = (raw or "").strip()
+    if not text:
+        return empty
+
+    body = text
+    if "```" in body:
+        start = body.find("```")
+        end = body.rfind("```")
+        if end > start:
+            chunk = body[start + 3 : end].strip()
+            if chunk.lower().startswith("json"):
+                chunk = chunk[4:].lstrip()
+            body = chunk
+
+    data: Optional[dict] = None
+    try:
+        data = json.loads(body)
+    except Exception:
+        i, j = body.find("{"), body.rfind("}")
+        if i >= 0 and j > i:
+            try:
+                data = json.loads(body[i : j + 1])
+            except Exception:
+                data = None
+
+    if not isinstance(data, dict):
+        return {**empty, "spoken_pt": text[:2000]}
+
+    spoken_pt = str(
+        data.get("spoken_pt")
+        or data.get("spoken_pt_br")
+        or data.get("resposta_pt")
+        or data.get("spoken")
+        or ""
+    ).strip()
+    se_pt = _as_str_list(
+        data.get("software_engineer_pt")
+        or data.get("se_pt")
+        or data.get("software_engineer")
+        or []
+    )
+    arch_pt = _as_str_list(
+        data.get("architect_pt")
+        or data.get("arch_pt")
+        or data.get("architect")
+        or []
+    )
+    tradeoffs_pt = _as_paragraph(
+        data.get("tradeoffs_pt")
+        or data.get("trade_offs_pt")
+        or data.get("tradeoffs_pt_br")
+        or data.get("tradeoffs")
+        or ""
+    )
+    return {
         "spoken_pt": spoken_pt[:2000],
         "software_engineer_pt": se_pt,
         "architect_pt": arch_pt,

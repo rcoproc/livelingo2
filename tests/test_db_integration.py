@@ -224,6 +224,45 @@ def test_coach_result_insert_load(tmp_db):
     assert db.load_session_coach_results("") == []
 
 
+def test_coach_result_en_then_pt_update_same_row(tmp_db):
+    """EN-first async path: insert EN with empty PT, then UPDATE same row."""
+    db.create_session("coach-async", "Interview")
+    db.insert_coach_result(
+        "coach-async",
+        5,
+        "Explain CAP?",
+        spoken_en="CAP is Consistency, Availability, Partition tolerance.",
+        software_engineer_en=["pick two"],
+        architect_en=["CP vs AP"],
+        tradeoffs_en="You cannot have all three under partition.",
+        spoken_pt="",
+        provider="grok",
+    )
+    rows = db.load_session_coach_results("coach-async")
+    assert len(rows) == 1
+    assert rows[0]["spoken_en"].startswith("CAP")
+    assert (rows[0]["spoken_pt"] or "") == ""
+    row_id = rows[0]["id"]
+
+    ok = db.update_coach_result_pt(
+        "coach-async",
+        5,
+        spoken_pt="CAP é Consistência, Disponibilidade e Tolerância a partição.",
+        software_engineer_pt=["escolha dois"],
+        architect_pt=["CP vs AP"],
+        tradeoffs_pt="Sob partição não dá para ter os três.",
+    )
+    assert ok is True
+    rows2 = db.load_session_coach_results("coach-async")
+    assert len(rows2) == 1
+    assert rows2[0]["id"] == row_id  # same row, not a second insert
+    assert "Consistência" in rows2[0]["spoken_pt"]
+    assert rows2[0]["software_engineer_pt"] == ["escolha dois"]
+    assert "partição" in rows2[0]["tradeoffs_pt"]
+    # EN untouched
+    assert rows2[0]["spoken_en"].startswith("CAP is")
+
+
 def test_delete_session_atomic(tmp_db):
     db.create_session("del-me", "X")
     db.insert_chunk("del-me", 1, "a", "b", "")

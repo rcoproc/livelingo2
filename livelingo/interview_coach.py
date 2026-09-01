@@ -20,6 +20,7 @@ from .interview_llm import (
     InterviewLLMError,
     build_interview_llm,
     list_interview_providers,
+    parse_coach_pt_response,
     parse_coach_response,
 )
 
@@ -85,14 +86,15 @@ def _norm_key(text: str) -> str:
     return hashlib.sha1(t.encode("utf-8")).hexdigest()[:16]
 
 
-SYSTEM_PROMPT = """You are a senior Software Engineer and Systems Architect preparing for a live job interview.
+# Fast path: English-only JSON (pt-BR is a second async call).
+SYSTEM_PROMPT_EN = """You are a senior Software Engineer and Systems Architect preparing for a live job interview.
 The candidate will speak your answer aloud in English (~45–75 seconds).
 
 CRITICAL LANGUAGE RULES:
 - The interviewer's question may be in English OR Portuguese (including via manual airespond).
 - Fields spoken, software_engineer, architect, tradeoffs MUST be written in **English only**.
-- Fields spoken_pt, software_engineer_pt, architect_pt, tradeoffs_pt MUST be natural **Brazilian Portuguese (pt-BR)** translations of the English fields (same meaning, not literal word salad).
-- Never put Portuguese into the English fields, even if the question was in Portuguese.
+- Never put Portuguese into these fields, even if the question was in Portuguese.
+- Do NOT include any Portuguese (*_pt) fields in the JSON.
 
 Tone: assertive, confident, concrete. No apology openers ("Well…", "I think maybe…").
 Prefer outcome + ownership + trade-offs. Avoid buzzword salad.
@@ -103,11 +105,10 @@ JOB / CANDIDATE CONTEXT (when provided below):
   when giving examples and trade-offs — do not invent unrelated stacks.
 - Keep answers honest to that profile; still sound like live interview speech.
 
-EXAMPLES (mandatory in spoken + spoken_pt):
+EXAMPLES (mandatory in spoken):
 - Weave in 1–2 **simple, concrete examples** tied to the question topic (a small system, incident, migration, API, queue, cache, DB choice, etc.).
-- Phrase them as lived experience the candidate can own — e.g. "In one service I …", "For example, when we …", "On a past project …" — so it sounds like they know how to explain with examples, not only theory.
+- Phrase them as lived experience the candidate can own — e.g. "In one service I …", "For example, when we …", "On a past project …".
 - Keep examples short and speakable (one beat each). Prefer plausible generic scenarios over named employers or fake metrics.
-- Mirror the same examples in spoken_pt (natural pt-BR, same stories).
 - SE/Arch bullets may reference those examples briefly; do not dump a long case study.
 
 Return ONLY valid JSON (no markdown fences) with this shape:
@@ -115,13 +116,27 @@ Return ONLY valid JSON (no markdown fences) with this shape:
   "spoken": "5-9 sentences the candidate can say aloud in English, including 1–2 simple topic examples",
   "software_engineer": ["up to 4 short bullets — coding/delivery angle, English"],
   "architect": ["up to 4 short bullets — systems/architecture angle, English"],
-  "tradeoffs": "One clear paragraph in English explaining main trade-offs (pros vs cons, when A vs B).",
-  "spoken_pt": "Same spoken answer in Brazilian Portuguese (pt-BR), including the same examples",
-  "software_engineer_pt": ["same SE bullets in pt-BR"],
-  "architect_pt": ["same Arch bullets in pt-BR"],
-  "tradeoffs_pt": "Same trade-offs paragraph in Brazilian Portuguese (pt-BR)"
+  "tradeoffs": "One clear paragraph in English explaining main trade-offs (pros vs cons, when A vs B)."
 }
 """
+
+# Background: translate an already-generated EN answer to pt-BR.
+SYSTEM_PROMPT_PT = """You translate interview-coach answers into natural Brazilian Portuguese (pt-BR).
+
+Rules:
+- Keep the same meaning, examples, and structure as the English input.
+- Natural pt-BR (not literal word salad). Same stories/examples as EN.
+- Return ONLY valid JSON (no markdown fences) with this shape:
+{
+  "spoken_pt": "pt-BR of spoken",
+  "software_engineer_pt": ["pt-BR SE bullets"],
+  "architect_pt": ["pt-BR Arch bullets"],
+  "tradeoffs_pt": "pt-BR of tradeoffs"
+}
+"""
+
+# Backward-compatible alias (tests / older imports).
+SYSTEM_PROMPT = SYSTEM_PROMPT_EN
 
 
 def resolve_coach_context_path(config=None, *, cwd: str | None = None) -> Optional[Path]:
@@ -209,14 +224,31 @@ def _build_user_prompt(
             f"{profile.strip()}"
         )
     parts.append(
-        "Produce the JSON answer now. "
-        "Remember: English fields = English only; *_pt fields = Brazilian Portuguese. "
+        "Produce the English-only JSON answer now. "
+        "English fields = English only (no *_pt fields). "
         "If the question is in Portuguese, still write spoken/SE/Arch/tradeoffs in English. "
         "Align examples and trade-offs with the job/interview context when present. "
-        "In spoken and spoken_pt, include 1–2 simple examples about this topic "
+        "In spoken, include 1–2 simple examples about this topic "
         "that make the candidate sound experienced and ready to explain with examples."
     )
     return "\n\n".join(parts)
+
+
+def _build_pt_user_prompt(en_fields: dict) -> str:
+    """Compact EN payload for the background pt-BR translation call."""
+    import json
+
+    payload = {
+        "spoken": str(en_fields.get("spoken") or ""),
+        "software_engineer": list(en_fields.get("software_engineer") or []),
+        "architect": list(en_fields.get("architect") or []),
+        "tradeoffs": str(en_fields.get("tradeoffs") or ""),
+    }
+    return (
+        "Translate this interview-coach English JSON into the pt-BR JSON shape "
+        "defined in the system prompt. Keep examples and meaning.\n\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
 
 
 @dataclass
@@ -518,6 +550,12 @@ class InterviewCoach:
             return True, f"airespond/Coach agendado (#{n}) — aguarde o painel Coach."
         return False, "Falha ao agendar coach."
 
+    def _pt_async_enabled(self) -> bool:
+        try:
+            return bool(getattr(self.cfg, "INTERVIEW_COACH_PT_ASYNC", True))
+        except Exception:
+            return True
+
     def _run_job(self, gen: int, n: int, en: str, pt: str) -> None:
         from . import ui
 
@@ -529,7 +567,7 @@ class InterviewCoach:
         except Exception:
             pass
         try:
-            ui.info(f"[Coach {n}] Thinking…", panel="coach")
+            ui.info(f"[Coach {n}] Thinking (EN)…", panel="coach")
         except Exception:
             pass
 
@@ -561,8 +599,9 @@ class InterviewCoach:
                 )
             except Exception:
                 ctx_path = ""
+            # EN-only first (faster). pt-BR is a second background call unless disabled.
             raw = llm.complete(
-                SYSTEM_PROMPT,
+                SYSTEM_PROMPT_EN,
                 _build_user_prompt(
                     en,
                     question_pt=pt,
@@ -573,6 +612,21 @@ class InterviewCoach:
                 ),
             )
             parsed = parse_coach_response(raw)
+            # Legacy / accidental PT in the same payload — keep if present
+            has_inline_pt = bool(
+                (parsed.get("spoken_pt") or "").strip()
+                or (parsed.get("tradeoffs_pt") or "").strip()
+            )
+            if not self._pt_async_enabled() and not has_inline_pt:
+                # Sync fallback: one more call for PT before UI (rare)
+                try:
+                    raw_pt = llm.complete(
+                        SYSTEM_PROMPT_PT, _build_pt_user_prompt(parsed)
+                    )
+                    parsed.update(parse_coach_pt_response(raw_pt))
+                    has_inline_pt = True
+                except Exception:
+                    pass
         except InterviewLLMError as exc:
             err = str(exc)
         except Exception as exc:
@@ -580,7 +634,8 @@ class InterviewCoach:
 
         with self._lock:
             if gen != self._gen:
-                # Superseded by a newer question
+                # Superseded by a newer question — free the busy flag
+                self._busy = False
                 return
             result = CoachResult(
                 n=n,
@@ -604,8 +659,18 @@ class InterviewCoach:
 
         try:
             if err:
-                ui.warn(f"[Coach {n}] {err}", panel="coach")
+                # Keep full error on Sistema; coach panel gets a shorter line
+                short = err if len(err) <= 220 else (err[:217] + "…")
+                ui.warn(f"[Coach {n}] {short}", panel="coach")
                 ui.warn(f"[Coach] {err}", panel="app")
+                # view coach follow-along: show failure instead of "aguarde Spoken"
+                try:
+                    if hasattr(ui, "coach_error"):
+                        ui.coach_error(err)
+                    else:
+                        ui._emit("coach_error", err, panel="coach")
+                except Exception:
+                    pass
             else:
                 ui.coach_block(
                     n,
@@ -619,6 +684,10 @@ class InterviewCoach:
                     architect_pt=result.architect_pt,
                     tradeoffs_pt=result.tradeoffs_pt,
                     provider=provider,
+                    pt_pending=bool(
+                        self._pt_async_enabled()
+                        and not (result.spoken_pt or "").strip()
+                    ),
                 )
         except Exception:
             try:
@@ -626,8 +695,85 @@ class InterviewCoach:
             except Exception:
                 pass
 
+        # Background pt-BR (does not block Spoken / teleprompter)
+        if (
+            not err
+            and self._pt_async_enabled()
+            and not (result.spoken_pt or "").strip()
+            and (result.spoken or "").strip()
+        ):
+            t = threading.Thread(
+                target=self._run_pt_job,
+                args=(gen, n, result),
+                name=f"coach-pt-{n}",
+                daemon=True,
+            )
+            t.start()
+
+    def _run_pt_job(self, gen: int, n: int, en_result: CoachResult) -> None:
+        """Translate EN coach fields to pt-BR and append to the coach panel."""
+        from . import ui
+
+        try:
+            ui.dim(f"[Coach {n}] pt-BR em background…", panel="app")
+        except Exception:
+            pass
+        try:
+            llm = self._ensure_llm()
+            raw = llm.complete(
+                SYSTEM_PROMPT_PT,
+                _build_pt_user_prompt(
+                    {
+                        "spoken": en_result.spoken,
+                        "software_engineer": en_result.software_engineer,
+                        "architect": en_result.architect,
+                        "tradeoffs": en_result.tradeoffs,
+                    }
+                ),
+            )
+            pt = parse_coach_pt_response(raw)
+        except Exception as exc:
+            try:
+                ui.warn(f"[Coach {n}] pt-BR falhou: {exc}", panel="app")
+            except Exception:
+                pass
+            return
+
+        with self._lock:
+            if gen != self._gen:
+                return
+            if self._last is not None and self._last.n == n:
+                self._last.spoken_pt = str(pt.get("spoken_pt") or "")
+                self._last.software_engineer_pt = list(
+                    pt.get("software_engineer_pt") or []
+                )
+                self._last.architect_pt = list(pt.get("architect_pt") or [])
+                self._last.tradeoffs_pt = str(pt.get("tradeoffs_pt") or "")
+
+        try:
+            ui.coach_pt_section(
+                n,
+                spoken_pt=str(pt.get("spoken_pt") or ""),
+                software_engineer_pt=list(pt.get("software_engineer_pt") or []),
+                architect_pt=list(pt.get("architect_pt") or []),
+                tradeoffs_pt=str(pt.get("tradeoffs_pt") or ""),
+            )
+        except Exception:
+            try:
+                ui.warn(f"[Coach {n}] UI pt-BR emit failed", panel="app")
+            except Exception:
+                pass
+
+        self._persist_result_pt(
+            n,
+            spoken_pt=str(pt.get("spoken_pt") or ""),
+            software_engineer_pt=list(pt.get("software_engineer_pt") or []),
+            architect_pt=list(pt.get("architect_pt") or []),
+            tradeoffs_pt=str(pt.get("tradeoffs_pt") or ""),
+        )
+
     def _persist_result(self, result: CoachResult) -> None:
-        """Write successful coach answer to SQLite (best-effort)."""
+        """Insert coach row in SQLite as soon as EN is ready (PT may be empty)."""
         sid = self.session_id
         if not sid or not result:
             return
@@ -651,12 +797,76 @@ class InterviewCoach:
                 provider=result.provider,
                 error="",
             )
+            try:
+                from . import ui
+
+                pt_note = (
+                    " · EN+PT"
+                    if (result.spoken_pt or "").strip()
+                    else " · EN (pt-BR pendente)"
+                )
+                ui.dim(
+                    f"[Coach {result.n}] gravado no SQLite{pt_note}",
+                    panel="app",
+                )
+            except Exception:
+                pass
         except Exception:
             try:
                 from . import ui
 
                 ui.warn(
                     f"[Coach {result.n}] falha ao gravar no banco",
+                    panel="app",
+                )
+            except Exception:
+                pass
+
+    def _persist_result_pt(
+        self,
+        coach_num: int,
+        *,
+        spoken_pt: str = "",
+        software_engineer_pt=None,
+        architect_pt=None,
+        tradeoffs_pt: str = "",
+    ) -> None:
+        """UPDATE the same coach_results row with pt-BR fields (async path)."""
+        sid = self.session_id
+        if not sid:
+            return
+        try:
+            from . import db
+
+            ok = db.update_coach_result_pt(
+                sid,
+                coach_num,
+                spoken_pt=spoken_pt,
+                software_engineer_pt=software_engineer_pt,
+                architect_pt=architect_pt,
+                tradeoffs_pt=tradeoffs_pt,
+            )
+            try:
+                from . import ui
+
+                if ok:
+                    ui.dim(
+                        f"[Coach {coach_num}] SQLite atualizado com pt-BR",
+                        panel="app",
+                    )
+                else:
+                    ui.warn(
+                        f"[Coach {coach_num}] SQLite: row EN não encontrada p/ pt-BR",
+                        panel="app",
+                    )
+            except Exception:
+                pass
+        except Exception:
+            try:
+                from . import ui
+
+                ui.warn(
+                    f"[Coach {coach_num}] falha ao gravar pt-BR no banco",
                     panel="app",
                 )
             except Exception:

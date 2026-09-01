@@ -1494,7 +1494,7 @@ _FOOTER_I18N = {
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUTED",
-        "placeholder": "Type a command and Enter (e.g. s, g, b, enew, ctts, u, q)…",
+        "placeholder": "Type a command and Enter (Ctrl+U clear · Ctrl+A select all)…",
         "prompt_placeholder": "Type the answer and Enter…",
         "starting": "starting listen…",
         "g_swap": "g(swap)",
@@ -1659,7 +1659,7 @@ _FOOTER_I18N = {
         "off": "OFF",
         "live": "LIVE",
         "muted": "MUDO",
-        "placeholder": "Digite um comando e Enter (ex: s, g, b, enew, ctts, u, q)…",
+        "placeholder": "Digite um comando e Enter (Ctrl+U limpa · Ctrl+A seleciona tudo)…",
         "prompt_placeholder": "Digite a resposta e Enter…",
         "starting": "iniciando escuta…",
         "g_swap": "g(trocar)",
@@ -7950,8 +7950,8 @@ class LiveLingoApp(App):
     def _resolve_key_character(event: events.Key) -> str | None:
         """
         Printable char for a Key event, with fallbacks for terminals/layouts
-        that send key *names* without `character` (common for `/` on
-        Windows Terminal + ABNT2/WSL: name=slash, character=None).
+        that send key *names* without `character` (common for `/` and `?` on
+        Windows Terminal + ABNT2/WSL: name=slash / shift+slash, character=None).
         """
         ch = event.character
         if ch is not None and ch != "":
@@ -7959,7 +7959,21 @@ class LiveLingoApp(App):
         name = (event.name or "").lower()
         key = (getattr(event, "key", None) or "").lower()
         token = name or key
-        # Strip modifiers if present (e.g. rare "shift+slash")
+        # Shift+/ → ? (do this BEFORE stripping modifiers — otherwise
+        # shift+slash collapses to slash → "/" and "?" becomes untypable).
+        if token in ("shift+slash", "shift+solidus", "shift+question_mark"):
+            return "?"
+        if (
+            "+" in token
+            and "shift" in token
+            and "ctrl" not in token
+            and "alt" not in token
+            and "meta" not in token
+            and "super" not in token
+            and token.rsplit("+", 1)[-1] in ("slash", "solidus")
+        ):
+            return "?"
+        # Strip modifiers if present (e.g. rare "ctrl+slash")
         if "+" in token:
             token = token.rsplit("+", 1)[-1]
         # Textual / term key identifiers → character
@@ -8002,8 +8016,23 @@ class LiveLingoApp(App):
             "dollar_sign": "$",
             "exclamation_mark": "!",
             "question_mark": "?",
+            "question": "?",
         }
         return fallback.get(token)
+
+    def _clear_cmd_line(self) -> bool:
+        """Empty #cmd entirely. Returns True on success."""
+        inp = self._cmd_input()
+        if inp is None:
+            return False
+        try:
+            inp.value = ""
+            inp.cursor_position = 0
+            self._cmd_erase_key = None
+            self._cmd_erase_streak = 0
+            return True
+        except Exception:
+            return False
 
     def _insert_cmd_char(self, ch: str) -> bool:
         """Insert one character into #cmd at the cursor. Returns True on success."""
@@ -8288,6 +8317,24 @@ class LiveLingoApp(App):
                 self._history_down()
             return
 
+        # Clear / select-all on #cmd (readline-style)
+        # Textual default: Ctrl+U = delete-left-of-cursor only; Ctrl+A = home.
+        # We want: Ctrl+U = clear whole line; Ctrl+A = select all (then Backspace).
+        if self._is_cmd_focused():
+            if key_name in ("ctrl+u",) or key_raw in ("ctrl+u",):
+                event.prevent_default()
+                event.stop()
+                self._clear_cmd_line()
+                return
+            if key_name in ("ctrl+a",) or key_raw in ("ctrl+a",):
+                event.prevent_default()
+                event.stop()
+                try:
+                    self.query_one("#cmd", Input).action_select_all()
+                except Exception:
+                    pass
+                return
+
         # Word/char erase on #cmd (intercept before Input eats key-repeat).
         # Prefer the longer id (e.g. ctrl+backspace over backspace).
         erase_id = key_name if len(key_name) >= len(key_raw) else key_raw
@@ -8303,8 +8350,8 @@ class LiveLingoApp(App):
         char_missing = event.character is None or event.character == ""
 
         # When #cmd is focused: Input normally types. If the terminal sent a
-        # key *name* without a character (slash on some WT/WSL layouts), Input
-        # inserts nothing — inject ourselves.
+        # key *name* without a character (slash / shift+slash on some WT/WSL
+        # layouts), Input inserts nothing — inject ourselves (`/` or `?`).
         if self._is_cmd_focused():
             if (
                 char_missing

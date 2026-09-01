@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+### Changed
+
+- **Coach EN-first** — a resposta em inglês (Spoken / SE / Arch / Trade-offs) é
+  emitida assim que a 1ª chamada LLM termina; a versão **pt-BR** chega depois em
+  background (`INTERVIEW_COACH_PT_ASYNC=true`, default). Reduz a espera pós-LC
+  antes de poder ler / usar o teleprompter. No SQLite: **INSERT** do EN na hora
+  e **UPDATE** do mesmo `coach_results` quando o pt-BR chega.
+
+### Added
+
+- **`view coach` teleprompter** — painel Spoken (EN) com destaque palavra a palavra
+  no ritmo de **`COACH_FOLLOW_WPM`** (default 130; você lê junto — sem mic/STT).
+  **Space** inicia/pausa · **r** reinicia · **Esc** para. Palavra atual em faixa
+  alta (~250% visual); já lidas em dim. Texto completo com **scroll vertical**.
+  Após o Spoken, continua a leitura no título **Trade-offs** e no parágrafo
+  seguinte (mesmo WPM). Com a leitura **done**, **↑/↓** navega o histórico de
+  Spokens da sessão do viewer; **Space**/**r** relê do início.
+
+### Fixed
+
+- **Coach Grok timeout** — default `INTERVIEW_COACH_TIMEOUT_S` **60s** (era 25);
+  retry 1× em timeout; mensagem clara no `view coach` quando a API falha (sem
+  Spoken). Use `INTERVIEW_COACH_TIMEOUT_S=90` ou `coach provider groq` se precisar.
+- **`view coach` follow** — não trava mais em palavras que o STT “não entende”:
+  avanço é só por WPM (`.env`), não por reconhecimento de voz.
+
 ## [1.2.5] - 2026-09-01
 
 Tag: [`v1.2.5`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.5).

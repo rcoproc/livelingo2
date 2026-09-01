@@ -122,6 +122,9 @@ def format_view_markup(kind: str, text: str) -> Optional[str]:
     """
     if kind == "clear":
         return None
+    # Structured Spoken / Trade-offs / errors for follow-along — not in scrollback
+    if kind in ("coach_spoken", "coach_tradeoffs", "coach_error"):
+        return None
     if text is None:
         return ""
     if text == "" or str(text).strip() == "":

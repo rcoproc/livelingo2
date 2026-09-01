@@ -4,23 +4,31 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from unittest.mock import MagicMock, patch
+
 from livelingo.interview_coach import (
     SYSTEM_PROMPT,
+    SYSTEM_PROMPT_EN,
+    SYSTEM_PROMPT_PT,
     InterviewCoach,
+    _build_pt_user_prompt,
     _build_user_prompt,
     is_interview_question,
 )
-from livelingo.interview_llm import parse_coach_response
+from livelingo.interview_llm import parse_coach_pt_response, parse_coach_response
 from livelingo import ui
 
 
-def test_system_prompt_requires_spoken_examples():
-    """Spoken EN + pt-BR must instruct 1–2 simple lived-experience examples."""
-    low = SYSTEM_PROMPT.lower()
+def test_system_prompt_en_only_requires_spoken_examples():
+    """EN-first prompt: examples in Spoken, no *_pt fields (pt is async)."""
+    low = SYSTEM_PROMPT_EN.lower()
     assert "example" in low
-    assert "spoken_pt" in low
+    assert "spoken_pt" not in SYSTEM_PROMPT_EN
     assert "lived experience" in low or "past project" in low
-    assert "1–2" in SYSTEM_PROMPT or "1-2" in SYSTEM_PROMPT
+    assert "1–2" in SYSTEM_PROMPT_EN or "1-2" in SYSTEM_PROMPT_EN
+    # Alias still points at EN-only prompt
+    assert SYSTEM_PROMPT is SYSTEM_PROMPT_EN
+    assert "spoken_pt" in SYSTEM_PROMPT_PT
 
 
 def test_user_prompt_reminds_examples_for_topic():
@@ -118,10 +126,108 @@ def test_parse_coach_response_json():
     assert out["software_engineer"][0].startswith("Root-caused")
     assert "circuit" in out["architect"][0].lower()
     assert "Caching" in out["tradeoffs"]
-    assert "stale" in out["tradeoffs"].lower()
-    assert "checkout" in out["spoken_pt"].lower() or "interrup" in out["spoken_pt"].lower()
-    assert out["software_engineer_pt"]
-    assert "Cache" in out["tradeoffs_pt"] or "latência" in out["tradeoffs_pt"]
+
+
+def test_parse_coach_pt_response():
+    raw = """
+    {
+      "spoken_pt": "Eu lidertei a interrupção do checkout.",
+      "software_engineer_pt": ["Identifiquei queries N+1"],
+      "architect_pt": ["Adicionei circuit breaker na borda"],
+      "tradeoffs_pt": "Cache reduz latência."
+    }
+    """
+    out = parse_coach_pt_response(raw)
+    assert "checkout" in out["spoken_pt"]
+    assert out["software_engineer_pt"][0].startswith("Identifiquei")
+    assert "Cache" in out["tradeoffs_pt"]
+
+
+def test_build_pt_user_prompt_embeds_en_json():
+    prompt = _build_pt_user_prompt(
+        {
+            "spoken": "I use Redis.",
+            "software_engineer": ["TTL on keys"],
+            "architect": ["Cache aside"],
+            "tradeoffs": "Stale vs fast",
+        }
+    )
+    assert "Redis" in prompt
+    assert "TTL" in prompt
+    assert "Translate" in prompt or "translate" in prompt.lower()
+
+
+def test_run_job_emits_en_before_pt_async():
+    """EN coach_block runs after 1st complete; PT thread uses 2nd complete."""
+    calls: list[str] = []
+
+    class FakeLLM:
+        provider_name = "fake"
+
+        def complete(self, system, user):
+            if "spoken_pt" in (system or "") and "English only" not in (system or ""):
+                calls.append("pt")
+                return (
+                    '{"spoken_pt":"Oi","software_engineer_pt":["a"],'
+                    '"architect_pt":["b"],"tradeoffs_pt":"c"}'
+                )
+            # EN system prompt mentions English only / no *_pt
+            calls.append("en")
+            return (
+                '{"spoken":"Hello there friend today","software_engineer":["se1"],'
+                '"architect":["ar1"],"tradeoffs":"trade1"}'
+            )
+
+    cfg = SimpleNamespace(
+        INTERVIEW_COACH_ENABLED=True,
+        INTERVIEW_COACH_PROVIDER="grok",
+        INTERVIEW_CANDIDATE_PROFILE="",
+        INTERVIEW_COACH_CONTEXT_FILE="",
+        INTERVIEW_COACH_PT_ASYNC=True,
+        INTERVIEW_MIN_CHARS=20,
+        INTERVIEW_STABLE_S=0.1,
+        INTERVIEW_COOLDOWN_S=0,
+        INTERVIEW_QUESTION_MODE="always",
+    )
+    coach = InterviewCoach(cfg, session_id=None)
+    coach._llm = FakeLLM()
+    coach._context_text = ""
+    coach._context_path = None
+
+    order: list[str] = []
+
+    def fake_block(*_a, **kwargs):
+        order.append("en_ui")
+        assert kwargs.get("pt_pending") is True
+
+    def fake_pt(*_a, **_k):
+        order.append("pt_ui")
+
+    with (
+        patch.object(ui, "coach_block", side_effect=fake_block),
+        patch.object(ui, "coach_pt_section", side_effect=fake_pt),
+        patch.object(ui, "dim"),
+        patch.object(ui, "info"),
+        patch.object(ui, "warn"),
+        patch.object(ui, "error"),
+    ):
+        coach._busy = True
+        coach._gen = 1
+        coach._run_job(1, 7, "How do you design APIs for rate limiting at scale?", "")
+        # Wait briefly for background PT thread
+        import time
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline and "pt_ui" not in order:
+            time.sleep(0.05)
+
+    assert order[0] == "en_ui"
+    assert "pt_ui" in order
+    assert calls[0] == "en"
+    assert "pt" in calls
+    assert coach._last is not None
+    assert "Hello" in (coach._last.spoken or "")
+    assert "Oi" in (coach._last.spoken_pt or "")
 
 
 def test_parse_coach_response_fenced_and_fallback():
@@ -211,10 +317,7 @@ def test_persist_result_writes_sqlite(tmp_db):
         software_engineer=["pytest + mocks"],
         architect=["chaos in staging"],
         tradeoffs="Mocks are fast but miss integration bugs.",
-        spoken_pt="Começo com testes de contrato.",
-        software_engineer_pt=["pytest + mocks"],
-        architect_pt=["chaos em staging"],
-        tradeoffs_pt="Mocks são rápidos, mas perdem bugs de integração.",
+        spoken_pt="",
         provider="grok",
         error="",
     )
@@ -223,7 +326,20 @@ def test_persist_result_writes_sqlite(tmp_db):
     assert len(rows) == 1
     assert rows[0]["coach_num"] == 7
     assert "contract" in rows[0]["spoken_en"]
-    assert "contrato" in rows[0]["spoken_pt"].lower()
+    assert (rows[0]["spoken_pt"] or "") == ""
+
+    # Async pt-BR fills the same row
+    coach._persist_result_pt(
+        7,
+        spoken_pt="Começo com testes de contrato.",
+        software_engineer_pt=["pytest + mocks"],
+        architect_pt=["chaos em staging"],
+        tradeoffs_pt="Mocks são rápidos, mas perdem bugs de integração.",
+    )
+    rows2 = db.load_session_coach_results("persist-coach")
+    assert len(rows2) == 1
+    assert rows2[0]["id"] == rows[0]["id"]
+    assert "contrato" in rows2[0]["spoken_pt"].lower()
 
     # Errors must not be persisted
     bad = CoachResult(n=8, question="Q", spoken="", error="timeout")
@@ -234,6 +350,19 @@ def test_persist_result_writes_sqlite(tmp_db):
 def test_normalize_panel_coach():
     assert ui._normalize_panel("coach") == "coach"
     assert ui._normalize_panel("entrevista") == "coach"
+
+
+def test_coach_split_paragraphs_sentences():
+    parts = ui._coach_split_paragraphs(
+        "First sentence here. Second sentence here! Third one?"
+    )
+    assert len(parts) == 3
+    assert parts[0].startswith("First")
+    assert parts[1].startswith("Second")
+    assert parts[2].startswith("Third")
+    # Explicit blank lines win
+    parts2 = ui._coach_split_paragraphs("Para A.\n\nPara B.")
+    assert parts2 == ["Para A.", "Para B."]
 
 
 def test_ask_simulate_lc_schedules_and_emits_lc(monkeypatch):

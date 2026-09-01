@@ -566,7 +566,9 @@ _I18N: dict[str, dict[str, str]] = {
             "**Ctrl+C** selection · **Ctrl+Shift+C** / `a` / `copy` = copy **all**; "
             "**Ctrl+S** / `e` / `export` = write `.md` "
             "(`YYYY-MM-DD_livelingo-view-<panel>.md` in the current directory); "
-            "**q** quit. Selection uses a readable yellow highlight."
+            "**q** quit. Selection uses a readable yellow highlight. "
+            "**`view coach`:** Spoken EN follow-along — **Space** start/pause mic STT, "
+            "**r** restart, **Esc** stop (best with `interview` on main; shared capture)."
         ),
     },
     "pt": {
@@ -945,7 +947,9 @@ _I18N: dict[str, dict[str, str]] = {
             "**Ctrl+C** seleção · **Ctrl+Shift+C** / `a` / `copy` = copiar **tudo**; "
             "**Ctrl+S** / `e` / `export` = gravar `.md` "
             "(`YYYY-MM-DD_livelingo-view-<painel>.md` no diretório atual); "
-            "**q** sair. Seleção com highlight amarelo legível."
+            "**q** sair. Seleção com highlight amarelo legível. "
+            "**`view coach`:** leitura Spoken EN — **Space** inicia/pausa STT no mic, "
+            "**r** reinicia, **Esc** para (ideal com `interview` no main; captura shared)."
         ),
     },
     "es": {

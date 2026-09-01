@@ -285,6 +285,10 @@ __all__ = [
     "chunk_stream_update",
     "chunk_stream_done",
     "coach_block",
+    "coach_pt_section",
+    "coach_spoken",
+    "coach_tradeoffs",
+    "coach_error",
     "synonyms_result",
     "favorites_popup",
     "set_log_sink",
@@ -1245,6 +1249,206 @@ def chunk_text_preview(
     )
 
 
+def coach_spoken(
+    text: str,
+    *,
+    tradeoffs: str = "",
+    n: int | None = None,
+    question: str = "",
+) -> None:
+    """
+    Publish Spoken EN (+ optional Trade-offs) for ``view coach`` teleprompter.
+
+    Payload is JSON ``{"spoken", "tradeoffs", "n", "question"}`` so the viewer
+    can keep a navigable history (↑/↓ when reading is done).
+    """
+    import json
+
+    t = (text or "").strip()
+    if not t:
+        return
+    payload = {
+        "spoken": t,
+        "tradeoffs": (tradeoffs or "").strip(),
+    }
+    if n is not None:
+        try:
+            payload["n"] = int(n)
+        except Exception:
+            pass
+    q = (question or "").strip()
+    if q:
+        payload["question"] = q if len(q) <= 120 else (q[:117] + "…")
+    _emit("coach_spoken", json.dumps(payload, ensure_ascii=False), panel="coach")
+
+
+def coach_tradeoffs(text: str) -> None:
+    """Publish Trade-offs EN for ``view coach`` (shown after Spoken teleprompter ends)."""
+    # Empty string clears a previous tradeoffs block when a new answer has none.
+    _emit("coach_tradeoffs", (text or "").strip(), panel="coach")
+
+
+def coach_error(message: str) -> None:
+    """Publish Coach API failure for ``view coach`` follow pane."""
+    msg = (message or "").strip()
+    if not msg:
+        return
+    _emit("coach_error", msg, panel="coach")
+
+
+def _coach_split_paragraphs(text: str) -> list[str]:
+    """
+    Split coach prose into display paragraphs.
+
+    Prefer blank-line / newline breaks; otherwise one sentence per paragraph
+    so Spoken/Trade-offs get a blank line between beats.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    if "\n\n" in raw:
+        parts = [p.strip() for p in raw.split("\n\n") if p.strip()]
+        if len(parts) > 1:
+            return parts
+    if "\n" in raw:
+        parts = [p.strip() for p in raw.splitlines() if p.strip()]
+        if len(parts) > 1:
+            return parts
+    # Single block → split on sentence boundaries (.?! + space/end)
+    import re
+
+    sentences = re.split(r"(?<=[.!?])\s+", raw)
+    parts = [s.strip() for s in sentences if s.strip()]
+    return parts if parts else [raw]
+
+
+def _coach_emit_section_rich(
+    *,
+    spoken_label: str,
+    spoken_text: str,
+    se_items,
+    arch_items,
+    trades_text: str,
+    se_label: str,
+    arch_label: str,
+    trades_label: str,
+):
+    e = _rich_escape
+    _emit("rich", f"  [bold green]{e(spoken_label)}[/]", panel="coach")
+    spoken_paras = _coach_split_paragraphs(spoken_text)
+    for i, para in enumerate(spoken_paras):
+        if i > 0:
+            _emit_chunk_blank(panel="coach")
+        _emit(
+            "rich",
+            f"  [bold white on #1e2a3a]{e(para)}[/]",
+            panel="coach",
+        )
+
+    se_list = list(se_items or [])
+    arch_list = list(arch_items or [])
+    if se_list or arch_list:
+        if spoken_paras:
+            _emit_chunk_blank(panel="coach")
+        for b in se_list:
+            _emit(
+                "rich",
+                f"  [magenta]· SE[/][dim] ({e(se_label)}):[/] [white]{e(b)}[/]",
+                panel="coach",
+            )
+        # One blank line between SE block and Arch block only
+        if se_list and arch_list:
+            _emit_chunk_blank(panel="coach")
+        for b in arch_list:
+            _emit(
+                "rich",
+                f"  [blue]· Arch[/][dim] ({e(arch_label)}):[/] [white]{e(b)}[/]",
+                panel="coach",
+            )
+
+    trades_paras = _coach_split_paragraphs(trades_text)
+    if trades_paras:
+        if spoken_paras or se_list or arch_list:
+            _emit_chunk_blank(panel="coach")
+        _emit(
+            "rich",
+            f"  [bold #e0a020]· {e(trades_label)}:[/]",
+            panel="coach",
+        )
+        for i, para in enumerate(trades_paras):
+            if i > 0:
+                _emit_chunk_blank(panel="coach")
+            _emit("rich", f"  [white]{e(para)}[/]", panel="coach")
+
+
+def coach_pt_section(
+    n,
+    *,
+    spoken_pt: str = "",
+    software_engineer_pt=None,
+    architect_pt=None,
+    tradeoffs_pt: str = "",
+):
+    """
+    Append pt-BR mirror under an already-emitted English coach block (async path).
+    """
+    spoken_br = (spoken_pt or "").strip()
+    se_br = [str(x).strip() for x in (software_engineer_pt or []) if str(x).strip()][:4]
+    arch_br = [str(x).strip() for x in (architect_pt or []) if str(x).strip()][:4]
+    trades_br = (tradeoffs_pt or "").strip()
+    if not (spoken_br or se_br or arch_br or trades_br):
+        return
+    with _print_lock:
+        if _log_sink is not None:
+            _emit_chunk_blank(panel="coach")
+            _emit_chunk_blank(panel="coach")
+            _emit(
+                "rich",
+                "  [bold #7aa2f7]── Versão pt-BR (leitura) ──[/]",
+                panel="coach",
+            )
+            _coach_emit_section_rich(
+                spoken_label="▶ Falado (pt-BR):",
+                spoken_text=spoken_br,
+                se_items=se_br,
+                arch_items=arch_br,
+                trades_text=trades_br,
+                se_label="Eng. de Software",
+                arch_label="Arquiteto",
+                trades_label="Trade-offs",
+            )
+            _emit_chunk_blank(panel="coach")
+            return
+        print()
+        print()
+        print(f"\r\033[K  {Fore.CYAN}── Versão pt-BR ──{Style.RESET_ALL}")
+        print(f"\r\033[K  {Fore.GREEN}▶ Falado (pt-BR):{Style.RESET_ALL}")
+        spoken_paras = _coach_split_paragraphs(spoken_br)
+        for i, para in enumerate(spoken_paras):
+            if i > 0:
+                print()
+            print(f"\r\033[K  {Fore.WHITE}{para}{Style.RESET_ALL}")
+        if se_br or arch_br:
+            if spoken_paras:
+                print()
+            for b in se_br:
+                print(f"\r\033[K  {Fore.MAGENTA}· SE:{Style.RESET_ALL} {b}")
+            if se_br and arch_br:
+                print()
+            for b in arch_br:
+                print(f"\r\033[K  {Fore.BLUE}· Arch:{Style.RESET_ALL} {b}")
+        trades_paras = _coach_split_paragraphs(trades_br)
+        if trades_paras:
+            if spoken_paras or se_br or arch_br:
+                print()
+            print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
+            for i, para in enumerate(trades_paras):
+                if i > 0:
+                    print()
+                print(f"\r\033[K  {Fore.WHITE}{para}{Style.RESET_ALL}")
+        print()
+
+
 def coach_block(
     n,
     question_en,
@@ -1258,11 +1462,13 @@ def coach_block(
     architect_pt=None,
     tradeoffs_pt: str = "",
     provider: str = "",
+    pt_pending: bool = False,
 ):
     """
     Interview Coach on the **coach** panel (under LC).
 
-    English block first (always speak EN), then two blank lines, then pt-BR mirror.
+    English block first (always speak EN). pt-BR may arrive later via
+    ``coach_pt_section`` when ``pt_pending`` / async translation is used.
     """
     q = (question_en or "").strip()
     spoken = (spoken_en or "").strip()
@@ -1277,53 +1483,6 @@ def coach_block(
     prov = (provider or "").strip()
     prefix = f"[Coach {n}] "
 
-    def _emit_section_rich(
-        *,
-        spoken_label: str,
-        spoken_text: str,
-        se_items,
-        arch_items,
-        trades_text: str,
-        se_label: str,
-        arch_label: str,
-        trades_label: str,
-    ):
-        e = _rich_escape
-        _emit("rich", f"  [bold green]{e(spoken_label)}[/]", panel="coach")
-        if spoken_text:
-            for line in spoken_text.splitlines() or [spoken_text]:
-                line = line.strip()
-                if not line:
-                    continue
-                _emit(
-                    "rich",
-                    f"  [bold white on #1e2a3a]{e(line)}[/]",
-                    panel="coach",
-                )
-        for b in se_items:
-            _emit(
-                "rich",
-                f"  [magenta]· SE[/][dim] ({e(se_label)}):[/] [white]{e(b)}[/]",
-                panel="coach",
-            )
-        for b in arch_items:
-            _emit(
-                "rich",
-                f"  [blue]· Arch[/][dim] ({e(arch_label)}):[/] [white]{e(b)}[/]",
-                panel="coach",
-            )
-        if trades_text:
-            _emit(
-                "rich",
-                f"  [bold #e0a020]· {e(trades_label)}:[/]",
-                panel="coach",
-            )
-            for line in trades_text.splitlines() or [trades_text]:
-                line = line.strip()
-                if not line:
-                    continue
-                _emit("rich", f"  [white]{e(line)}[/]", panel="coach")
-
     with _print_lock:
         if _log_sink is not None:
             e = _rich_escape
@@ -1335,7 +1494,7 @@ def coach_block(
                 + (f" [dim]· {e(prov)}[/]" if prov else ""),
                 panel="coach",
             )
-            _emit_section_rich(
+            _coach_emit_section_rich(
                 spoken_label="▶ Spoken (EN) — diga isto:",
                 spoken_text=spoken,
                 se_items=se,
@@ -1345,8 +1504,13 @@ def coach_block(
                 arch_label="Architect",
                 trades_label="Trade-offs",
             )
+            # Structured event for view-coach teleprompter (Spoken + Trade-offs together)
+            if spoken:
+                coach_spoken(spoken, tradeoffs=trades, n=n, question=q)
+            else:
+                coach_tradeoffs(trades)
             if has_pt:
-                # Two blank paragraphs between EN and PT-BR
+                # Inline PT (sync / legacy)
                 _emit_chunk_blank(panel="coach")
                 _emit_chunk_blank(panel="coach")
                 _emit(
@@ -1354,7 +1518,7 @@ def coach_block(
                     "  [bold #7aa2f7]── Versão pt-BR (leitura) ──[/]",
                     panel="coach",
                 )
-                _emit_section_rich(
+                _coach_emit_section_rich(
                     spoken_label="▶ Falado (pt-BR):",
                     spoken_text=spoken_br,
                     se_items=se_br,
@@ -1364,35 +1528,71 @@ def coach_block(
                     arch_label="Arquiteto",
                     trades_label="Trade-offs",
                 )
+            elif pt_pending:
+                _emit(
+                    "rich",
+                    "  [dim]pt-BR em breve…[/]",
+                    panel="coach",
+                )
             _emit_chunk_blank(panel="coach")
             return
         print(f"\r\033[K{Fore.YELLOW}{Style.BRIGHT}{prefix}{Style.RESET_ALL}Q: {q}")
         print(f"\r\033[K  {Fore.GREEN}▶ Spoken (EN):{Style.RESET_ALL}")
-        if spoken:
-            print(f"\r\033[K  {Fore.WHITE}{Style.BRIGHT}{spoken}{Style.RESET_ALL}")
-        for b in se:
-            print(
-                f"\r\033[K  {Fore.MAGENTA}· SE (Software Engineer):{Style.RESET_ALL} {b}"
-            )
-        for b in arch:
-            print(f"\r\033[K  {Fore.BLUE}· Arch (Architect):{Style.RESET_ALL} {b}")
-        if trades:
+        spoken_paras = _coach_split_paragraphs(spoken)
+        for i, para in enumerate(spoken_paras):
+            if i > 0:
+                print()
+            print(f"\r\033[K  {Fore.WHITE}{Style.BRIGHT}{para}{Style.RESET_ALL}")
+        if se or arch:
+            if spoken_paras:
+                print()
+            for b in se:
+                print(
+                    f"\r\033[K  {Fore.MAGENTA}· SE (Software Engineer):{Style.RESET_ALL} {b}"
+                )
+            if se and arch:
+                print()
+            for b in arch:
+                print(f"\r\033[K  {Fore.BLUE}· Arch (Architect):{Style.RESET_ALL} {b}")
+        trades_paras = _coach_split_paragraphs(trades)
+        if trades_paras:
+            if spoken_paras or se or arch:
+                print()
             print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
-            print(f"\r\033[K  {Fore.WHITE}{trades}{Style.RESET_ALL}")
+            for i, para in enumerate(trades_paras):
+                if i > 0:
+                    print()
+                print(f"\r\033[K  {Fore.WHITE}{para}{Style.RESET_ALL}")
         if has_pt:
             print()
             print()
             print(f"\r\033[K  {Fore.CYAN}── Versão pt-BR ──{Style.RESET_ALL}")
             print(f"\r\033[K  {Fore.GREEN}▶ Falado (pt-BR):{Style.RESET_ALL}")
-            if spoken_br:
-                print(f"\r\033[K  {Fore.WHITE}{spoken_br}{Style.RESET_ALL}")
-            for b in se_br:
-                print(f"\r\033[K  {Fore.MAGENTA}· SE:{Style.RESET_ALL} {b}")
-            for b in arch_br:
-                print(f"\r\033[K  {Fore.BLUE}· Arch:{Style.RESET_ALL} {b}")
-            if trades_br:
+            spoken_br_paras = _coach_split_paragraphs(spoken_br)
+            for i, para in enumerate(spoken_br_paras):
+                if i > 0:
+                    print()
+                print(f"\r\033[K  {Fore.WHITE}{para}{Style.RESET_ALL}")
+            if se_br or arch_br:
+                if spoken_br_paras:
+                    print()
+                for b in se_br:
+                    print(f"\r\033[K  {Fore.MAGENTA}· SE:{Style.RESET_ALL} {b}")
+                if se_br and arch_br:
+                    print()
+                for b in arch_br:
+                    print(f"\r\033[K  {Fore.BLUE}· Arch:{Style.RESET_ALL} {b}")
+            trades_br_paras = _coach_split_paragraphs(trades_br)
+            if trades_br_paras:
+                if spoken_br_paras or se_br or arch_br:
+                    print()
                 print(f"\r\033[K  {Fore.YELLOW}· Trade-offs:{Style.RESET_ALL}")
-                print(f"\r\033[K  {Fore.WHITE}{trades_br}{Style.RESET_ALL}")
+                for i, para in enumerate(trades_br_paras):
+                    if i > 0:
+                        print()
+                    print(f"\r\033[K  {Fore.WHITE}{para}{Style.RESET_ALL}")
+        elif pt_pending:
+            print(f"\r\033[K  {Fore.CYAN}pt-BR em breve…{Style.RESET_ALL}")
         print()
 
 
