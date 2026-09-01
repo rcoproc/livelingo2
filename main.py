@@ -254,6 +254,8 @@ class ListeningIndicator:
         self.is_speaking = False
         # Live TTS playback (pipeline sound_enabled); default OFF.
         self.sound_on = False
+        # interview / iv — append " - Interview Mode" on the status line
+        self.interview_mode = False
 
     def start(self):
         """Start (or keep) the animation thread. Safe to call repeatedly."""
@@ -302,6 +304,10 @@ class ListeningIndicator:
     def set_sound_on(self, enabled: bool):
         """Mirror pipeline sound_enabled for the robot status line."""
         self.sound_on = bool(enabled)
+
+    def set_interview_mode(self, on: bool):
+        """Show/hide Interview Mode suffix on the classic status line."""
+        self.interview_mode = bool(on)
 
     def pause_for_command(self):
         """Yield the terminal to the command handler (priority over animation)."""
@@ -384,6 +390,9 @@ class ListeningIndicator:
             # Text follows SOURCE_LANG; pair shows current SOURCE → TARGET ([g]/[t]).
             pad = "   "
             idle_msg, active_msg = _listen_status_messages()
+            if self.interview_mode:
+                idle_msg = f"{idle_msg} - Interview Mode"
+                active_msg = f"{active_msg} - Interview Mode"
             src = (getattr(cfg, "SOURCE_LANG", "") or "?").upper()
             tgt = (getattr(cfg, "TARGET_LANG", "") or "?").upper()
             pair = f"{src} → {tgt}"
@@ -1213,7 +1222,7 @@ def _print_menu(pipeline=None):
         [
             "[pc] Phrase cache (pc …)",
             "[session-info] All sessions LC/VOZ/Coach + DB size (si)",
-            "[interview] som OFF · cam OFF · LC+Coach ON · painel oculto (iv)",
+            "[interview] som OFF · cam OFF · LC+Coach ON · Coach minimizado (iv)",
             "[v]  Switch session",
             "[m]  Show this menu",
             "[u]  Compact UI (F4)",
@@ -1262,11 +1271,11 @@ def _is_livecaptions_entry(timing) -> bool:
 
 def _cmd_interview(pipeline, synonym_lookup, indicator=None):
     """
-    Interview preset: sound OFF, cam off, LC on, Coach on, hide Coach pane.
+    Interview preset: sound OFF, cam off, LC on, Coach on, Coach log minimized.
 
-    Coach stays enabled (answers still generated); the in-TUI Coach pane is
-    hidden so LC uses the column — follow along with ``view coach``.
-    Prints VOZ reminders for ``airespond`` and the detached viewer CLI.
+    Coach stays enabled; the in-TUI Coach pane stays **visible** but collapsed
+    to the thin bar (same as the Minimize button). Use Restaurar or
+    ``view coach`` to read answers.
     """
     # 1) Sound OFF — force off (do not toggle like bare [s])
     was_sound_on = bool(pipeline.is_sound_enabled())
@@ -1294,24 +1303,37 @@ def _cmd_interview(pipeline, synonym_lookup, indicator=None):
     _dispatch_command(pipeline, synonym_lookup, "lc on", "lc on", indicator)
     _dispatch_command(pipeline, synonym_lookup, "coach on", "coach on", indicator)
 
-    # 5) Hide Coach pane in TUI (Coach API stays ON — use view coach)
-    if indicator is not None and hasattr(indicator, "set_coach_panel_visible"):
+    # 5) Coach pane visible but minimized (thin bar under LC)
+    if indicator is not None:
         try:
-            if hasattr(indicator, "call_from_thread"):
-                indicator.call_from_thread(indicator.set_coach_panel_visible, False)
-            else:
-                indicator.set_coach_panel_visible(False)
+            if hasattr(indicator, "set_coach_panel_visible"):
+                if hasattr(indicator, "call_from_thread"):
+                    indicator.call_from_thread(indicator.set_coach_panel_visible, True)
+                else:
+                    indicator.set_coach_panel_visible(True)
+            if hasattr(indicator, "set_coach_minimized"):
+                if hasattr(indicator, "call_from_thread"):
+                    indicator.call_from_thread(indicator.set_coach_minimized, True)
+                else:
+                    indicator.set_coach_minimized(True)
+            elif hasattr(indicator, "coach_toggle_minimize"):
+                # Fallback: only toggle if not already minimized
+                if not bool(getattr(indicator, "_coach_minimized", False)):
+                    if hasattr(indicator, "call_from_thread"):
+                        indicator.call_from_thread(indicator.coach_toggle_minimize)
+                    else:
+                        indicator.coach_toggle_minimize()
+            ui.info(
+                "Coach minimizado (barra fina). "
+                "Restaurar no botão · ou: python main.py view coach",
+                indent=3,
+                panel="app",
+            )
         except Exception:
             pass
-        ui.info(
-            "Painel Coach oculto na TUI (Coach continua ON). "
-            "Ver: python main.py view coach · ou coach on para mostrar de novo.",
-            indent=3,
-            panel="app",
-        )
 
     ui.success(
-        "Modo interview: som OFF · cam OFF · LC ON · Coach ON · painel oculto",
+        "Modo interview: som OFF · cam OFF · LC ON · Coach ON · minimizado",
         indent=3,
         panel="app",
     )
@@ -1325,6 +1347,35 @@ def _cmd_interview(pipeline, synonym_lookup, indicator=None):
         "Use comando > python main.py view coach",
         indent=3,
         panel="main",
+    )
+    # Header badge: "... (Digite um comando) - Interview Mode"
+    _set_interview_mode_flag(indicator, True)
+
+
+def _set_interview_mode_flag(indicator, on: bool) -> None:
+    """Enable/disable Interview Mode suffix on the robot header."""
+    if indicator is None or not hasattr(indicator, "set_interview_mode"):
+        return
+    try:
+        if hasattr(indicator, "call_from_thread"):
+            indicator.call_from_thread(indicator.set_interview_mode, bool(on))
+        else:
+            indicator.set_interview_mode(bool(on))
+    except Exception:
+        try:
+            indicator.set_interview_mode(bool(on))
+        except Exception:
+            pass
+
+
+def _cmd_interview_off(indicator=None):
+    """Leave Interview Mode (header badge only; does not toggle coach/lc)."""
+    _set_interview_mode_flag(indicator, False)
+    ui.info(
+        "Interview Mode OFF — badge removido do header. "
+        "(Coach/LC/cam/som não são alterados; use coach off / lc off se quiser.)",
+        indent=3,
+        panel="app",
     )
 
 
@@ -2484,9 +2535,19 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             ui.success(msg, panel="app")
         else:
             ui.warn(msg, panel="app")
-    elif cmd in ("interview", "iv"):
-        # Preset: s(off) + cam off + lc on + coach on + hint on VOZ log
-        _cmd_interview(pipeline, synonym_lookup, indicator)
+    elif (
+        cmd in ("interview", "iv")
+        or cmd.startswith("interview ")
+        or cmd.startswith("iv ")
+    ):
+        # interview / iv → full preset + header badge
+        # interview off / iv off → clear badge only
+        parts = (raw_cmd or cmd or "").strip().split(None, 1)
+        action = (parts[1] if len(parts) > 1 else "").strip().lower()
+        if action in ("off", "end", "exit", "0", "false"):
+            _cmd_interview_off(indicator)
+        else:
+            _cmd_interview(pipeline, synonym_lookup, indicator)
     elif cmd == "airespond" or cmd.startswith("airespond ") or cmd == "air" or cmd.startswith(
         "air "
     ):

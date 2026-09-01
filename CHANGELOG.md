@@ -7,19 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-09-01
+
+Tag: [`v1.2.5`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.5).
+
+**Highlights:** comando **`interview`/`iv`** (preset de entrevista + badge
+**Interview Mode**), **Lista de comandos** navegável (grupos colapsáveis + Enter
+preenche `#cmd`), tema Ctrl+P **persistente** e chrome TUI com tokens de tema.
+Header mostra **`v1.2.5`**.
+
 ### Added
 
 - **`interview`** (`iv`) — preset de entrevista: **som OFF**, **cam off**, **lc on**,
-  **coach on**, **oculta o painel Coach** na TUI (Coach continua ON); no log VOZ:
+  **coach on**, painel Coach **minimizado** (barra fina); header com
+  `- Interview Mode` até `interview off`; no log VOZ:
   `Use comando airespond de simulação para coach!` e
   `Use comando > python main.py view coach`.
+- **Lista de comandos (aba / Novidades lê o CHANGELOG)** — browser TUI com lista
+  em cima + descrição embaixo; grupos **Áudio · Frase · Idioma · Coach · Teclado ·
+  Sessão** (Coach: `coach` / `airespond` / `interview` / `F7` / provider).
+
+### Changed
+
+- **Lista de comandos** — grupos **fechados** por padrão; **Enter** no cabeçalho
+  expande/recolhe; **Enter** no comando preenche `#cmd` (Enter no app global não
+  “rouba” mais a tecla do menu).
+- **Tema (Ctrl+P)** — header do robô e faixa/quadro LC usam tokens de tema
+  (`$warning` / `$surface` / `$primary`…) em vez de cores Tokyo Night fixas;
+  a escolha fica em `.cache/tui_theme.txt` e é restaurada no próximo start.
 
 ### Security
 
 - Bumped **`aiohttp` ≥ 3.14.3** (CVE-2026-69244 / 69243 / 59881; via `edge-tts`).
 - Bumped **`nltk` ≥ 3.10.2** (CVE-2026-62383 symlink file read).
 - Toolchain floor **`pip` ≥ 26.2** (CVE-2026-13346 doubly-encoded index URLs).
-- `SECURITY_FLOORS` / README tables updated (`check_deps_security.py`, tests).
+- `SECURITY_FLOORS` / README tables / CI (`pip>=26.2`) atualizados.
 
 ## [1.2.4] - 2026-09-01
 
@@ -551,7 +573,8 @@ Tag: [`v1.0.0`](https://github.com/rcoproc/livelingo2/releases/tag/v1.0.0).
 
 - Initial LiveLingo baseline (prior commits on this branch): SQLite sessions, interactive commands, Groq cloud STT, AI export summary.
 
-[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/rcoproc/livelingo2/compare/v1.2.5...HEAD
+[1.2.5]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.5
 [1.2.4]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.4
 [1.2.3]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3
 [1.2.2]: https://github.com/rcoproc/livelingo2/releases/tag/v1.2.2

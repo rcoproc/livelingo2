@@ -26,8 +26,8 @@ microphone — so Microsoft Teams (or Zoom, Discord, Google Meet, OBS…) hears 
 translation as if it were your mic. Speak **French**, others hear **English**
 (both languages configurable).
 
-**Current release: [v1.2.4](CHANGELOG.md#124---2026-09-01)** — Coach no SQLite + **`l`**
-(histórico no painel coach), **`session-info`/`si`**, **`enew [LANG]`**. Full notes:
+**Current release: [v1.2.5](CHANGELOG.md#125---2026-09-01)** — **`interview`/`iv`**,
+Lista de comandos navegável, tema Ctrl+P persistente. Full notes:
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ```text
@@ -480,7 +480,7 @@ Listens on `127.0.0.1:8765` (`LOG_VIEW_PORT`). This is a secondary TUI process, 
 | **Tradução** | Vertical split: **LC** (left, stable LiveCaptions pairs) \| **VOZ** (right, mic chunks + command output). Drag the **║** sash to resize width (double-click → 50/50). **Expandir/Restaurar** on the **VOZ** header maximizes the right pane. Click a pane to focus it for search / scroll / copy. Independent scroll per side. |
 | **Sistema** | Pipeline stages, VAD/listen lines, timings, debug, **F1** help |
 | **Novidades** | Project `CHANGELOG.md` (Markdown) |
-| **Lista de comandos** | Grouped command help in `SOURCE_LANG` |
+| **Lista de comandos** | Navigable menu (↑↓ + description; Enter fills `#cmd`) grouped by Audio / Sentence / Language / Coach / Keyboard / Session |
 
 Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`═ ↕ captions ═`) to grow/shrink captions vs the middle log tabs. On the **same row as the log tabs** (right side): compact **F2** bypass chip and **F5** auto-scroll chip (both LC + VOZ).
 

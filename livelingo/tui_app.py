@@ -14,7 +14,7 @@ owns the screen. Logs arrive via ui.set_log_sink(kind, text, panel); commands
 reuse main dispatch in a worker thread with stdin/stdout proxies.
 
 The Novidades ("What's New") tab shows CHANGELOG.md; the Command list tab
-lists all menu commands (Markdown, i18n by SOURCE_LANG).
+is a navigable menu (OptionList + description panel, i18n by SOURCE_LANG).
 """
 
 from __future__ import annotations
@@ -39,11 +39,13 @@ from textual.widgets import (
     Footer,
     Header,
     Input,
+    OptionList,
     RichLog,
     Static,
     TabbedContent,
     TabPane,
 )
+from textual.widgets.option_list import Option
 
 # Click events on Static bypass badge (#cmd-bypass)
 from . import command_help
@@ -164,10 +166,35 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # Command-line history (↑/↓ in #cmd), persisted under .cache/
 _CMD_HISTORY_PATH = os.path.join(".cache", "cmd_history.txt")
 _CMD_HISTORY_MAX = 100
+# Ctrl+P → Theme: last chosen Textual theme name
+_TUI_THEME_PATH = os.path.join(".cache", "tui_theme.txt")
 
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "")
+
+
+def _load_tui_theme_name() -> str | None:
+    """Return persisted theme name from ``.cache/tui_theme.txt``, or None."""
+    try:
+        with open(_TUI_THEME_PATH, encoding="utf-8") as f:
+            name = (f.read() or "").strip()
+        return name or None
+    except Exception:
+        return None
+
+
+def _save_tui_theme_name(name: str) -> None:
+    """Persist Textual theme name for the next launch."""
+    name = (name or "").strip()
+    if not name:
+        return
+    try:
+        os.makedirs(os.path.dirname(_TUI_THEME_PATH) or ".cache", exist_ok=True)
+        with open(_TUI_THEME_PATH, "w", encoding="utf-8") as f:
+            f.write(name + "\n")
+    except Exception:
+        pass
 
 
 def _os_clipboard(text: str) -> bool:
@@ -700,13 +727,13 @@ class LcCoachSash(Static):
         height: 1;
         min-height: 1;
         max-height: 1;
-        background: #bb9af7 40%;
-        color: #c0caf5;
+        background: $secondary 40%;
+        color: $text;
         content-align: center middle;
         text-style: bold;
     }
     LcCoachSash:hover {
-        background: #bb9af7 70%;
+        background: $secondary 70%;
     }
     LcCoachSash.-dragging {
         background: $warning;
@@ -776,18 +803,18 @@ class CaptionsHSash(Static):
         height: 1;
         min-height: 1;
         max-height: 1;
-        background: #7aa2f7 45%;
-        color: #c0caf5;
+        background: $primary 45%;
+        color: $text;
         content-align: center middle;
         text-style: bold;
     }
     CaptionsHSash:hover {
-        background: #7aa2f7 80%;
-        color: #ffffff;
+        background: $primary 80%;
+        color: $background;
     }
     CaptionsHSash.-dragging {
         background: $warning;
-        color: #1a1b26;
+        color: $background;
     }
     """
 
@@ -2330,15 +2357,16 @@ class LiveLingoApp(App):
         /* Default Header is 3 rows (tall); keep chrome compact */
         height: 1;
     }
-    /* Exactly 1 row for robot line — left status + right version badge. */
+    /* Exactly 1 row for robot line — left status + right version badge.
+       Uses theme tokens so Ctrl+P → Theme updates this chrome. */
     #listen-header {
         dock: top;
         height: 1;
         min-height: 1;
         max-height: 1;
         layout: horizontal;
-        background: #e0a020;
-        color: #1a1b26;
+        background: $warning;
+        color: $background;
         padding: 0 1;
         border: none;
         text-style: bold;
@@ -2348,7 +2376,7 @@ class LiveLingoApp(App):
         width: 1fr;
         height: 1;
         background: transparent;
-        color: #1a1b26;
+        color: $background;
         text-style: bold;
         content-align: left middle;
         overflow-x: hidden;
@@ -2359,57 +2387,57 @@ class LiveLingoApp(App):
         width: auto;
         height: 1;
         background: transparent;
-        color: #1a1b26;
+        color: $background;
         text-style: bold;
         content-align: right middle;
         padding: 0 0 0 1;
         border: none;
     }
     #listen-header.sound-on {
-        background: #3d9a5f;
-        color: #ffffff;
+        background: $success;
+        color: $background;
     }
     #listen-header.sound-on #listen-header-status,
     #listen-header.sound-on #listen-header-ver {
-        color: #ffffff;
+        color: $background;
     }
     #listen-header.mic-muted {
-        background: #c23b3b;
-        color: #ffffff;
+        background: $error;
+        color: $background;
         text-style: bold;
     }
     #listen-header.mic-muted #listen-header-status,
     #listen-header.mic-muted #listen-header-ver {
-        color: #ffffff;
+        color: $background;
     }
     #listen-header.-hot-listen #listen-header-status,
     #listen-header.-hot-listen #listen-header-ver {
-        color: #1a1b26;
+        color: $background;
     }
     /* [n] mute — red chrome, NON-blocking (no modal; logs/cmds stay usable) */
     #log-tabs.-mic-muted {
-        border: solid #c23b3b;
+        border: solid $error;
     }
     #captions-panel.-mic-muted {
-        border: solid #c23b3b;
+        border: solid $error;
     }
     #cmd-box.-mic-muted {
-        border: round #c23b3b;
+        border: round $error;
     }
-    /* [N] force soft-listen — yellow chrome (escuta forçada / voz baixa) */
+    /* [N] force soft-listen — warning chrome (escuta forçada / voz baixa) */
     #listen-header.-hot-listen {
-        background: #e0a020;
-        color: #1a1b26;
+        background: $warning;
+        color: $background;
         text-style: bold;
     }
     #log-tabs.-hot-listen {
-        border: solid #e0a020;
+        border: solid $warning;
     }
     #captions-panel.-hot-listen {
-        border: solid #e0a020;
+        border: solid $warning;
     }
     #cmd-box.-hot-listen {
-        border: round #e0a020;
+        border: round $warning;
     }
     Footer {
         dock: bottom;
@@ -2428,15 +2456,15 @@ class LiveLingoApp(App):
         width: 1fr;
         margin: 0;
         padding: 0 1 0 1;
-        background: #1a1b26;
-        border: solid #7aa2f7;
+        background: $surface;
+        border: solid $primary;
         overflow: hidden;
     }
     #captions-panel.-error {
-        border: solid #f7768e;
+        border: solid $error;
     }
     #captions-panel.-paused {
-        border: solid #e0a020;
+        border: solid $warning;
     }
     /* Expandir VOZ: collapse Live Captions strip (vertical space → log tabs) */
     #captions-panel.-collapsed {
@@ -2458,7 +2486,7 @@ class LiveLingoApp(App):
         max-height: 1;
         width: 1fr;
         text-style: bold;
-        color: #7aa2f7;
+        color: $primary;
         content-align: left middle;
         overflow: hidden;
     }
@@ -2466,7 +2494,7 @@ class LiveLingoApp(App):
         height: 1fr;
         min-height: 1;
         width: 1fr;
-        color: #c0caf5;
+        color: $text;
         content-align: left top;
         overflow: hidden;
         padding: 0;
@@ -2475,7 +2503,7 @@ class LiveLingoApp(App):
         height: 1fr;
         min-height: 1;
         width: 1fr;
-        color: #9ece6a;
+        color: $success;
         text-style: bold;
         content-align: left top;
         overflow: hidden;
@@ -2486,7 +2514,7 @@ class LiveLingoApp(App):
         min-height: 1;
         max-height: 1;
         width: 1fr;
-        color: #565f89;
+        color: $text-muted;
         content-align: left middle;
         overflow: hidden;
     }
@@ -2536,20 +2564,20 @@ class LiveLingoApp(App):
     }
     #trad-lbl-lc {
         width: 1fr;
-        color: #e040fb;
+        color: $secondary;
         text-style: bold;
         content-align: left middle;
     }
     #trad-lbl-coach {
         width: auto;
-        color: #bb9af7;
+        color: $accent;
         text-style: bold;
         content-align: right middle;
         padding: 0 1;
     }
     #trad-lbl-voz {
         width: 1fr;
-        color: #e0af68;
+        color: $warning;
         text-style: bold;
         content-align: left middle;
     }
@@ -2613,13 +2641,13 @@ class LiveLingoApp(App):
         max-height: 1;
         padding: 0 1;
         border: none;
-        background: #565f89;
-        color: #c0caf5;
+        background: $boost;
+        color: $text;
         text-style: bold;
         dock: none;
     }
     #trad-btn-coach-min:hover {
-        background: #6b7399;
+        background: $panel;
     }
     #trad-btn-coach {
         width: auto;
@@ -2629,13 +2657,13 @@ class LiveLingoApp(App):
         max-height: 1;
         padding: 0 1;
         border: none;
-        background: #bb9af7;
-        color: #1a1b26;
+        background: $accent;
+        color: $background;
         text-style: bold;
         dock: none;
     }
     #trad-btn-coach:hover {
-        background: #cbb2ff;
+        background: $accent-lighten-2;
     }
     #trad-split {
         height: 1fr;
@@ -2672,7 +2700,49 @@ class LiveLingoApp(App):
     #log-coach.-hidden, #lc-coach-sash.-hidden, #log-lc.-hidden {
         display: none;
     }
-    #log, #log-lc, #log-coach, #log-app, #log-news, #log-cmds {
+    /* Command list browser: menu on top, description below */
+    #cmds-browser {
+        height: 1fr;
+        width: 1fr;
+        layout: vertical;
+    }
+    #cmds-list {
+        height: 3fr;
+        min-height: 8;
+        width: 1fr;
+        border: tall $accent;
+        padding: 0 1;
+        scrollbar-gutter: stable;
+    }
+    #cmds-list:focus {
+        border: tall $warning;
+    }
+    #cmds-list > .option-list--option-highlighted {
+        background: #f0d78c;
+        color: #1a1a1a;
+        text-style: bold;
+    }
+    #cmds-list > .option-list--option-disabled {
+        color: $text-muted;
+        text-style: bold;
+        background: $boost;
+    }
+    #cmds-detail {
+        height: 2fr;
+        min-height: 6;
+        width: 1fr;
+        border: tall $primary;
+        padding: 1 2;
+        background: $panel;
+        overflow-y: auto;
+    }
+    #cmds-hint {
+        height: 1;
+        width: 1fr;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    #log, #log-lc, #log-coach, #log-app, #log-news {
         height: 1fr;
         margin: 0;
         padding: 0 1;
@@ -3132,6 +3202,8 @@ class LiveLingoApp(App):
         self._cmd_row_stacked = False
         # [N] force soft-listen: yellow borders + low-energy VAD
         self._force_soft_listen = False
+        # interview / iv preset — header shows " - Interview Mode" until off
+        self._interview_mode: bool = False
         try:
             import config as _cfg
 
@@ -3142,6 +3214,8 @@ class LiveLingoApp(App):
         # Command history (↑/↓) — list of past submissions; index -1 = draft line
         self._cmd_history: list[str] = []
         self._cmd_history_i: int = -1
+        # Restore last Ctrl+P theme (``.cache/tui_theme.txt``)
+        self._apply_persisted_theme()
         self._cmd_draft: str = ""
         # Hold Backspace/Delete → accelerate to whole-word erase
         self._cmd_erase_key: str | None = None
@@ -3332,15 +3406,19 @@ class LiveLingoApp(App):
                     min_width=_log_min_w,
                 )
             with TabPane(_cmds_label, id="tab-cmds"):
-                yield SelectableRichLog(
-                    id="log-cmds",
-                    highlight=False,
-                    markup=True,
-                    wrap=True,
-                    auto_scroll=False,
-                    max_lines=20000,
-                    min_width=_log_min_w,
-                )
+                with Vertical(id="cmds-browser"):
+                    # markup=False: tokens like [/] or [s] must stay literal
+                    yield OptionList(id="cmds-list", markup=False)
+                    yield Static(
+                        "",
+                        id="cmds-detail",
+                        markup=True,
+                    )
+                    yield Static(
+                        "",
+                        id="cmds-hint",
+                        markup=True,
+                    )
         with Vertical(id="bottom"):
             yield Static("", id="hint", markup=True)
             with Horizontal(id="cmd-row"):
@@ -3442,6 +3520,32 @@ class LiveLingoApp(App):
         except Exception:
             pass
 
+    def _apply_persisted_theme(self) -> None:
+        """Load ``.cache/tui_theme.txt`` and set ``self.theme`` if still available."""
+        saved = _load_tui_theme_name()
+        if not saved:
+            return
+        try:
+            available = getattr(self, "available_themes", None) or {}
+            if saved in available:
+                self.theme = saved
+        except Exception:
+            pass
+
+    def _watch_theme(self, theme_name: str) -> None:
+        """Apply theme (Textual) and persist the choice for next launch."""
+        super()._watch_theme(theme_name)
+        try:
+            name = str(
+                theme_name
+                or getattr(getattr(self, "current_theme", None), "name", "")
+                or ""
+            ).strip()
+            if name:
+                _save_tui_theme_name(name)
+        except Exception:
+            pass
+
     def on_mount(self) -> None:
         ui_mod.set_log_sink(self._sink_from_worker)
         ui_mod.set_width_provider(self._log_content_width)
@@ -3451,6 +3555,11 @@ class LiveLingoApp(App):
         except Exception:
             pass
         self._load_cmd_history()
+        # Re-apply after mount in case themes finished registering post-init
+        try:
+            self._apply_persisted_theme()
+        except Exception:
+            pass
         # One drain tick: logs + deferred UI actions (keep light for STT latency).
         self.set_interval(0.05, self._drain_pending)
         # Faster status tick so "iniciando escuta" → idle Mic is near-instant
@@ -4139,7 +4248,7 @@ class LiveLingoApp(App):
         floor = _terminal_log_width(100)
         half = max(24, floor // 2)
         # Keep min_width in sync so inactive-tab writes stay wide enough
-        for lid in ("#log", "#log-lc", "#log-coach", "#log-app", "#log-news", "#log-cmds"):
+        for lid in ("#log", "#log-lc", "#log-coach", "#log-app", "#log-news"):
             try:
                 wlog = self.query_one(lid, SelectableRichLog)
                 if lid in ("#log", "#log-lc", "#log-coach"):
@@ -4804,10 +4913,11 @@ class LiveLingoApp(App):
             pass
 
     def _resolve_log_widget(self, panel: str = "main"):
-        """Return SelectableRichLog for panel main|lc|coach|app|news|cmds."""
+        """Return SelectableRichLog for panel main|lc|coach|app|news (not cmds)."""
         p = str(panel or "main").lower()
         if p in ("cmds", "commands", "cmd", "help", "comandos"):
-            log_id = "#log-cmds"
+            # Command browser uses OptionList — no RichLog scrollback
+            return None
         elif p in ("news", "changelog", "novidades", "whatsnew"):
             log_id = "#log-news"
         elif p in ("app", "sistema", "system"):
@@ -5073,10 +5183,16 @@ class LiveLingoApp(App):
         except Exception:
             pass
 
-    def coach_toggle_minimize(self) -> None:
-        """Collapse / restore Coach log height (bottom-left button)."""
+    def set_coach_minimized(self, minimized: bool) -> None:
+        """
+        Force Coach log collapsed (thin bar) or restored under LC.
+
+        Ensures the Coach pane is visible first — minimize is an in-column
+        height toggle, not the same as ``set_coach_panel_visible(False)``.
+        """
+        want = bool(minimized)
         # Leaving full expand first — minimize is an in-column height toggle
-        if getattr(self, "_trad_expand", None) == "coach":
+        if want and getattr(self, "_trad_expand", None) == "coach":
             try:
                 self.trad_toggle_expand("coach")
             except Exception:
@@ -5090,7 +5206,18 @@ class LiveLingoApp(App):
                 self.set_coach_panel_visible(True)
             except Exception:
                 pass
-        self._coach_minimized = not bool(getattr(self, "_coach_minimized", False))
+        if bool(getattr(self, "_coach_minimized", False)) == want:
+            # Still refresh label/layout (e.g. after coach on)
+            try:
+                self._apply_lc_coach_heights()
+            except Exception:
+                pass
+            try:
+                self._update_coach_min_label()
+            except Exception:
+                pass
+            return
+        self._coach_minimized = want
         try:
             self._apply_lc_coach_heights()
         except Exception:
@@ -5110,6 +5237,10 @@ class LiveLingoApp(App):
             self._schedule_trad_log_reflow(only_coach=True)
         except Exception:
             pass
+
+    def coach_toggle_minimize(self) -> None:
+        """Collapse / restore Coach log height (bottom-left button)."""
+        self.set_coach_minimized(not bool(getattr(self, "_coach_minimized", False)))
 
     def _update_coach_min_label(self) -> None:
         """Sync Minimize/Restore on the Coach bottom-left button."""
@@ -5646,6 +5777,12 @@ class LiveLingoApp(App):
                 self._follow_log_bottom(self._resolve_log_widget("main"))
             except Exception:
                 pass
+
+    def set_interview_mode(self, on: bool) -> None:
+        """Toggle Interview Mode badge on the robot header line."""
+        self._interview_mode = bool(on)
+        # Force next status tick to redraw (avoid duplicate-line skip)
+        self._last_header_line = None
 
     def set_sound_on(self, on: bool) -> None:
         self._sound_on = bool(on)
@@ -6261,31 +6398,279 @@ class LiveLingoApp(App):
         self._scroll_log_home(log)
 
     def _fill_commands_tab(self) -> None:
-        """Fill the Command list tab with Markdown help (SOURCE_LANG)."""
-        try:
-            log = self.query_one("#log-cmds", SelectableRichLog)
-        except Exception:
-            try:
-                log = self.query_one("#log-cmds", RichLog)
-            except Exception:
-                return
+        """Load catalog; groups start **collapsed**; rebuild visible OptionList."""
         lang = _source_lang_code()
+        self._cmds_menu_rows = list(command_help.iter_command_menu(lang))
+        self._annotate_menu_rows_with_group()
+        self._cmds_expanded: set[str] = set()  # all groups closed
+        self._cmds_detail_plain = ""
         try:
-            log.clear()
+            hint = self.query_one("#cmds-hint", Static)
+            hint.update(
+                f"[dim]{command_help.menu_hint(lang)} · "
+                f"Enter no grupo = abrir/fechar · Enter no comando = preencher #cmd[/]"
+            )
         except Exception:
             pass
-        md = command_help.build_commands_markdown(lang)
-        try:
-            from rich.markdown import Markdown
+        self._rebuild_cmds_list(prefer_id=None)
 
-            log.write(Markdown(md))
+    def _rebuild_cmds_list(self, prefer_id: str | None = None) -> None:
+        """Render headers always; commands only for expanded groups."""
+        try:
+            opts = self.query_one("#cmds-list", OptionList)
         except Exception:
-            for line in md.splitlines():
+            return
+        rows = list(getattr(self, "_cmds_menu_rows", None) or [])
+        expanded = set(getattr(self, "_cmds_expanded", set()) or set())
+        self._cmds_menu_by_id: dict[str, dict] = {}
+        try:
+            opts.clear_options()
+        except Exception:
+            pass
+        current_gid: str | None = None
+        first_id: str | None = None
+        for row in rows:
+            kind = row.get("kind")
+            if kind == "group":
+                gid = str(row.get("id") or "g")
+                current_gid = gid
+                title = str(row.get("title") or gid).upper()
+                open_ = gid in expanded
+                marker = "▾" if open_ else "▸"
+                oid = f"hdr-{gid}"
+                self._cmds_menu_by_id[oid] = {
+                    "kind": "group",
+                    "id": gid,
+                    "title": title,
+                    "open": open_,
+                }
+                label = f"{marker} {title}"
                 try:
-                    log.write((line or "").replace("[", "\\["))
+                    opts.add_option(Option(label, id=oid, disabled=False))
                 except Exception:
-                    break
-        self._scroll_log_home(log)
+                    try:
+                        opts.add_option(Option(label, id=oid))
+                    except Exception:
+                        pass
+                if first_id is None:
+                    first_id = oid
+                continue
+            if kind != "cmd":
+                continue
+            gid = str(row.get("_gid") or current_gid or "")
+            if gid not in expanded:
+                continue
+            cid = str(row.get("id") or "")
+            token = str(row.get("token") or cid)
+            title = str(row.get("title") or token)
+            oid = f"cmd-{cid}"
+            self._cmds_menu_by_id[oid] = row
+            prompt = f"  [{token}]  {title}"
+            try:
+                opts.add_option(Option(prompt, id=oid, disabled=False))
+            except Exception:
+                try:
+                    opts.add_option(Option(prompt, id=oid))
+                except Exception:
+                    pass
+        # Prefer restoring highlight; else first header
+        target = prefer_id or first_id
+        if target:
+            try:
+                opts.highlighted = opts.get_option_index(target)
+            except Exception:
+                try:
+                    opts.highlighted = 0
+                    target = getattr(opts.get_option_at_index(0), "id", target)
+                except Exception:
+                    target = None
+            if target:
+                self._update_cmds_detail(str(target))
+
+    def _annotate_menu_rows_with_group(self) -> None:
+        """Ensure each cmd row knows its parent group id."""
+        rows = list(getattr(self, "_cmds_menu_rows", None) or [])
+        current = ""
+        for row in rows:
+            if row.get("kind") == "group":
+                current = str(row.get("id") or "")
+            elif row.get("kind") == "cmd":
+                row["_gid"] = current
+        self._cmds_menu_rows = rows
+
+    def _update_cmds_detail(self, option_id: str | None) -> None:
+        """Paint description panel for the highlighted option."""
+        row = None
+        if option_id:
+            row = (getattr(self, "_cmds_menu_by_id", {}) or {}).get(option_id)
+        try:
+            detail = self.query_one("#cmds-detail", Static)
+        except Exception:
+            return
+
+        def _esc(s: str) -> str:
+            return (s or "").replace("[", "\\[")
+
+        if not row:
+            self._cmds_detail_plain = ""
+            try:
+                detail.update(
+                    "[dim]↑↓ navega · Enter no grupo abre/fecha · "
+                    "Enter no comando preenche a caixa[/]"
+                )
+            except Exception:
+                pass
+            return
+        if row.get("kind") == "group":
+            title = str(row.get("title") or row.get("id") or "")
+            open_ = bool(row.get("open"))
+            tip = (
+                "Enter: recolher este grupo"
+                if open_
+                else "Enter: expandir e ver os comandos"
+            )
+            self._cmds_detail_plain = f"{title}\n\n{tip}"
+            try:
+                detail.update(
+                    f"[bold]{_esc(title)}[/bold]\n\n[dim]{_esc(tip)}[/]"
+                )
+            except Exception:
+                pass
+            return
+        if row.get("kind") != "cmd":
+            return
+        token = str(row.get("token") or "")
+        title = str(row.get("title") or token)
+        desc = str(row.get("description") or "").strip()
+        plain_lines = [f"[{token}] — {title}", ""]
+        if desc:
+            plain_lines.append(desc)
+        plain_lines.append("")
+        plain_lines.append("Enter → envia para a caixa de comando (complete e Execute).")
+        self._cmds_detail_plain = "\n".join(plain_lines)
+        safe_label = _esc(f"[{token}]")
+        safe_title = _esc(title)
+        safe_desc = _esc(desc)
+        footer = _esc("Enter → preenche a caixa de comando (complete e execute).")
+        body = (
+            f"[bold]{safe_label}[/bold] — {safe_title}\n\n{safe_desc}\n\n"
+            f"[dim]{footer}[/]"
+            if safe_desc
+            else f"[bold]{safe_label}[/bold] — {safe_title}\n\n[dim]{footer}[/]"
+        )
+        try:
+            detail.update(body)
+        except Exception:
+            try:
+                detail.update(f"{token} — {title}\n\n{desc}")
+            except Exception:
+                pass
+
+    def _cmds_prefill_token(self, token: str, cmd_id: str = "") -> str:
+        """Map catalog tokens that aren't typed commands to a runnable alias."""
+        aliases = {
+            "f7": "coach force",
+            "f6": "go",
+            "f2": "b",
+            "f4": "u",
+            "f5": "",  # UI-only
+            "f1": "",
+            "f3": "",
+            "ctrl+c": "",
+            "ctrl+q": "",
+            "ctrl+shift+c": "",
+            "↑ / ↓": "",
+            "/": "/",
+            "/n": "/n",
+            "/p": "/p",
+        }
+        # Commands that usually need args → trailing space for completion
+        needs_space = {
+            "airespond",
+            "air",
+            "coach",
+            "enew",
+            "ctts",
+            "t",
+            "view",
+            "pc",
+            "o",
+            "co",
+            "interview",
+        }
+        key = (cmd_id or token or "").strip().lower()
+        if key in aliases:
+            return aliases[key]
+        tok = (token or "").strip()
+        if tok.upper().startswith("F") and tok[1:].isdigit():
+            return aliases.get(tok.lower(), "")
+        if tok.lower().startswith("ctrl"):
+            return ""
+        # Bare prefix commands get a trailing space to type args
+        if " " not in tok and (key in needs_space or tok.lower() in needs_space):
+            return tok + " "
+        return tok
+
+    def _cmds_fill_input(self, token: str) -> None:
+        """Put token into #cmd and focus it for completion / Enter-to-run."""
+        try:
+            inp = self.query_one("#cmd", Input)
+            inp.value = token
+            try:
+                inp.cursor_position = len(token)
+            except Exception:
+                pass
+            inp.focus()
+        except Exception:
+            try:
+                self.set_prompt_prefill(token)
+            except Exception:
+                pass
+
+    @on(OptionList.OptionHighlighted, "#cmds-list")
+    def _on_cmds_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        opt = getattr(event, "option", None)
+        oid = getattr(opt, "id", None) if opt is not None else None
+        self._update_cmds_detail(str(oid) if oid else None)
+
+    @on(OptionList.OptionSelected, "#cmds-list")
+    def _on_cmds_selected(self, event: OptionList.OptionSelected) -> None:
+        """Enter: toggle group, or fill #cmd with the command token."""
+        opt = getattr(event, "option", None)
+        oid = str(getattr(opt, "id", None) or "")
+        if not oid:
+            return
+        row = (getattr(self, "_cmds_menu_by_id", {}) or {}).get(oid)
+        if not row:
+            return
+        # Group header → expand / collapse
+        if oid.startswith("hdr-") or row.get("kind") == "group":
+            gid = str(row.get("id") or oid.removeprefix("hdr-"))
+            expanded = set(getattr(self, "_cmds_expanded", set()) or set())
+            if gid in expanded:
+                expanded.discard(gid)
+            else:
+                expanded.add(gid)
+            self._cmds_expanded = expanded
+            # Annotate parent gids once
+            self._annotate_menu_rows_with_group()
+            self._rebuild_cmds_list(prefer_id=f"hdr-{gid}")
+            return
+        # Command → prefill input for completion + execute
+        token = self._cmds_prefill_token(
+            str(row.get("token") or ""), str(row.get("id") or "")
+        )
+        if not token:
+            try:
+                self.notify(
+                    "Este item é atalho de teclado — use a tecla correspondente.",
+                    severity="information",
+                    timeout=2,
+                )
+            except Exception:
+                pass
+            return
+        self._cmds_fill_input(token)
 
     def _scroll_log_home(self, log) -> None:
         """Scroll a RichLog to the top; disable auto-scroll if possible."""
@@ -6416,7 +6801,7 @@ class LiveLingoApp(App):
 
     def _clear_all_search_highlights(self) -> None:
         """Remove /search paint from every log tab / Tradução pane."""
-        for lid in ("#log", "#log-lc", "#log-app", "#log-news", "#log-cmds"):
+        for lid in ("#log", "#log-lc", "#log-app", "#log-news"):
             try:
                 w = self.query_one(lid, SelectableRichLog)
                 w.clear_search_highlight()
@@ -6427,7 +6812,7 @@ class LiveLingoApp(App):
         self, log, query: str, hits: list[int], current_y: int | None
     ) -> None:
         """Paint hits on `log`; clear highlight on other tabs."""
-        for lid in ("#log", "#log-lc", "#log-app", "#log-news", "#log-cmds"):
+        for lid in ("#log", "#log-lc", "#log-app", "#log-news"):
             try:
                 w = self.query_one(lid, SelectableRichLog)
             except Exception:
@@ -6704,6 +7089,22 @@ class LiveLingoApp(App):
             except Exception:
                 pass
 
+    @on(TabbedContent.TabActivated, "#log-tabs")
+    def _on_log_tabs_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Focus the command menu when the Command list tab is shown."""
+        pane = getattr(event, "pane", None)
+        pid = str(getattr(pane, "id", "") or "")
+        if pid == "tab-cmds":
+            try:
+                self.call_after_refresh(
+                    lambda: self.query_one("#cmds-list", OptionList).focus()
+                )
+            except Exception:
+                try:
+                    self.query_one("#cmds-list", OptionList).focus()
+                except Exception:
+                    pass
+
     def action_toggle_log_tab(self) -> None:
         """F3: cycle Tradução → Sistema → Novidades → Lista de comandos → …"""
         try:
@@ -6722,12 +7123,22 @@ class LiveLingoApp(App):
                     i = 1
                 else:
                     i = 0
-            tabs.active = order[(i + 1) % len(order)]
-            # Keep command input focused after tab flip
-            try:
-                self.query_one("#cmd", Input).focus()
-            except Exception:
-                pass
+            nxt = order[(i + 1) % len(order)]
+            tabs.active = nxt
+            # Command list: focus the menu; other tabs keep #cmd focused
+            if nxt == "tab-cmds":
+                try:
+                    self.query_one("#cmds-list", OptionList).focus()
+                except Exception:
+                    try:
+                        self.query_one("#cmd", Input).focus()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self.query_one("#cmd", Input).focus()
+                except Exception:
+                    pass
         except Exception as exc:
             try:
                 self.notify(f"Aba de log: {exc}", severity="warning", timeout=2)
@@ -6748,6 +7159,11 @@ class LiveLingoApp(App):
             else:
                 want = "tab-main"
             tabs.active = want
+            if want == "tab-cmds":
+                try:
+                    self.query_one("#cmds-list", OptionList).focus()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -7368,6 +7784,9 @@ class LiveLingoApp(App):
         except Exception:
             idle_msg, active_msg = "Waiting...", "Listening..."
         body = active_msg if self._speaking else idle_msg
+        if bool(getattr(self, "_interview_mode", False)):
+            # After "(Digite um comando)" / "(Type any command)"
+            body = f"{body} - Interview Mode"
 
         if self._sound_on:
             audio_tag = "🔊 ÁUDIO ON"
@@ -7505,6 +7924,27 @@ class LiveLingoApp(App):
             return isinstance(focused, Input) and getattr(focused, "id", None) == "cmd"
         except Exception:
             return False
+
+    def _is_cmds_list_focused(self) -> bool:
+        """True when the Command-list OptionList owns the keyboard."""
+        try:
+            focused = self.focused
+            if focused is None:
+                return False
+            if getattr(focused, "id", None) == "cmds-list":
+                return True
+            # Child/descendant safety
+            w = focused
+            for _ in range(6):
+                parent = getattr(w, "parent", None)
+                if parent is None:
+                    break
+                if getattr(parent, "id", None) in ("cmds-list", "cmds-browser"):
+                    return True
+                w = parent
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def _resolve_key_character(event: events.Key) -> str | None:
@@ -7895,6 +8335,34 @@ class LiveLingoApp(App):
 
         key = key_name
 
+        # While browsing Command list, don't steal keys for #cmd
+        if self._is_cmds_list_focused():
+            if key in ("enter", "return"):
+                # App-level on_key would otherwise submit #cmd and block OptionList
+                event.prevent_default()
+                event.stop()
+                try:
+                    opts = self.query_one("#cmds-list", OptionList)
+                    opts.action_select()
+                except Exception:
+                    pass
+                return
+            # Let OptionList handle ↑↓ / page / home / end
+            if key_name in (
+                "up",
+                "down",
+                "cursor_up",
+                "cursor_down",
+                "pageup",
+                "pagedown",
+                "home",
+                "end",
+            ):
+                return
+            # Don't inject typed chars into #cmd while navigating the menu
+            if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
+                return
+
         # Printable → append to command field (incl. digits for r22 / eN)
         if ch and ch.isprintable() and ch not in ("\r", "\n", "\t"):
             if self._insert_cmd_char(ch):
@@ -8260,20 +8728,33 @@ class LiveLingoApp(App):
             label = "Comandos"
         else:
             label = "Tradução VOZ"
-        try:
-            log = self._active_log_widget() or self.query_one("#log", SelectableRichLog)
-            text = log.get_plain_text() or ""
-        except Exception:
-            text = ""
-        if not (text or "").strip():
-            # Fallback: rendered strips (in case plain buffer is empty)
+        text = ""
+        if panel == "cmds":
+            # Browser tab: copy focused command description (not a RichLog)
+            text = str(getattr(self, "_cmds_detail_plain", "") or "").strip()
+            if not text:
+                try:
+                    detail = self.query_one("#cmds-detail", Static)
+                    text = str(getattr(detail, "renderable", "") or detail.render())
+                except Exception:
+                    text = ""
+        else:
             try:
                 log = self._active_log_widget() or self.query_one(
                     "#log", SelectableRichLog
                 )
-                text = "\n".join(line.text for line in (log.lines or []))
+                text = log.get_plain_text() or ""
             except Exception:
                 text = ""
+            if not (text or "").strip():
+                # Fallback: rendered strips (in case plain buffer is empty)
+                try:
+                    log = self._active_log_widget() or self.query_one(
+                        "#log", SelectableRichLog
+                    )
+                    text = "\n".join(line.text for line in (log.lines or []))
+                except Exception:
+                    text = ""
         if not (text or "").strip():
             try:
                 self.notify(

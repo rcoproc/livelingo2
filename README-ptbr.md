@@ -11,8 +11,8 @@
 
 **LiveLingo2** transforma sua fala em outro idioma **ao vivo**, num microfone virtual — para que Microsoft Teams (ou Zoom, Discord, Google Meet, OBS…) ouça a tradução como se fosse seu microfone. Você fala **francês**, os outros ouvem **inglês** (ambos os idiomas são configuráveis).
 
-**Release atual: [v1.2.4](CHANGELOG.md#124---2026-09-01)** — Coach no SQLite + **`l`**
-(histórico no painel coach), **`session-info`/`si`**, **`enew [LANG]`**. Completo:
+**Release atual: [v1.2.5](CHANGELOG.md#125---2026-09-01)** — **`interview`/`iv`**,
+Lista de comandos navegável, tema Ctrl+P persistente. Completo:
 [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
@@ -187,7 +187,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 
 **TUI (atalhos):** `F1` ajuda → aba **Sistema**; `F3` cicla Tradução → Sistema → Novidades → Lista de comandos; `F4` UI compacta; **`F5` / chip auto-scroll** trava/liga follow-to-bottom em **LC + VOZ**; **`F6` / `[go]`** = flush escuta → STT agora; **`F7` / `[coach force]`** = Interview Coach no último LC; **`F10`** = placa de rosto closed; **`F11`** = freeze full-frame da foto closed (não maximiza TUI); **`N`** = escuta forçada (voz baixa); `Ctrl+C` copia seleção; `Ctrl+Shift+C` copia o painel focado (em Tradução: LC ou VOZ); **`F2` / chip bypass / `[b]`** = bypass de voz (não copia log); `/texto` busca no painel focado; `↑`/`↓` histórico de comandos; palette **Screenshot** grava SVG+PNG e copia a **imagem** para a área de transferência. Novidades = `CHANGELOG.md`; **Lista de comandos** inclui Coach / `airespond` / providers.
 
-**Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = ajuda agrupada.
+**Abas de log:** **Tradução** = split vertical **LC** (esquerda, só pares LiveCaptions estáveis) | **VOZ** (direita, chunks mic + saída de comandos) — arraste a barra **║** (duplo-clique = 50/50); **Expandir/Restaurar** no cabeçalho **VOZ** (direita); clique no painel para focar busca/cópia/scroll; faixa **Live Captions** no topo com borda inferior `═ ↕ captions ═` redimensionável. **Sistema** = etapas STT/tradução/TTS, VAD, timings, debug e F1. **Novidades** = `CHANGELOG.md`. **Lista de comandos** = menu navegável (↑↓ + descrição; Enter preenche o campo) agrupado em Áudio / Frase / Idioma / Coach / Teclado / Sessão.
 **Retomar sessão sem menu:** `python main.py <session_id>` ou `livelingo <session_id>` (id exibido ao sair).
 
 Com **som OFF** (`s`): o texto traduzido aparece na hora; com `TTS_SKIP_WHEN_MUTED=true` o TTS é omitido (replay `r` sintetiza depois). Nada vai para o VB-Cable. Com **som ON** de novo, as próximas frases voltam a tocar.
