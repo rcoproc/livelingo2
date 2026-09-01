@@ -1,4 +1,4 @@
-"""enew / TypedTextItem: priority queue + fixed PT→EN pair."""
+"""enew / TypedTextItem: priority queue + optional PT→LANG target."""
 
 from __future__ import annotations
 
@@ -31,6 +31,28 @@ def test_typed_text_item_normalizes(pipeline_mod):
     assert job.source_lang == "pt"
     assert job.target_lang == "en"
     assert TypedTextItem("").text == ""
+
+
+@pytest.mark.parametrize(
+    "payload, expect_tgt, expect_text",
+    [
+        ("", "en", ""),
+        ("Olá mundo", "en", "Olá mundo"),
+        ("EN Olá", "en", "Olá"),
+        ("ES Bom dia", "es", "Bom dia"),
+        ("es bom dia", "es", "bom dia"),
+        ("FR Bonjour", "fr", "Bonjour"),
+        ("pt-BR texto", "pt", "texto"),
+        ("spanish Hola", "es", "Hola"),
+        ("XX olá", "en", "XX olá"),  # unknown 2-letter → text
+        ("FRANCE is nice", "en", "FRANCE is nice"),  # long word ≠ lang
+        ("ES", "es", ""),  # lang only → prompt for text at caller
+    ],
+)
+def test_parse_enew_args(pipeline_mod, payload, expect_tgt, expect_text):
+    tgt, text = pipeline_mod.parse_enew_args(payload)
+    assert tgt == expect_tgt
+    assert text == expect_text
 
 
 def test_enqueue_typed_text_priority_over_mic_queue(pipeline_mod):
@@ -83,6 +105,21 @@ def test_enqueue_typed_text_priority_over_mic_queue(pipeline_mod):
     assert handled[0][0].text == "frase em português"
     assert handled[0][0].source_lang == "pt"
     assert handled[0][0].target_lang == "en"
+
+
+def test_enqueue_typed_text_custom_target(pipeline_mod):
+    Pipeline = pipeline_mod.Pipeline
+    TypedTextItem = pipeline_mod.TypedTextItem
+    host = SimpleNamespace()
+    host._typed_queue = queue.Queue()
+    assert Pipeline.enqueue_typed_text(
+        host, "Bom dia", source_lang="pt", target_lang="es"
+    )
+    job = host._typed_queue.get_nowait()
+    assert isinstance(job, TypedTextItem)
+    assert job.text == "Bom dia"
+    assert job.source_lang == "pt"
+    assert job.target_lang == "es"
 
 
 def test_translate_text_restores_system_langs(pipeline_mod):

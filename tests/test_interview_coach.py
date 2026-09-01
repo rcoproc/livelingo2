@@ -197,6 +197,40 @@ def test_maybe_handle_skips_when_disabled():
     )
 
 
+def test_persist_result_writes_sqlite(tmp_db):
+    from livelingo import db
+    from livelingo.interview_coach import CoachResult
+
+    db.create_session("persist-coach", "T")
+    cfg = SimpleNamespace(INTERVIEW_COACH_ENABLED=True)
+    coach = InterviewCoach(cfg, llm=None, session_id="persist-coach")
+    result = CoachResult(
+        n=7,
+        question="How do you test distributed systems?",
+        spoken="I start with contract tests.",
+        software_engineer=["pytest + mocks"],
+        architect=["chaos in staging"],
+        tradeoffs="Mocks are fast but miss integration bugs.",
+        spoken_pt="Começo com testes de contrato.",
+        software_engineer_pt=["pytest + mocks"],
+        architect_pt=["chaos em staging"],
+        tradeoffs_pt="Mocks são rápidos, mas perdem bugs de integração.",
+        provider="grok",
+        error="",
+    )
+    coach._persist_result(result)
+    rows = db.load_session_coach_results("persist-coach")
+    assert len(rows) == 1
+    assert rows[0]["coach_num"] == 7
+    assert "contract" in rows[0]["spoken_en"]
+    assert "contrato" in rows[0]["spoken_pt"].lower()
+
+    # Errors must not be persisted
+    bad = CoachResult(n=8, question="Q", spoken="", error="timeout")
+    coach._persist_result(bad)
+    assert len(db.load_session_coach_results("persist-coach")) == 1
+
+
 def test_normalize_panel_coach():
     assert ui._normalize_panel("coach") == "coach"
     assert ui._normalize_panel("entrevista") == "coach"

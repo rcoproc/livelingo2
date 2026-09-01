@@ -50,6 +50,14 @@ def timing_from_json(raw):
         return {}
 
 
+def is_livecaptions_timing(timing) -> bool:
+    """True when chunk timing marks Windows LiveCaptions (same rule as list `l`)."""
+    if not isinstance(timing, dict):
+        return False
+    src = (timing.get("source") or timing.get("origin") or "").strip().lower()
+    return src in ("livecaptions", "lc", "captions")
+
+
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
@@ -164,6 +172,34 @@ def init_db():
         """
     )
 
+    # Interview Coach answers (EN + pt-BR fields per response).
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS coach_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        coach_num INTEGER NOT NULL,
+        question TEXT NOT NULL,
+        spoken_en TEXT NOT NULL DEFAULT '',
+        software_engineer_en TEXT NOT NULL DEFAULT '[]',
+        architect_en TEXT NOT NULL DEFAULT '[]',
+        tradeoffs_en TEXT NOT NULL DEFAULT '',
+        spoken_pt TEXT NOT NULL DEFAULT '',
+        software_engineer_pt TEXT NOT NULL DEFAULT '[]',
+        architect_pt TEXT NOT NULL DEFAULT '[]',
+        tradeoffs_pt TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_coach_results_session
+        ON coach_results(session_id, coach_num, id)
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -246,6 +282,151 @@ def find_sessions_by_prefix(prefix, limit=20):
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+
+def list_session_stats():
+    """
+    All sessions with LC / VOZ / Coach counts (newest first).
+
+    Returns list of dicts:
+      id, title, created_at, lc, voz, coach, total
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, title, created_at FROM sessions ORDER BY created_at DESC"
+    )
+    sessions = cursor.fetchall()
+    cursor.execute("SELECT session_id, timing_json FROM chunks")
+    chunk_rows = cursor.fetchall()
+    cursor.execute(
+        """
+        SELECT session_id, COUNT(*) FROM coach_results
+        GROUP BY session_id
+        """
+    )
+    coach_counts = {str(sid): int(n) for sid, n in cursor.fetchall()}
+    conn.close()
+
+    lc_map = {}
+    voz_map = {}
+    for sid, timing_json in chunk_rows:
+        sid = str(sid)
+        timing = timing_from_json(timing_json)
+        if is_livecaptions_timing(timing):
+            lc_map[sid] = lc_map.get(sid, 0) + 1
+        else:
+            voz_map[sid] = voz_map.get(sid, 0) + 1
+
+    out = []
+    for sid, title, created_at in sessions:
+        sid = str(sid)
+        lc = int(lc_map.get(sid, 0))
+        voz = int(voz_map.get(sid, 0))
+        coach = int(coach_counts.get(sid, 0))
+        out.append(
+            {
+                "id": sid,
+                "title": title or "",
+                "created_at": created_at or "",
+                "lc": lc,
+                "voz": voz,
+                "coach": coach,
+                "total": lc + voz + coach,
+            }
+        )
+    return out
+
+
+def database_file_size_bytes():
+    """Size of livelingo.db in bytes, or 0 if missing."""
+    try:
+        if os.path.isfile(DB_PATH):
+            return int(os.path.getsize(DB_PATH))
+    except OSError:
+        pass
+    return 0
+
+
+def format_byte_size(n):
+    """Human-readable size for session-info footer."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.2f} MB"
+    return f"{n / (1024 * 1024 * 1024):.2f} GB"
+
+
+# Fixed-width columns for `session-info` (name, width, align).
+# CREATED_AT first (session clock) — no repeated report-time prefix on rows.
+# ID ≈ `YYYYMMDD_HHMMSS_session-YYYY-MM-DD-HHMM` (~44 chars).
+SESSION_INFO_COLS = (
+    ("CREATED_AT", 19, "<"),
+    ("ID", 44, "<"),
+    ("TITLE", 24, "<"),
+    ("LC", 5, ">"),
+    ("VOZ", 5, ">"),
+    ("COACH", 5, ">"),
+    ("TOTAL", 6, ">"),
+)
+
+
+def _session_info_cell(text, width: int, align: str = "<") -> str:
+    s = " ".join(str(text if text is not None else "").split())
+    if len(s) > width:
+        if width <= 1:
+            s = s[:width]
+        else:
+            s = s[: max(1, width - 1)] + "…"
+    if align == ">":
+        return s.rjust(width)
+    return s.ljust(width)
+
+
+def _session_info_join(values) -> str:
+    parts = []
+    for (_name, width, align), val in zip(SESSION_INFO_COLS, values):
+        parts.append(_session_info_cell(val, width, align))
+    return "  ".join(parts)
+
+
+def format_session_info_header() -> str:
+    return _session_info_join(name for name, _w, _a in SESSION_INFO_COLS)
+
+
+def format_session_info_rule() -> str:
+    return "  ".join("-" * width for _name, width, _align in SESSION_INFO_COLS)
+
+
+def format_session_info_row(row: dict) -> str:
+    """One data row for session-info table."""
+    title = " ".join((row.get("title") or "").split()) or "(sem título)"
+    created = (row.get("created_at") or "").strip().replace("T", " ")
+    if len(created) >= 19:
+        created = created[:19]
+    if not created:
+        created = "—"
+    return _session_info_join(
+        (
+            created,
+            row.get("id") or "",
+            title,
+            int(row.get("lc") or 0),
+            int(row.get("voz") or 0),
+            int(row.get("coach") or 0),
+            int(row.get("total") or 0),
+        )
+    )
+
+
+def format_session_info_totals(sum_lc, sum_voz, sum_coach, sum_all) -> str:
+    return _session_info_join(("", "TOTAL", "", sum_lc, sum_voz, sum_coach, sum_all))
 
 
 def insert_chunk(
@@ -599,10 +780,155 @@ def delete_chunk_comment(session_id, comment_id):
     return int(row[0]), row[1] or ""
 
 
+def _coach_list_to_json(items) -> str:
+    if not items:
+        return "[]"
+    try:
+        cleaned = [str(x).strip() for x in items if str(x).strip()]
+        return json.dumps(cleaned, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "[]"
+
+
+def _coach_list_from_json(raw) -> list:
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if str(x).strip()]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def insert_coach_result(
+    session_id,
+    coach_num,
+    question,
+    *,
+    spoken_en="",
+    software_engineer_en=None,
+    architect_en=None,
+    tradeoffs_en="",
+    spoken_pt="",
+    software_engineer_pt=None,
+    architect_pt=None,
+    tradeoffs_pt="",
+    provider="",
+    error="",
+    created_at=None,
+):
+    """
+    Persist one Interview Coach answer (EN + pt-BR fields).
+    Returns created_at string.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    created_at = created_at or _now()
+    cursor.execute(
+        """
+    INSERT INTO coach_results (
+        session_id, coach_num, question,
+        spoken_en, software_engineer_en, architect_en, tradeoffs_en,
+        spoken_pt, software_engineer_pt, architect_pt, tradeoffs_pt,
+        provider, error, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            session_id,
+            int(coach_num),
+            (question or "").strip(),
+            (spoken_en or "").strip(),
+            _coach_list_to_json(software_engineer_en),
+            _coach_list_to_json(architect_en),
+            (tradeoffs_en or "").strip(),
+            (spoken_pt or "").strip(),
+            _coach_list_to_json(software_engineer_pt),
+            _coach_list_to_json(architect_pt),
+            (tradeoffs_pt or "").strip(),
+            (provider or "").strip(),
+            (error or "").strip(),
+            created_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return created_at
+
+
+def load_session_coach_results(session_id):
+    """
+    Return list of dicts for coach answers in a session, chronological by id.
+
+    Keys: id, coach_num, question, spoken_en, software_engineer_en, architect_en,
+    tradeoffs_en, spoken_pt, software_engineer_pt, architect_pt, tradeoffs_pt,
+    provider, error, created_at.
+    """
+    if not session_id:
+        return []
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+    SELECT id, coach_num, question,
+           spoken_en, software_engineer_en, architect_en, tradeoffs_en,
+           spoken_pt, software_engineer_pt, architect_pt, tradeoffs_pt,
+           provider, error, created_at
+    FROM coach_results
+    WHERE session_id = ?
+    ORDER BY id ASC
+    """,
+        (str(session_id),),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    out = []
+    for row in rows:
+        (
+            rid,
+            coach_num,
+            question,
+            spoken_en,
+            se_en,
+            arch_en,
+            trade_en,
+            spoken_pt,
+            se_pt,
+            arch_pt,
+            trade_pt,
+            provider,
+            error,
+            created_at,
+        ) = row
+        out.append(
+            {
+                "id": int(rid),
+                "coach_num": int(coach_num),
+                "question": question or "",
+                "spoken_en": spoken_en or "",
+                "software_engineer_en": _coach_list_from_json(se_en),
+                "architect_en": _coach_list_from_json(arch_en),
+                "tradeoffs_en": trade_en or "",
+                "spoken_pt": spoken_pt or "",
+                "software_engineer_pt": _coach_list_from_json(se_pt),
+                "architect_pt": _coach_list_from_json(arch_pt),
+                "tradeoffs_pt": trade_pt or "",
+                "provider": provider or "",
+                "error": error or "",
+                "created_at": created_at or "",
+            }
+        )
+    return out
+
+
 def delete_session_atomic(session_id):
     """
     Atomic deletion of a session and all its dependent chunks, synonyms,
-    favorites, and comments.
+    favorites, comments, and coach results.
     Returns True if deleted successfully, False otherwise.
     """
     conn = get_connection()
@@ -611,6 +937,7 @@ def delete_session_atomic(session_id):
     try:
         cursor.execute("BEGIN TRANSACTION")
 
+        cursor.execute("DELETE FROM coach_results WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM chunk_comments WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM favorites WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM synonyms WHERE session_id = ?", (session_id,))

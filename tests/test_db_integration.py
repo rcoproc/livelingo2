@@ -126,11 +126,117 @@ def test_translation_pair_upsert_get_hit_quality_undo(tmp_db):
     assert row4["target_text"] in ("Olá mundo", "Oi mundo")
 
 
+def test_session_info_table_alignment():
+    header = db.format_session_info_header()
+    rule = db.format_session_info_rule()
+    row = db.format_session_info_row(
+        {
+            "id": "20260716_205709_session-2026-07-16-2057",
+            "title": "Weekly standup meeting that is quite long",
+            "created_at": "2026-07-16 20:57:09",
+            "lc": 3,
+            "voz": 12,
+            "coach": 2,
+            "total": 17,
+        }
+    )
+    totals = db.format_session_info_totals(3, 12, 2, 17)
+    assert header.startswith("CREATED_AT")
+    assert "TITLE" in header and "ID" in header
+    assert "LC" in header and "VOZ" in header and "COACH" in header
+    assert len(header) == len(rule) == len(row) == len(totals)
+    # CREATED_AT is the first column (session clock, not report stamp)
+    assert row.startswith("2026-07-16 20:57:09")
+    assert row.rstrip().endswith("17")
+    assert "TOTAL" in totals
+    assert "20260716_205709_session-2026-07-16-2057" in row
+    assert "…" in row
+
+
+def test_list_session_stats_and_db_size(tmp_db):
+    db.create_session("stats-a", "Alpha")
+    db.create_session("stats-b", "Beta")
+    db.insert_chunk(
+        "stats-a",
+        1,
+        "hello",
+        "olá",
+        "",
+        timing={"stt_ms": 1},
+    )
+    db.insert_chunk(
+        "stats-a",
+        2,
+        "LC question?",
+        "Pergunta LC?",
+        "",
+        timing={"source": "livecaptions"},
+    )
+    db.insert_coach_result(
+        "stats-a",
+        2,
+        "LC question?",
+        spoken_en="I use Redis.",
+        spoken_pt="Uso Redis.",
+    )
+    # Beta: empty session still listed
+    rows = db.list_session_stats()
+    by_id = {r["id"]: r for r in rows}
+    assert "stats-a" in by_id and "stats-b" in by_id
+    a = by_id["stats-a"]
+    assert a["lc"] == 1
+    assert a["voz"] == 1
+    assert a["coach"] == 1
+    assert a["total"] == 3
+    assert by_id["stats-b"]["total"] == 0
+    size = db.database_file_size_bytes()
+    assert size >= 0
+    assert "B" in db.format_byte_size(size) or "KB" in db.format_byte_size(size)
+
+
+def test_coach_result_insert_load(tmp_db):
+    db.create_session("coach-s1", "Interview")
+    created = db.insert_coach_result(
+        "coach-s1",
+        3,
+        "How do you handle caching?",
+        spoken_en="I use Redis for hot paths.",
+        software_engineer_en=["TTL per key", "invalidate on write"],
+        architect_en=["cache-aside"],
+        tradeoffs_en="Latency vs consistency.",
+        spoken_pt="Uso Redis nos caminhos quentes.",
+        software_engineer_pt=["TTL por chave"],
+        architect_pt=["cache-aside"],
+        tradeoffs_pt="Latência vs consistência.",
+        provider="grok",
+    )
+    assert created
+    rows = db.load_session_coach_results("coach-s1")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["coach_num"] == 3
+    assert "caching" in row["question"]
+    assert "Redis" in row["spoken_en"]
+    assert row["software_engineer_en"] == ["TTL per key", "invalidate on write"]
+    assert row["spoken_pt"].startswith("Uso Redis")
+    assert row["provider"] == "grok"
+    assert db.load_session_coach_results("missing") == []
+    assert db.load_session_coach_results("") == []
+
+
 def test_delete_session_atomic(tmp_db):
     db.create_session("del-me", "X")
     db.insert_chunk("del-me", 1, "a", "b", "")
     db.insert_favorite("del-me", 1, "a", "b")
+    db.insert_coach_result(
+        "del-me",
+        1,
+        "Q?",
+        spoken_en="A",
+        spoken_pt="R",
+    )
     ok = db.delete_session_atomic("del-me")
     assert ok is True or ok is None or ok is not False
     assert db.get_session("del-me") is None
     assert db.load_session_chunks("del-me") == []
+    assert db.load_session_coach_results("del-me") == []
