@@ -5,6 +5,8 @@ All notable changes to LiveLingo are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/) where applicable.
 
+**GitHub release title:** `LiveLingo2 vX.Y.Z` (ex.: `LiveLingo2 v1.2.5`) — tag continua `vX.Y.Z`.
+
 ## [Unreleased]
 
 ## [1.2.5] - 2026-09-01
