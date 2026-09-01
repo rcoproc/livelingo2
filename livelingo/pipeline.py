@@ -42,6 +42,22 @@ class _ChunkSkip:
         self.kind = kind  # dim | warn | error
 
 
+class TypedTextItem:
+    """
+    Typed translation job (``enew``): skips STT, always uses fixed lang pair.
+
+    Default pair is Portuguese → English, independent of system SOURCE/TARGET.
+    Processed ahead of mic chunks via ``_typed_queue``.
+    """
+
+    __slots__ = ("text", "source_lang", "target_lang")
+
+    def __init__(self, text: str, *, source_lang: str = "pt", target_lang: str = "en"):
+        self.text = " ".join((text or "").split()).strip()
+        self.source_lang = (source_lang or "pt").strip().lower() or "pt"
+        self.target_lang = (target_lang or "en").strip().lower() or "en"
+
+
 from .tts_segments import StreamingSegmentFeeder
 
 
@@ -92,8 +108,12 @@ class Pipeline:
                 ui.dim(f"Phrase cache indisponível: {exc}")
 
         self.chunk_queue = queue.Queue()
+        # ``enew`` / typed jobs — drained before mic chunks (priority).
+        self._typed_queue = queue.Queue()
         self.playback_queue = queue.Queue()
         self.stop_event = threading.Event()
+        # Serialize temporary SOURCE/TARGET rebinds (enew PT→EN vs live pair).
+        self._translate_lang_lock = threading.Lock()
 
         self.mic = MicController(device_name=self.input_device_name)
 
@@ -198,6 +218,14 @@ class Pipeline:
         self._passthrough_stop = threading.Event()
         self._passthrough_thread = None
 
+        # F6 push-to-talk: armed = attentive listen until 2nd F6 flushes.
+        self._ptt_armed = False
+        self._ptt_owned_soft_listen = False
+        try:
+            self.recorder.on_manual_flush_emitted = self._on_ptt_manual_flush_emitted
+        except Exception:
+            pass
+
     def is_sound_enabled(self):
         with self.sound_lock:
             return self.sound_enabled
@@ -271,7 +299,18 @@ class Pipeline:
         return self.mic.resolved_name()
 
     def is_output_playing(self) -> bool:
-        """True while TTS is on Cable/monitor or in post-play hangover (mic closed)."""
+        """
+        True while TTS hold/hangover has the mic closed.
+
+        Only meaningful when MUTE_CAPTURE_DURING_PLAYBACK is on — that is what
+        drives the TUI «não fale» chrome. With the flag off, mic stays open and
+        this returns False even if Cable is still playing.
+        """
+        try:
+            if not self._mute_capture_during_playback_enabled():
+                return False
+        except Exception:
+            pass
         try:
             if self._is_capture_held_for_playback():
                 return True
@@ -284,13 +323,20 @@ class Pipeline:
             pass
         return False
 
+    def is_listen_ptt_enabled(self) -> bool:
+        return bool(getattr(self.cfg, "LISTEN_PUSH_TO_TALK", True))
+
+    def is_ptt_armed(self) -> bool:
+        return bool(getattr(self, "_ptt_armed", False))
+
     def capture_should_run(self) -> bool:
         """
-        Desired capture gate: escuta always ON except:
+        Desired capture gate: escuta ON except:
           - [n] app mute
           - voice bypass [b]
-          - TTS playing on Cable/headphones (always — UX: don't speak over TTS)
-          - post-TTS hangover window (must stay closed — no self-heal)
+          - push-to-talk idle (LISTEN_PUSH_TO_TALK and not F6-armed)
+          - TTS playing / post-TTS hangover, only when
+            MUTE_CAPTURE_DURING_PLAYBACK=true (anti speaker→mic loop)
         """
         try:
             if self.is_passthrough_active():
@@ -302,9 +348,19 @@ class Pipeline:
                 return False
         except Exception:
             pass
-        # Always close mic while TTS plays (Cable and/or headphones/speakers).
-        # MUTE_CAPTURE_DURING_PLAYBACK only used to be optional; leaving mic open
-        # during long TTS made users think they could speak mid-playback.
+        # PTT: mic stays closed until F6 arms attentive listen
+        try:
+            if self.is_listen_ptt_enabled() and not self.is_ptt_armed():
+                return False
+        except Exception:
+            pass
+        # Headphones + VB-Cable: set MUTE_CAPTURE_DURING_PLAYBACK=false to keep
+        # recording the next phrase while TTS 1 still plays (full-duplex).
+        try:
+            if not self._mute_capture_during_playback_enabled():
+                return True
+        except Exception:
+            pass
         try:
             if self._is_capture_held_for_playback():
                 return False
@@ -418,11 +474,20 @@ class Pipeline:
 
     def flush_listen_now(self) -> tuple[bool, str]:
         """
-        Force-end current VAD utterance → emit → STT immediately ([go]/[.]/F6).
+        F6 / [go] action.
 
-        Skips remaining SILENCE_DURATION wait. Does not discard audio
-        (unlike abort on [g]/post-TTS).
+        With LISTEN_PUSH_TO_TALK (default):
+          - 1st press: arm attentive listen (mic ON, no auto end on silence)
+          - 2nd press: flush utterance → STT/Trad; then mic OFF again
+
+        Legacy (LISTEN_PUSH_TO_TALK=false): only force-flush an open utterance.
         """
+        if self.is_listen_ptt_enabled():
+            return self._f6_ptt_toggle()
+        return self._f6_flush_legacy()
+
+    def _f6_flush_legacy(self) -> tuple[bool, str]:
+        """Legacy: force-end current VAD utterance → STT now."""
         rec = getattr(self, "recorder", None)
         if rec is None:
             return False, "Recorder indisponível."
@@ -449,6 +514,139 @@ class Pipeline:
             "Flush manual — fim da fala agora → STT "
             "(sem esperar silêncio VAD).",
         )
+
+    def _f6_ptt_toggle(self) -> tuple[bool, str]:
+        """Push-to-talk: arm listen ↔ flush + disarm."""
+        rec = getattr(self, "recorder", None)
+        if rec is None:
+            return False, "Recorder indisponível."
+        try:
+            if self.mic.is_app_muted():
+                return False, "Mic APP mudo ([n]) — desmute antes do F6."
+        except Exception:
+            pass
+        try:
+            if self.is_passthrough_active():
+                return False, "Bypass [b] ativo — saia do bypass antes do F6."
+        except Exception:
+            pass
+
+        if not self.is_ptt_armed():
+            return self._ptt_arm_listen()
+
+        # 2nd F6: flush if speaking, then disarm (callback also runs after emit)
+        try:
+            in_speech = bool(rec.is_in_speech())
+        except Exception:
+            in_speech = False
+        if not in_speech:
+            self._ptt_disarm(note="F6 — sem fala; escuta OFF")
+            return (
+                False,
+                "Escuta OFF — nenhuma fala em curso. F6 de novo para ouvir.",
+            )
+        try:
+            ok = bool(rec.force_end_utterance())
+        except Exception as exc:
+            self._ptt_disarm(note="F6 — flush falhou; escuta OFF")
+            return False, f"Flush falhou: {exc}"
+        if not ok:
+            self._ptt_disarm(note="F6 — sem fala; escuta OFF")
+            return False, "Escuta OFF — nada para traduzir."
+        # Keep mic open until VAD emits; on_manual_flush_emitted → disarm
+        return (
+            True,
+            "F6 — fim da fala → traduzindo. Escuta OFF após emitir.",
+        )
+
+    def _ptt_arm_listen(self) -> tuple[bool, str]:
+        """1st F6: open attentive listen until next F6."""
+        self._ptt_armed = True
+        rec = self.recorder
+        try:
+            rec.set_hold_until_manual_flush(True)
+        except Exception:
+            pass
+        # Soft listen = more attentive to quiet speech while PTT armed
+        try:
+            if not rec.is_force_soft_listen():
+                rec.set_force_soft_listen(True)
+                self._ptt_owned_soft_listen = True
+        except Exception:
+            self._ptt_owned_soft_listen = False
+        try:
+            # Clear stale TTS hold so arm is not blocked
+            with self._capture_hold_lock:
+                self._capture_hold_count = 0
+                self._capture_hangover_until = 0.0
+                self._cancel_capture_hold_timer_unlocked()
+        except Exception:
+            pass
+        try:
+            ui.set_tts_playing(False)
+        except Exception:
+            pass
+        try:
+            rec.set_capture_enabled(True)
+        except Exception as exc:
+            self._ptt_armed = False
+            return False, f"Não abriu escuta: {exc}"
+        try:
+            ui.pipeline_stage("mic", source="voz")
+        except Exception:
+            pass
+        try:
+            ui.listen_ready("F6 escuta ON — fale; F6 de novo = traduzir", force=True)
+        except Exception:
+            pass
+        return (
+            True,
+            "Escuta atenta ON — fale agora. F6 de novo encerra e traduz.",
+        )
+
+    def _ptt_disarm(self, note: str = "escuta OFF — F6 para ouvir") -> None:
+        """Close mic after flush / idle cancel; default post-chunk state."""
+        self._ptt_armed = False
+        rec = getattr(self, "recorder", None)
+        if rec is not None:
+            try:
+                rec.set_hold_until_manual_flush(False)
+            except Exception:
+                pass
+            if getattr(self, "_ptt_owned_soft_listen", False):
+                try:
+                    rec.set_force_soft_listen(False)
+                except Exception:
+                    pass
+                self._ptt_owned_soft_listen = False
+            try:
+                rec.set_capture_enabled(False)
+            except Exception:
+                pass
+        try:
+            ui.set_tts_playing(False)
+        except Exception:
+            pass
+        try:
+            ui.listen_ready(note, force=True)
+        except Exception:
+            pass
+        try:
+            ui.pipeline_stage("idle", source="voz")
+        except Exception:
+            pass
+
+    def _on_ptt_manual_flush_emitted(self) -> None:
+        """VAD finished a manual flush emit — close PTT listen."""
+        if not self.is_listen_ptt_enabled():
+            return
+        self._ptt_disarm(note="falou → STT; escuta OFF — F6 para ouvir de novo")
+
+    def ptt_idle_boot(self) -> None:
+        """Start session with mic OFF (PTT). Call from TUI/classic boot."""
+        if not self.is_listen_ptt_enabled():
+            return
+        self._ptt_disarm(note="escuta OFF — F6 para ouvir · F6 de novo = traduzir")
 
     # ------------------------------------------------------------------ #
     # Direct voice bypass ([b]) — mic → OUTPUT (CABLE) without translation
@@ -630,14 +828,29 @@ class Pipeline:
         me = threading.current_thread()
 
         try:
-            with (
-                sd.InputStream(
+            from .devices import input_stream_extra_settings
+
+            in_extra = input_stream_extra_settings(self.cfg)
+            try:
+                inn_stream = sd.InputStream(
                     samplerate=rate,
                     channels=1,
                     dtype="float32",
                     blocksize=block,
                     device=in_dev,
-                ) as inn,
+                    **in_extra,
+                )
+            except Exception:
+                # Bypass must still work if exclusive is busy/unsupported
+                inn_stream = sd.InputStream(
+                    samplerate=rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=block,
+                    device=in_dev,
+                )
+            with (
+                inn_stream as inn,
                 sd.OutputStream(
                     samplerate=rate,
                     channels=1,
@@ -747,6 +960,7 @@ class Pipeline:
                 self._pending_language_swap
                 and self._processor_busy_count == 0
                 and self.chunk_queue.empty()
+                and self._typed_queue.empty()
             ):
                 self._pending_language_swap = False
                 apply_now = True
@@ -771,7 +985,11 @@ class Pipeline:
           source, target, voice, warnings  (only when applied)
         """
         with self._lang_swap_lock:
-            busy = self._processor_busy_count > 0 or not self.chunk_queue.empty()
+            busy = (
+                self._processor_busy_count > 0
+                or not self.chunk_queue.empty()
+                or not self._typed_queue.empty()
+            )
             if self._pending_language_swap:
                 # Flip pending cancel? User pressed g twice while waiting:
                 # cancel the pending swap (back to original intent).
@@ -1177,7 +1395,9 @@ class Pipeline:
 
         Always clears hold_count + hangover (leaks left the UI saying
         "Escuta pronta" while capture stayed closed — one phrase then freeze).
-        Only [n] app-mute / bypass may keep the gate closed.
+
+        With LISTEN_PUSH_TO_TALK: leave mic OFF (F6 must re-arm). Otherwise
+        open unless [n] mute / bypass.
         """
         with self._capture_hold_lock:
             self._capture_hold_count = 0
@@ -1187,6 +1407,14 @@ class Pipeline:
             self.recorder.abort_utterance()
         except Exception:
             pass
+        if self.is_listen_ptt_enabled():
+            # After Trad/TTS: always return to PTT idle (mic OFF)
+            self._ptt_disarm(
+                note=note
+                if "F6" in (note or "")
+                else "áudio terminou — escuta OFF · F6 para ouvir"
+            )
+            return
         # Open unless user mute or bypass — ignore stale hold/hangover
         blocked = False
         try:
@@ -1219,7 +1447,14 @@ class Pipeline:
                 pass
 
     def _hold_capture_for_playback(self):
-        """Pause STT for one play() (Cable + headphones). Always on for UX."""
+        """
+        Pause STT for one play() when MUTE_CAPTURE_DURING_PLAYBACK is on.
+
+        With the flag off (headphones + Cable), leave the mic open so the next
+        phrase can be recorded while TTS still plays — no «não fale» chrome.
+        """
+        if not self._mute_capture_during_playback_enabled():
+            return
         first = False
         with self._capture_hold_lock:
             self._cancel_capture_hold_timer_unlocked()
@@ -1243,9 +1478,12 @@ class Pipeline:
         Drop one play() hold. When count hits 0, keep gate closed for hangover
         (ring-out on speakers/headphones), then arm escuta.
 
+        No-op when MUTE_CAPTURE_DURING_PLAYBACK is off (hold was never taken).
         If count already 0 ([x] already force-released), do nothing — avoid
         re-arming hangover after user interrupted.
         """
+        if not self._mute_capture_during_playback_enabled():
+            return
         hangover_ms = max(0, int(getattr(self.cfg, "MUTE_CAPTURE_HANGOVER_MS", 500)))
         with self._capture_hold_lock:
             if self._capture_hold_count <= 0:
@@ -1529,7 +1767,17 @@ class Pipeline:
             pass
 
     def _publish_chunk(
-        self, n, heard, translated, audio_path, timing, timing_extra="", note=""
+        self,
+        n,
+        heard,
+        translated,
+        audio_path,
+        timing,
+        timing_extra="",
+        note="",
+        *,
+        source_lang=None,
+        target_lang=None,
     ):
         if note:
             ui.dim(note)
@@ -1538,9 +1786,23 @@ class Pipeline:
         if isinstance(timing, dict) and "translate_cache" in timing:
             from_cache = bool(timing.get("translate_cache"))
         if self._use_streaming_llm_for_chunk():
-            ui.chunk_stream_done(n, heard, translated, from_cache=from_cache)
+            ui.chunk_stream_done(
+                n,
+                heard,
+                translated,
+                from_cache=from_cache,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
         else:
-            ui.chunk_text_preview(n, heard, translated, from_cache=from_cache)
+            ui.chunk_text_preview(
+                n,
+                heard,
+                translated,
+                from_cache=from_cache,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
         # Always TARGET text for vcam burn-in (shown only if [sub] ON)
         self._push_webcam_subtitle(translated)
         created_at = self._timestamp_now()
@@ -1597,21 +1859,52 @@ class Pipeline:
                 if isinstance(entry, _ChunkSkip):
                     self._emit_skip_message(entry)
                 elif entry is not None:
-                    if len(entry) == 6:
+                    src_l = tgt_l = None
+                    if len(entry) >= 8:
+                        h, t, path, tm, extra, note, src_l, tgt_l = entry[:8]
+                    elif len(entry) == 6:
                         h, t, path, tm, extra, note = entry
                     else:
                         h, t, path, tm, extra = entry
                         note = ""
                     self._publish_chunk(
-                        self._next_release, h, t, path, tm, extra, note=note
+                        self._next_release,
+                        h,
+                        t,
+                        path,
+                        tm,
+                        extra,
+                        note=note,
+                        source_lang=src_l,
+                        target_lang=tgt_l,
                     )
                 self._next_release += 1
 
     def _release_chunk_result(
-        self, n, heard, translated, audio_path, timing, timing_extra="", note=""
+        self,
+        n,
+        heard,
+        translated,
+        audio_path,
+        timing,
+        timing_extra="",
+        note="",
+        *,
+        source_lang=None,
+        target_lang=None,
     ):
         self._finish_chunk_slot(
-            n, (heard, translated, audio_path, timing, timing_extra, note)
+            n,
+            (
+                heard,
+                translated,
+                audio_path,
+                timing,
+                timing_extra,
+                note,
+                source_lang,
+                target_lang,
+            ),
         )
 
     def _persist_text_only(self, n, heard, translated, timing=None, created_at=None):
@@ -2190,20 +2483,40 @@ class Pipeline:
             thread.join(timeout=remaining)
 
     # ------------------------------------------------------------------ #
+    def enqueue_typed_text(
+        self, text: str, *, source_lang: str = "pt", target_lang: str = "en"
+    ) -> bool:
+        """
+        Queue a high-priority typed translation (``enew``).
+
+        Always intended as Portuguese → English unless callers override.
+        Returns False if text is empty after normalize.
+        """
+        job = TypedTextItem(text, source_lang=source_lang, target_lang=target_lang)
+        if not job.text:
+            return False
+        self._typed_queue.put(job)
+        return True
+
     def _process_loop(self):
         """STT -> translate -> TTS for each captured chunk."""
         while not self.stop_event.is_set():
+            item = None
+            # Prefer ``enew`` / typed jobs over mic backlog
             try:
-                item = self.chunk_queue.get(timeout=0.2)
+                item = self._typed_queue.get_nowait()
             except queue.Empty:
-                # Idle tick: still apply deferred [g] if nothing is running.
-                self._try_apply_pending_language_swap()
-                # Keep escuta alive — heal any stuck capture gate ([n] still wins).
                 try:
-                    self.sync_capture_gate(log_resume=False)
-                except Exception:
-                    pass
-                continue
+                    item = self.chunk_queue.get(timeout=0.2)
+                except queue.Empty:
+                    # Idle tick: still apply deferred [g] if nothing is running.
+                    self._try_apply_pending_language_swap()
+                    # Keep escuta alive — heal any stuck capture gate ([n] still wins).
+                    try:
+                        self.sync_capture_gate(log_resume=False)
+                    except Exception:
+                        pass
+                    continue
 
             # The recorder forwards device errors through the queue.
             if is_capture_error(item):
@@ -2226,6 +2539,7 @@ class Pipeline:
                 self._pending_language_swap
                 and self._processor_busy_count == 0
                 and self.chunk_queue.empty()
+                and self._typed_queue.empty()
             ):
                 self._pending_language_swap = False
                 apply_now = True
@@ -2238,6 +2552,66 @@ class Pipeline:
                 cb(*result[:3])
             except Exception:
                 pass
+
+    def _bind_translator_langs(self, source: str, target: str) -> None:
+        """Point translator (+ cfg) at a temporary language pair."""
+        src = (source or "").strip() or getattr(self.cfg, "SOURCE_LANG", "en")
+        tgt = (target or "").strip() or getattr(self.cfg, "TARGET_LANG", "en")
+        try:
+            self.cfg.SOURCE_LANG = src
+            self.cfg.TARGET_LANG = tgt
+        except Exception:
+            pass
+        tr = self.translator
+        if tr is None:
+            return
+        if hasattr(tr, "set_language_pair"):
+            try:
+                tr.set_language_pair(src, tgt)
+                return
+            except Exception:
+                pass
+        if hasattr(tr, "refresh_prompt"):
+            try:
+                tr.refresh_prompt()
+            except Exception:
+                pass
+
+    def _translate_text(
+        self,
+        text: str,
+        *,
+        stream: bool = False,
+        on_token=None,
+        source_lang: str | None = None,
+        target_lang: str | None = None,
+    ) -> str:
+        """
+        Translate ``text``. When source/target are set (enew), temporarily rebind
+        the translator under a lock so system SOURCE/TARGET stay unchanged.
+        """
+        text = (text or "").strip()
+        if not text:
+            return ""
+        override = bool(source_lang and target_lang)
+        if not override:
+            if stream and hasattr(self.translator, "translate_stream"):
+                return self.translator.translate_stream(text, on_token=on_token)
+            return self.translator.translate(text)
+
+        with self._translate_lang_lock:
+            old_src = getattr(self.cfg, "SOURCE_LANG", "en")
+            old_tgt = getattr(self.cfg, "TARGET_LANG", "en")
+            try:
+                self._bind_translator_langs(source_lang, target_lang)
+                if stream and hasattr(self.translator, "translate_stream"):
+                    return self.translator.translate_stream(text, on_token=on_token)
+                return self.translator.translate(text)
+            finally:
+                try:
+                    self._bind_translator_langs(old_src, old_tgt)
+                except Exception:
+                    pass
 
     def _handle_chunk(self, item, n):
         self._mark_processor_enter()
@@ -2340,17 +2714,30 @@ class Pipeline:
 
         # --- Speech-to-text (or typed text via enew / edit re-queue) ---
         t0 = time.perf_counter()
-        text_only = isinstance(item, str)
+        typed_job = item if isinstance(item, TypedTextItem) else None
+        text_only = typed_job is not None or isinstance(item, str)
+        # enew: always PT→EN (independent of system SOURCE/TARGET)
+        force_src = typed_job.source_lang if typed_job is not None else None
+        force_tgt = typed_job.target_lang if typed_job is not None else None
         strip_note = ""
         audio_item = item if isinstance(item, np.ndarray) else None
 
         if text_only:
             # Typed/queued text: skip STT, Whisper, and STT hallucination filters.
-            heard = (item or "").strip()
+            if typed_job is not None:
+                heard = typed_job.text
+            else:
+                heard = (item or "").strip()
             t1 = t0
             if self.cfg.VERBOSE:
+                pair = (
+                    f"{force_src}→{force_tgt}"
+                    if force_src and force_tgt
+                    else "system langs"
+                )
                 ui.dim(
-                    f"[chunk {n}] [debug] Texto tipado (sem STT) — {len(heard)} chars.",
+                    f"[chunk {n}] [debug] Texto tipado (sem STT) — {len(heard)} chars "
+                    f"· {pair}.",
                     panel="app",
                 )
         else:
@@ -2427,7 +2814,11 @@ class Pipeline:
             self._interrupt_playback()
 
         # --- Translation (+ optional overlapped TTS) ---
-        overlap_tts = self._use_tts_overlap() and sound_on
+        # enew (forced lang pair): use non-overlap TTS so we can swap to EN voice
+        # cleanly without racing the overlap worker.
+        overlap_tts = (
+            self._use_tts_overlap() and sound_on and not (force_src and force_tgt)
+        )
         t_tts_start = None
         tts_first_audio = None
         time_to_audio = None
@@ -2536,8 +2927,12 @@ class Pipeline:
 
         # --- Translate (phrase cache → live LLM/Google) ---
         cache = getattr(self, "phrase_cache", None)
-        src_lang = (getattr(self.cfg, "SOURCE_LANG", "") or "").lower()
-        tgt_lang = (getattr(self.cfg, "TARGET_LANG", "") or "").lower()
+        if force_src and force_tgt:
+            src_lang = force_src
+            tgt_lang = force_tgt
+        else:
+            src_lang = (getattr(self.cfg, "SOURCE_LANG", "") or "").lower()
+            tgt_lang = (getattr(self.cfg, "TARGET_LANG", "") or "").lower()
         force_live = False
         if cache is not None and cache.enabled:
             force_live = cache.consume_force_next()
@@ -2567,7 +2962,8 @@ class Pipeline:
             ts_tr = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
             ui.dim(
                 f"  [chunk {n}] ⏱ Tradução    {ts_tr} — início "
-                f"({'cache HIT' if cache_hit else 'live LLM/Google'})",
+                f"({'cache HIT' if cache_hit else 'live LLM/Google'} · "
+                f"{src_lang}→{tgt_lang})",
                 panel="app",
             )
             ui.chunk_progress(n, "translate")
@@ -2586,9 +2982,20 @@ class Pipeline:
                     if feeder is not None:
                         enqueue_segments(feeder.feed(partial))
 
-                translated = self.translator.translate_stream(heard, on_token=on_token)
+                translated = self._translate_text(
+                    heard,
+                    stream=True,
+                    on_token=on_token,
+                    source_lang=force_src,
+                    target_lang=force_tgt,
+                )
             else:
-                translated = self.translator.translate(heard)
+                translated = self._translate_text(
+                    heard,
+                    stream=False,
+                    source_lang=force_src,
+                    target_lang=force_tgt,
+                )
         except Exception as exc:
             ui.error(
                 f'[chunk {n}] translation failed for "{heard}": {exc}',
@@ -2671,10 +3078,24 @@ class Pipeline:
             if strip_note:
                 ui.dim(strip_note, panel="app")
             if self._use_streaming_llm_for_chunk() and not cache_hit:
-                ui.chunk_stream_done(n, heard, translated, from_cache=cache_badge)
+                ui.chunk_stream_done(
+                    n,
+                    heard,
+                    translated,
+                    from_cache=cache_badge,
+                    source_lang=force_src,
+                    target_lang=force_tgt,
+                )
             else:
                 # HIT has no token stream — always use preview with badge
-                ui.chunk_text_preview(n, heard, translated, from_cache=cache_badge)
+                ui.chunk_text_preview(
+                    n,
+                    heard,
+                    translated,
+                    from_cache=cache_badge,
+                    source_lang=force_src,
+                    target_lang=force_tgt,
+                )
             # TARGET burn-in as soon as translation is ready (before/during TTS)
             self._push_webcam_subtitle(translated)
             with self.history_lock:
@@ -2685,11 +3106,26 @@ class Pipeline:
 
         def _synthesize_chunk_audio(announce=True):
             nonlocal tts_audio, sample_rate, t_tts_start
+            # enew PT→EN: temporarily use an English voice when system TARGET ≠ en
+            tts_voice_override = None
+            prev_voice = None
+            if force_tgt and str(force_tgt).lower().split("-")[0] == "en":
+                sys_tgt = (
+                    getattr(self.cfg, "TARGET_LANG", "") or ""
+                ).lower().split("-")[0]
+                if sys_tgt != "en":
+                    try:
+                        from .synthesize import default_edge_voice_for_lang
+
+                        tts_voice_override = default_edge_voice_for_lang("en")
+                    except Exception:
+                        tts_voice_override = "en-US-AriaNeural"
             if announce:
                 ts_tts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                vlab = tts_voice_override or tts_voice_label or "—"
                 ui.dim(
                     f"  [chunk {n}] ⏱ TTS         {ts_tts} — início · "
-                    f"engine={tts_engine_name} · voice={tts_voice_label or '—'}",
+                    f"engine={tts_engine_name} · voice={vlab}",
                     panel="app",
                 )
                 ui.chunk_progress(n, "tts")
@@ -2705,30 +3141,52 @@ class Pipeline:
 
             # Non-overlap TTS: lock so parallel sound-ON workers don't interleave.
             with self._tts_lock:
-                if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
+                if tts_voice_override and hasattr(self.synthesizer, "set_voice"):
                     try:
-                        self.synthesizer.begin_utterance()
+                        prev_voice = getattr(self.synthesizer, "voice", None) or getattr(
+                            self.cfg, "TTS_VOICE", None
+                        )
+                        if hasattr(self.synthesizer, "set_edge_voice"):
+                            self.synthesizer.set_edge_voice(tts_voice_override)
+                        else:
+                            self.synthesizer.set_voice(tts_voice_override)
                     except Exception:
-                        pass
-                t_tts_start = time.perf_counter()
-                played_any = False
+                        prev_voice = None
+                        tts_voice_override = None
+                try:
+                    if will_synthesize and hasattr(self.synthesizer, "begin_utterance"):
+                        try:
+                            self.synthesizer.begin_utterance()
+                        except Exception:
+                            pass
+                    t_tts_start = time.perf_counter()
+                    played_any = False
 
-                if self._use_streaming_tts():
+                    if self._use_streaming_tts():
 
-                    def on_segment_collect(audio, sample_rate_):
-                        nonlocal played_any
-                        on_segment(audio, sample_rate_)
-                        played_any = True
+                        def on_segment_collect(audio, sample_rate_):
+                            nonlocal played_any
+                            on_segment(audio, sample_rate_)
+                            played_any = True
 
-                    tts_audio, sample_rate = self.synthesizer.synthesize_streaming(
-                        translated, on_segment_collect
-                    )
-                    if tts_audio is not None and not played_any:
-                        on_segment(tts_audio, sample_rate)
-                else:
-                    tts_audio, sample_rate = self.synthesizer.synthesize(translated)
-                    if tts_audio is not None:
-                        on_segment(tts_audio, sample_rate)
+                        tts_audio, sample_rate = self.synthesizer.synthesize_streaming(
+                            translated, on_segment_collect
+                        )
+                        if tts_audio is not None and not played_any:
+                            on_segment(tts_audio, sample_rate)
+                    else:
+                        tts_audio, sample_rate = self.synthesizer.synthesize(translated)
+                        if tts_audio is not None:
+                            on_segment(tts_audio, sample_rate)
+                finally:
+                    if prev_voice and hasattr(self.synthesizer, "set_voice"):
+                        try:
+                            if hasattr(self.synthesizer, "set_edge_voice"):
+                                self.synthesizer.set_edge_voice(prev_voice)
+                            else:
+                                self.synthesizer.set_voice(prev_voice)
+                        except Exception:
+                            pass
 
         def _build_timing(t3, include_tts=True):
             timing = {
@@ -2811,7 +3269,15 @@ class Pipeline:
                 extra = "(sound OFF — só texto, TTS omitido)"
                 if ordered:
                     self._release_chunk_result(
-                        n, heard, translated, "", timing, extra, note=strip_note
+                        n,
+                        heard,
+                        translated,
+                        "",
+                        timing,
+                        extra,
+                        note=strip_note,
+                        source_lang=force_src,
+                        target_lang=force_tgt,
                     )
                     self._persist_text_only(
                         n,
@@ -2822,7 +3288,15 @@ class Pipeline:
                     )
                 else:
                     self._publish_chunk(
-                        n, heard, translated, "", timing, extra, note=strip_note
+                        n,
+                        heard,
+                        translated,
+                        "",
+                        timing,
+                        extra,
+                        note=strip_note,
+                        source_lang=force_src,
+                        target_lang=force_tgt,
                     )
                     self._persist_text_only(
                         n,
@@ -2871,11 +3345,27 @@ class Pipeline:
             extra = "(sound OFF — TTS em background)"
             if ordered:
                 self._release_chunk_result(
-                    n, heard, translated, audio_path, timing, extra, note=strip_note
+                    n,
+                    heard,
+                    translated,
+                    audio_path,
+                    timing,
+                    extra,
+                    note=strip_note,
+                    source_lang=force_src,
+                    target_lang=force_tgt,
                 )
             else:
                 self._publish_chunk(
-                    n, heard, translated, audio_path, timing, extra, note=strip_note
+                    n,
+                    heard,
+                    translated,
+                    audio_path,
+                    timing,
+                    extra,
+                    note=strip_note,
+                    source_lang=force_src,
+                    target_lang=force_tgt,
                 )
             # Persist text+partial timing now; background TTS will refresh timing.
             self._persist_text_only(

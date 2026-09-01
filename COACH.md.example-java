@@ -1,0 +1,38 @@
+# Interview Coach — job context
+
+Copy this file to **`COACH.md`** (or **`AGENT.md`**) in the project root.
+The LiveLingo Interview Coach loads it on every answer (`airespond` / LC / F7).
+
+Edit freely — no code changes needed. Reload with: `coach context reload`
+
+---
+
+## Role
+
+Interview for a **Java developer** role with **Angular** frontend and **Spring Boot** backend.
+
+## Stack (prefer these in examples)
+
+- Java 17+ / Spring Boot 3 (Web, Security, Data JPA, Validation)
+- REST APIs, OpenAPI / Springdoc
+- Angular (standalone components, RxJS, reactive forms)
+- PostgreSQL, Flyway/Liquibase
+- Messaging: Kafka or RabbitMQ (when relevant)
+- Testing: JUnit 5, Mockito, Testcontainers; frontend: Jest / Cypress light touch
+- Observability: Actuator, Micrometer, structured logging
+
+## How I should sound
+
+- Senior IC: clear ownership, trade-offs, production habits
+- Prefer concrete examples from Spring/Angular services (auth, pagination, DTO mapping, error handling)
+- Avoid unrelated stacks (e.g. Elixir/Phoenix) unless the interviewer asks
+
+## Mapping / API style notes
+
+- Backend often uses **snake_case** JSON; Angular prefers **camelCase**
+- Mention tools/strategies when asked: MapStruct, Jackson PropertyNamingStrategies, OpenAPI generator, or a thin mapping layer — pick what fits the question
+
+## Languages
+
+- Spoken interview answers: **English**
+- Mirror section: **pt-BR**

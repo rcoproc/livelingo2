@@ -157,6 +157,7 @@ _COMMANDS: list[dict[str, str]] = [
     {"id": "q", "group": "session", "token": "q", "sort": "q"},
     {"id": "u", "group": "session", "token": "u", "sort": "u"},
     {"id": "v", "group": "session", "token": "v", "sort": "v"},
+    {"id": "view", "group": "session", "token": "view", "sort": "view"},
 ]
 
 _GROUP_IDS = ("audio", "idiom", "keys", "sentence", "session")
@@ -250,16 +251,20 @@ _I18N: dict[str, dict[str, str]] = {
         "title_go": "Flush listen → STT now",
         "desc_go": (
             "End the current utterance **immediately** and start STT/translate "
-            "(skip VAD silence wait). Aliases: `.` · `flush`. Same as **F6**. "
+            "Push-to-talk: **1st** = attentive listen (mic ON, no auto-end on silence); "
+            "**2nd** = flush → STT/Trad (mic OFF after). Aliases: `.` · `flush`. Same as **F6**. "
+            "Set `LISTEN_PUSH_TO_TALK=false` for legacy flush-only. "
             "Use when you finished speaking and do not want to wait ~1–2s of silence."
         ),
-        "title_f6": "Flush listen (F6)",
-        "desc_f6": "Same as `[go]` / `.` — force VAD end → STT now without waiting for silence.",
+        "title_f6": "Push-to-talk listen (F6)",
+        "desc_f6": "Same as `[go]` / `.` — 1st F6 arms listen; 2nd F6 flushes → translate; then mic OFF.",
         "title_coach": "Interview Coach",
         "desc_coach": (
             "Suggest assertive **English** answers (+ pt-BR mirror) for interview questions. "
             "Panel under LC. `coach on` shows pane; `coach off` hides it. "
-            "Also: `status|last|force|ask <q>`. Default OFF. Test: `airespond <question>`."
+            "Also: `status|last|force|ask <q>|context [reload]`. "
+            "Job context from **COACH.md** / **AGENT.md** (see COACH.md.example). "
+            "Default OFF. Test: `airespond <question>`."
         ),
         "title_coach_provider": "Coach LLM provider",
         "desc_coach_provider": (
@@ -367,7 +372,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Edit chunk N",
         "desc_eN": "Edit **chunk N** the same way as `e`. Example: `e4`.",
         "title_enew": "New text (no mic)",
-        "desc_enew": "Queue a new translation from **typed** text only (no microphone/STT). Example: `enew Hello world`. TTS follows current sound mode (`s`).",
+        "desc_enew": "Priority typed translation **always Portuguese → English** (ignores system SOURCE/TARGET; no mic/STT). Example: `enew Olá mundo`. TTS follows sound mode (`s`) with an English voice.",
         "title_f": "Favorite last",
         "desc_f": "Mark the **last** chunk as a favorite.",
         "title_fN": "Favorite chunk N",
@@ -519,6 +524,17 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_u": "Toggle compact TUI: hide the multi-line command menu; keep the command input. Same as **F4**. Aliases: `ui`, `compact`.",
         "title_v": "Switch session",
         "desc_v": "Leave the current session and return to the session picker (new / resume / delete).",
+        "title_view": "Detached panel viewer",
+        "desc_view": (
+            "Open a **read-only** Textual window for one Tradução panel in another terminal "
+            "(host TUI must be running; tee via `LOG_VIEW_*` / `log_bus`). "
+            "CLI: `python main.py view lc` · `view coach` · `view voz` (alias `main`). "
+            "In the viewer: **/** search (`/text` · `/n` · `/p` · `find text`); "
+            "**Ctrl+C** selection · **Ctrl+Shift+C** / `a` / `copy` = copy **all**; "
+            "**Ctrl+S** / `e` / `export` = write `.md` "
+            "(`YYYY-MM-DD_livelingo-view-<panel>.md` in the current directory); "
+            "**q** quit. Selection uses a readable yellow highlight."
+        ),
     },
     "pt": {
         "tab": "Lista de comandos",
@@ -602,16 +618,20 @@ _I18N: dict[str, dict[str, str]] = {
         "title_go": "Flush escuta → STT agora",
         "desc_go": (
             "Encerra a fala **agora** e inicia STT/tradução "
-            "(sem esperar o silêncio do VAD). Aliases: `.` · `flush`. Igual a **F6**. "
+            "Push-to-talk: **1º** = escuta atenta (mic ON, sem fim por silêncio); "
+            "**2º** = flush → STT/Trad (mic OFF depois). Aliases: `.` · `flush`. Igual a **F6**. "
+            "`LISTEN_PUSH_TO_TALK=false` = só flush legado. "
             "Use quando terminar de falar e não quiser esperar ~1–2s de quietude."
         ),
-        "title_f6": "Flush escuta (F6)",
-        "desc_f6": "Igual a `[go]` / `.` — força fim do VAD → STT agora, sem esperar silêncio.",
+        "title_f6": "Escuta push-to-talk (F6)",
+        "desc_f6": "Igual a `[go]` / `.` — 1º F6 liga escuta; 2º F6 traduz; depois mic OFF.",
         "title_coach": "Interview Coach",
         "desc_coach": (
             "Sugere respostas **assertivas em inglês** (+ espelho pt-BR) para perguntas de entrevista. "
             "Painel sob o LC. `coach on` mostra; `coach off` oculta. "
-            "Também: `status|last|force|ask <q>`. Padrão OFF. Teste: `airespond <pergunta>`."
+            "Também: `status|last|force|ask <q>|context [reload]`. "
+            "Contexto do cargo em **COACH.md** / **AGENT.md** (veja COACH.md.example). "
+            "Padrão OFF. Teste: `airespond <pergunta>`."
         ),
         "title_coach_provider": "Provider LLM do Coach",
         "desc_coach_provider": (
@@ -716,7 +736,7 @@ _I18N: dict[str, dict[str, str]] = {
         "title_eN": "Editar chunk N",
         "desc_eN": "Edita o **chunk N** como o `e`. Exemplo: `e4`.",
         "title_enew": "Novo texto (sem mic)",
-        "desc_enew": "Enfileira uma tradução só com texto **digitado** (sem microfone/STT). Exemplo: `enew Olá mundo`. O TTS segue o modo de som (`s`).",
+        "desc_enew": "Tradução prioritária **sempre português → inglês** (ignora SOURCE/TARGET do sistema; sem mic/STT). Exemplo: `enew Olá mundo`. O TTS segue o som (`s`) com voz em inglês.",
         "title_f": "Favoritar último",
         "desc_f": "Marca o **último** chunk como favorito.",
         "title_fN": "Favoritar chunk N",
@@ -866,6 +886,17 @@ _I18N: dict[str, dict[str, str]] = {
         "desc_u": "Alterna TUI compacta: esconde o menu multilinha; mantém a entrada de comando. Igual a **F4**. Aliases: `ui`, `compact`.",
         "title_v": "Trocar sessão",
         "desc_v": "Sai da sessão atual e volta ao seletor (nova / retomar / apagar).",
+        "title_view": "Viewer avulso (painel)",
+        "desc_view": (
+            "Abre uma janela Textual **somente leitura** de um painel de Tradução em outro "
+            "terminal (a TUI principal precisa estar rodando; tee via `LOG_VIEW_*` / `log_bus`). "
+            "CLI: `python main.py view lc` · `view coach` · `view voz` (alias `main`). "
+            "No viewer: **/** busca (`/texto` · `/n` · `/p` · `find texto`); "
+            "**Ctrl+C** seleção · **Ctrl+Shift+C** / `a` / `copy` = copiar **tudo**; "
+            "**Ctrl+S** / `e` / `export` = gravar `.md` "
+            "(`YYYY-MM-DD_livelingo-view-<painel>.md` no diretório atual); "
+            "**q** sair. Seleção com highlight amarelo legível."
+        ),
     },
     "es": {
         "tab": "Lista de comandos",

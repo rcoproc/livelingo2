@@ -66,6 +66,20 @@ def test_build_commands_markdown_includes_coach_providers():
     assert "provider" in md_pt.lower() or "gemini" in md_pt.lower()
 
 
+def test_build_commands_markdown_includes_view_viewer():
+    """v1.2.3: detached panel viewers (view lc|coach|voz) + copy/export."""
+    md_en = build_commands_markdown("en")
+    assert "`[view]`" in md_en or "[view]" in md_en
+    assert "view coach" in md_en.lower() or "view lc" in md_en.lower()
+    assert "export" in md_en.lower()
+    assert "ctrl+s" in md_en.lower() or "Ctrl+S" in md_en
+
+    md_pt = build_commands_markdown("pt-BR")
+    assert "view" in md_pt.lower()
+    assert "viewer" in md_pt.lower() or "avulso" in md_pt.lower()
+    assert "export" in md_pt.lower() or "exportar" in md_pt.lower() or ".md" in md_pt
+
+
 def test_build_commands_markdown_includes_cls_sides():
     """Tradução split: cls clears all; cls1=LC left; cls2=VOZ right."""
     md_en = build_commands_markdown("en")

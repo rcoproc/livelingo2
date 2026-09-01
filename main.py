@@ -418,8 +418,13 @@ class ListeningIndicator:
 
 def _resolve_input():
     """Resolve the microphone device, exiting on a bad explicit setting."""
+    prefer = None
+    if bool(getattr(cfg, "CAPTURE_WASAPI_EXCLUSIVE", False)):
+        prefer = "wasapi"
     try:
-        return devices.resolve_device(cfg.INPUT_DEVICE, "input")
+        return devices.resolve_device(
+            cfg.INPUT_DEVICE, "input", prefer_hostapi=prefer
+        )
     except ValueError as exc:
         ui.error(f"Input device problem: {exc}")
         sys.exit(1)
@@ -1813,17 +1818,31 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
         if not text:
             ui.warn("enew: texto vazio.", indent=3)
             return
-        pipeline.chunk_queue.put(text)
+        # Always Portuguese → English (ignores system SOURCE/TARGET).
+        # Priority queue — does not wait behind mic/TTS backlog.
+        ok = False
+        try:
+            if hasattr(pipeline, "enqueue_typed_text"):
+                ok = bool(pipeline.enqueue_typed_text(text, source_lang="pt", target_lang="en"))
+            else:
+                pipeline.chunk_queue.put(text)
+                ok = True
+        except Exception as exc:
+            ui.error(f"enew: falha ao enfileirar: {exc}", indent=3)
+            return
+        if not ok:
+            ui.warn("enew: texto vazio.", indent=3)
+            return
         sound_on = bool(pipeline.is_sound_enabled())
         preview = text if len(text) <= 80 else text[:77] + "…"
         if sound_on:
             ui.success(
-                f'enew: enfileirado — traduz + áudio (sound ON): "{preview}"',
+                f'enew PT→EN (prioridade) — traduz + áudio: "{preview}"',
                 indent=3,
             )
         else:
             ui.info(
-                f"enew: enfileirado — só texto (sound OFF; [s] para ouvir): "
+                f'enew PT→EN (prioridade) — só texto (sound OFF; [s] p/ ouvir): '
                 f'"{preview}"',
                 indent=3,
             )
@@ -2404,9 +2423,47 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
                     f"Coach enabled={st.get('enabled')} · "
                     f"provider={st.get('provider')} · model={st.get('model')} · "
                     f"key_ok={st.get('key_ok')} · busy={st.get('busy')} · "
-                    f"mode={st.get('mode')} · last={st.get('last_question')!r}",
+                    f"mode={st.get('mode')} · "
+                    f"context={st.get('context_file') or '—'} "
+                    f"({st.get('context_chars') or 0} chars) · "
+                    f"last={st.get('last_question')!r}",
                     panel="app",
                 )
+            elif action in ("context", "ctx", "agent"):
+                # coach context | coach context reload | coach context show
+                sub = (rest or "").strip().split(None, 1)
+                sub_act = (sub[0] if sub else "show").strip().lower()
+                if sub_act in ("reload", "refresh", "load", "r"):
+                    ok, msg = coach.reload_context(quiet=False)
+                    (ui.success if ok else ui.warn)(msg, panel="app")
+                else:
+                    st = coach.context_status()
+                    path = st.get("path") or ""
+                    chars = int(st.get("chars") or 0)
+                    preview = (st.get("preview") or "").strip()
+                    if not path:
+                        ui.warn(
+                            "Coach context: nenhum COACH.md / AGENT.md encontrado.\n"
+                            "  Crie COACH.md na raiz do projeto (veja COACH.md.example)\n"
+                            "  ou defina INTERVIEW_COACH_CONTEXT_FILE no .env\n"
+                            "  Depois: coach context reload",
+                            panel="app",
+                        )
+                    else:
+                        ui.info(
+                            f"Coach context file: {path}\n"
+                            f"  chars={chars} · "
+                            f"[coach context reload] para reler do disco",
+                            panel="app",
+                        )
+                        if preview:
+                            ui.dim(
+                                "Preview:\n"
+                                + "\n".join(
+                                    "  " + ln for ln in preview.splitlines()[:12]
+                                ),
+                                panel="app",
+                            )
             elif action == "last":
                 last = coach.last_result()
                 if last is None:
@@ -2474,6 +2531,7 @@ def _dispatch_command(pipeline, synonym_lookup, raw_cmd, cmd, indicator=None):
             else:
                 ui.warn(
                     "Uso: coach on|off|status|last|force|ask <q> | "
+                    "context [reload] | "
                     "provider <grok|groq|deepseek|claude|gemini> [model] · "
                     "ou airespond <pergunta>",
                     panel="app",
@@ -4168,6 +4226,36 @@ def _cli_wants_verbose(argv=None):
     return bool({"--verbose", "-v"} & set(_cli_args(argv)))
 
 
+def _cli_parse_view_panel(argv=None):
+    """
+    If argv starts with ``view <panel>``, return canonical panel id.
+
+    Examples: ``view coach``, ``view lc``, ``view voz``.
+    Returns None when not a view invocation.
+    """
+    args = _cli_args(argv)
+    if not args or str(args[0]).lower() != "view":
+        return None
+    from livelingo.log_bus import normalize_view_panel
+
+    name = args[1] if len(args) > 1 else "coach"
+    return normalize_view_panel(name)
+
+
+def _run_view_cli(panel: str) -> int:
+    """Run a detached read-only panel viewer (no mic / pipeline)."""
+    host = str(getattr(cfg, "LOG_VIEW_HOST", "127.0.0.1") or "127.0.0.1")
+    port = int(getattr(cfg, "LOG_VIEW_PORT", 8765) or 8765)
+    try:
+        from livelingo.tui_view import run_panel_view
+    except ImportError as exc:
+        print(
+            f"Viewer TUI indisponível ({exc}). Instale: pip install textual"
+        )
+        return 1
+    return int(run_panel_view(panel, host=host, port=port) or 0)
+
+
 def _print_cli_help():
     """Print CLI usage in English (simple explanations + example outputs)."""
     text = """
@@ -4176,12 +4264,22 @@ LiveLingo — real-time voice translator
 USAGE
   python main.py [options] [session_id]
   livelingo [options] [session_id]
+  python main.py view <lc|coach|voz>
 
 With no options, the app starts and shows the interactive session menu.
 
 OPTIONS
   -h, --help
       Show this help message and exit.
+
+  view <lc|coach|voz>
+      Open a read-only secondary window for one Tradução pane.
+      Requires the main LiveLingo TUI running (log bus on LOG_VIEW_PORT).
+      Aliases: trad/tradução→voz, entrevista→coach.
+
+      Example (two terminals):
+        $ python main.py
+        $ python main.py view coach
 
   --list-sessions
       List every saved session and exit.
@@ -4497,6 +4595,15 @@ def main():
     if _cli_wants_help():
         raise SystemExit(_print_cli_help())
 
+    # --- Detached panel viewer (no mic / session / devices) ---
+    try:
+        view_panel = _cli_parse_view_panel()
+    except ValueError as exc:
+        print(str(exc))
+        raise SystemExit(2)
+    if view_panel:
+        raise SystemExit(_run_view_cli(view_panel))
+
     # --- Ensure wrapper scripts are generated locally ---
     _ensure_wrapper_scripts()
 
@@ -4571,6 +4678,17 @@ def main():
             _log_info(
                 f"Anti-feedback: mic gated during TTS "
                 f"(hangover {hang_ms} ms). Set MUTE_CAPTURE_DURING_PLAYBACK=false to disable."
+            )
+        if bool(getattr(cfg, "CAPTURE_WASAPI_EXCLUSIVE", False)):
+            _log_info(
+                "Mic WASAPI exclusive ON — Teams/Meet não devem compartilhar "
+                "o mic físico enquanto o LiveLingo escuta. "
+                "No Meet: Microfone = CABLE Output (não o headset)."
+            )
+        else:
+            _log_dim(
+                "Dica: se o Meet ouve sua voz crua, use CABLE Output no Meet "
+                "e/ou CAPTURE_WASAPI_EXCLUSIVE=true no .env."
             )
 
         # --- Settings summary ---

@@ -224,6 +224,32 @@ def test_voz_chunk_blank_between_source_and_target():
     )
 
 
+def test_voz_tui_emits_unwrapped_long_lines():
+    """TUI VOZ must not pre-break text — RichLog reflow needs one logical line."""
+    captured: list[tuple[str, str, str]] = []
+
+    def sink(kind, text, panel="main"):
+        captured.append((kind, text, panel))
+
+    long_src = " ".join(["palavra"] * 40)
+    long_tgt = " ".join(["word"] * 40)
+    prev = ui.get_log_sink()
+    try:
+        ui.set_log_sink(sink)
+        ui.chunk_text_preview(1, long_src, long_tgt, from_cache=None)
+    finally:
+        ui.set_log_sink(prev)
+
+    main = [(k, t) for k, t, p in captured if p == "main" and k == "rich"]
+    src_lines = [t for _, t in main if "palavra" in t]
+    tgt_lines = [t for _, t in main if "word" in t]
+    # One emit each (not N soft-wrapped fragments)
+    assert len(src_lines) == 1, src_lines
+    assert len(tgt_lines) == 1, tgt_lines
+    assert long_src in src_lines[0]
+    assert long_tgt in tgt_lines[0]
+
+
 def test_lc_blank_between_caption_and_translated():
     captured: list[tuple[str, str, str]] = []
 

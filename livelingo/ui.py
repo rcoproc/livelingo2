@@ -21,6 +21,8 @@ _print_lock = threading.RLock()
 # Optional TUI sink: callable(kind, text, panel="main") — when set, prints go there.
 # panel: "main" (VOZ) | "lc" (LiveCaptions) | "coach" (Interview Coach) | "app".
 _log_sink = None
+# Optional secondary log bus (TCP viewers): object with .publish(kind, text, panel).
+_log_bus = None
 # Optional width provider: callable() -> int (usable columns inside the log panel).
 _width_provider = None
 # Temporary panel override (e.g. F1 help → Sistema tab). Nested via stack.
@@ -39,6 +41,22 @@ def set_log_sink(sink):
 
 def get_log_sink():
     return _log_sink
+
+
+def set_log_bus(bus):
+    """
+    Optional tee for secondary viewers (``python main.py view …``).
+
+    ``bus`` must implement ``publish(kind, text, panel)`` and never block.
+    Pass ``None`` to disable.
+    """
+    global _log_bus
+    with _print_lock:
+        _log_bus = bus
+
+
+def get_log_bus():
+    return _log_bus
 
 
 def set_pipeline_stage_sink(sink):
@@ -125,22 +143,30 @@ def _effective_panel(panel: str = "main") -> str:
 
 def _emit(kind, text, panel="main"):
     """kind: info|success|warn|error|dim|raw|rich|list|clear; panel: main|lc|app"""
+    panel = _effective_panel(panel)
     sink = _log_sink
+    bus = _log_bus
+    delivered = False
     if sink is not None:
-        panel = _effective_panel(panel)
         try:
             sink(kind, text, panel)
-            return True
+            delivered = True
         except TypeError:
             # Older 2-arg sinks (tests / classic adapters)
             try:
                 sink(kind, text)
-                return True
+                delivered = True
             except Exception:
-                return False
+                delivered = False
         except Exception:
-            return False
-    return False
+            delivered = False
+    # Fan-out to secondary terminals (view lc|coach|voz) — never block pipeline
+    if bus is not None:
+        try:
+            bus.publish(kind, text, panel)
+        except Exception:
+            pass
+    return delivered
 
 
 def clear_panel(panel: str = "app") -> bool:
@@ -263,6 +289,8 @@ __all__ = [
     "favorites_popup",
     "set_log_sink",
     "get_log_sink",
+    "set_log_bus",
+    "get_log_bus",
     "set_pipeline_stage_sink",
     "get_pipeline_stage_sink",
     "set_width_provider",
@@ -920,7 +948,15 @@ def _cache_badge(from_cache=None):
 
 
 def _emit_voz_chunk_block(
-    n, heard, translated, *, from_cache=None, blank_before=True, blank_after=True
+    n,
+    heard,
+    translated,
+    *,
+    from_cache=None,
+    blank_before=True,
+    blank_after=True,
+    source_lang=None,
+    target_lang=None,
 ):
     """
     Emit a VOZ (mic) chunk on the **right rail**.
@@ -928,7 +964,8 @@ def _emit_voz_chunk_block(
         <right> [Chunk N] BR: heard…          (SOURCE)
                           EN [CACHE]: tr…     (TARGET)
 
-    Order always follows system SOURCE → TARGET (heard then translated).
+    Order always follows system SOURCE → TARGET (heard then translated),
+    unless ``source_lang`` / ``target_lang`` override (e.g. ``enew`` PT→EN).
     from_cache: True=CACHE (magenta), False=LIVE (cyan), None=no badge.
 
     Always ends with a blank line (and optional blank before) so the last
@@ -940,7 +977,16 @@ def _emit_voz_chunk_block(
     # for the *final* separator — we always leave one empty row after the pair).
     force_blank_after = True
     pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
-    src_l, tgt_l = _voz_lang_pair()
+    if source_lang or target_lang:
+        sys_src, sys_tgt = _voz_lang_pair()
+        src_l = (
+            _display_lang_label(source_lang) if source_lang else sys_src
+        )
+        tgt_l = (
+            _display_lang_label(target_lang) if target_lang else sys_tgt
+        )
+    else:
+        src_l, tgt_l = _voz_lang_pair()
     badge = _cache_badge(from_cache)
     # Plain labels for wrap math: "EN [CACHE]: " or "EN: "
     if badge:
@@ -968,41 +1014,25 @@ def _emit_voz_chunk_block(
                 tgt_lab_rich = f"[bold blue]{e(tgt_l)} [/][bold cyan]{e(badge)}: [/]"
             else:
                 tgt_lab_rich = f"[bold blue]{e(tgt_plain)}[/]"
-            # 1) SOURCE (heard) — green
-            for i, line in enumerate(_wrap_labeled_body(lab_src, heard, right_w)):
-                if i == 0:
-                    _emit(
-                        "rich",
-                        f"{head}"
-                        f"[bold yellow]{e(prefix)}[/]"
-                        f"[white]{e(src_l)}: [/]"
-                        f"[green]{e(line)}[/]",
-                    )
-                else:
-                    _emit(
-                        "rich",
-                        f"{head}{ind_src}[green]{e(line)}[/]",
-                    )
+            # TUI: one long line each (no pre-wrap). SelectableRichLog bakes wrap
+            # at the live panel width and reflows on resize — pre-breaking here
+            # left short lines that never filled a wider right column.
+            _emit(
+                "rich",
+                f"[bold yellow]{e(prefix)}[/]"
+                f"[white]{e(src_l)}: [/]"
+                f"[green]{e(heard)}[/]",
+            )
             # Respiro entre SOURCE e TARGET (não grudar as duas linhas)
             if heard and translated:
                 _emit_chunk_blank()
-            # 2) TARGET (translated) — emphasized (terminal can't grow font size;
-            # bold + soft bg makes the line feel heavier / taller than SOURCE).
-            for i, line in enumerate(_wrap_labeled_body(lab_tgt, translated, right_w)):
-                body = f"[bold white on #1e2a3a]{e(line)}[/]"
-                if i == 0:
-                    _emit(
-                        "rich",
-                        f"{head}"
-                        f"[white]{e(' ' * len(prefix))}[/]"
-                        f"{tgt_lab_rich}"
-                        f"{body}",
-                    )
-                else:
-                    _emit(
-                        "rich",
-                        f"{head}{ind_tgt}{body}",
-                    )
+            # TARGET — bold + soft bg (terminal can't grow font size)
+            _emit(
+                "rich",
+                f"[white]{e(' ' * len(prefix))}[/]"
+                f"{tgt_lab_rich}"
+                f"[bold white on #1e2a3a]{e(translated)}[/]",
+            )
             if force_blank_after or blank_after:
                 _emit_chunk_blank()
             return
@@ -1099,7 +1129,8 @@ def _emit_voz_meta_lines(n, lines, *, style="dim", panel="main", nowrap=False):
     pad, _cw, _lw, right_w, _ls, right_shift = _rail_geometry(margin=3)
     prefix = f"[Chunk {n}] "
     meta_indent = " " * len(prefix)
-    head = pad + right_shift + meta_indent
+    # TUI: no left pad — RichLog wraps to the full VOZ column on resize.
+    head = (meta_indent if _log_sink is not None else pad + right_shift + meta_indent)
     budget = max(12, right_w - len(meta_indent))
     with _print_lock:
         for text in lines:
@@ -1110,6 +1141,18 @@ def _emit_voz_meta_lines(n, lines, *, style="dim", panel="main", nowrap=False):
             text = (text or "").strip()
             if not text:
                 continue
+            if _log_sink is not None:
+                # One logical line — panel reflow owns soft-wrap width.
+                e = _rich_escape
+                if style == "yellow":
+                    _emit(
+                        "rich",
+                        f"{head}[bold yellow]{e(text)}[/]",
+                        panel=panel,
+                    )
+                else:
+                    _emit("dim", f"{head}{text}", panel=panel)
+                continue
             if nowrap:
                 pieces = [text]
             elif text.lower().startswith("audio:"):
@@ -1117,19 +1160,8 @@ def _emit_voz_meta_lines(n, lines, *, style="dim", panel="main", nowrap=False):
             else:
                 pieces = _wrap_labeled_body("", text, budget)
             for piece in pieces:
-                if _log_sink is not None:
-                    e = _rich_escape
-                    if style == "yellow":
-                        _emit(
-                            "rich",
-                            f"{head}[bold yellow]{e(piece)}[/]",
-                            panel=panel,
-                        )
-                    else:
-                        _emit("dim", f"{head}{piece}", panel=panel)
-                else:
-                    col = Fore.YELLOW + Style.BRIGHT if style == "yellow" else Style.DIM
-                    print("\r\033[K" + head + col + piece + Style.RESET_ALL)
+                col = Fore.YELLOW + Style.BRIGHT if style == "yellow" else Style.DIM
+                print("\r\033[K" + head + col + piece + Style.RESET_ALL)
 
 
 def chunk_status(n, heard, translated, timings, finalize=False, at=None):
@@ -1190,7 +1222,9 @@ def _role_labels_aligned(from_cache=None):
     return hlab.ljust(w), tlab.ljust(w)
 
 
-def chunk_text_preview(n, heard, translated, from_cache=None):
+def chunk_text_preview(
+    n, heard, translated, from_cache=None, *, source_lang=None, target_lang=None
+):
     """
     Show VOZ chunk on the right rail without timing (timing after TTS).
 
@@ -1198,9 +1232,16 @@ def chunk_text_preview(n, heard, translated, from_cache=None):
         <right> [Chunk N] BR: heard…
                           EN [CACHE]: translated…
     Blank line comes after audio meta (see chunk_timings).
+    Optional source_lang/target_lang override labels (``enew`` always PT→EN).
     """
     _emit_voz_chunk_block(
-        n, heard, translated, from_cache=from_cache, blank_after=False
+        n,
+        heard,
+        translated,
+        from_cache=from_cache,
+        blank_after=False,
+        source_lang=source_lang,
+        target_lang=target_lang,
     )
 
 
@@ -1369,6 +1410,10 @@ def live_caption_block(n, original, translated, from_cache=None):
     translated = (translated or "").strip()
     if not original and not translated:
         return
+    # Never leave Caption without a visible Translated line
+    if original and not translated:
+        translated = "[!] (sem tradução)"
+    is_err = translated.startswith("[ERROR]") or translated.startswith("[!]")
     prefix = f"[LC {n}] "
     indent = " " * len(prefix)
     hlab, tlab = _role_labels_aligned(from_cache)
@@ -1387,18 +1432,19 @@ def live_caption_block(n, original, translated, from_cache=None):
             # Respiro entre Caption e Translated
             if original and translated:
                 _emit_chunk_blank(panel="lc")
-            if from_cache is True:
+            if is_err:
+                lab = f"{indent}[bold red]{e(tlab)}[/]"
+                body = f"[bold red]{e(translated)}[/]"
+            elif from_cache is True:
                 lab = f"{indent}[bold magenta]{e(tlab)}[/]"
+                body = f"[bold white on #1e2a3a]{e(translated)}[/]"
             elif from_cache is False:
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
+                body = f"[bold white on #1e2a3a]{e(translated)}[/]"
             else:
                 lab = f"{indent}[bold cyan]{e(tlab)}[/]"
-            # Same emphasis as VOZ target (no real font-size in terminal)
-            _emit(
-                "rich",
-                f"{lab}[bold white on #1e2a3a]{e(translated)}[/]",
-                panel="lc",
-            )
+                body = f"[bold white on #1e2a3a]{e(translated)}[/]"
+            _emit("rich", f"{lab}{body}", panel="lc")
             # Blank after LC pair so it never sticks under captions chrome
             _emit_chunk_blank(panel="lc")
             return
@@ -1916,7 +1962,9 @@ def chunk_stream_update(n, translated):
         sys.stdout.flush()
 
 
-def chunk_stream_done(n, heard, translated, from_cache=None):
+def chunk_stream_done(
+    n, heard, translated, from_cache=None, *, source_lang=None, target_lang=None
+):
     """
     Finalize streamed VOZ block on the right rail (full wrap).
 
@@ -1926,7 +1974,13 @@ def chunk_stream_done(n, heard, translated, from_cache=None):
     """
     if _log_sink is not None:
         _emit_voz_chunk_block(
-            n, heard, translated, from_cache=from_cache, blank_after=False
+            n,
+            heard,
+            translated,
+            from_cache=from_cache,
+            blank_after=False,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
         return
     with _print_lock:
@@ -1934,7 +1988,13 @@ def chunk_stream_done(n, heard, translated, from_cache=None):
         sys.stdout.write("\033[2A\r\033[K")
         # _emit_voz_chunk_block acquires the lock again (RLock) — OK.
         _emit_voz_chunk_block(
-            n, heard, translated, from_cache=from_cache, blank_after=False
+            n,
+            heard,
+            translated,
+            from_cache=from_cache,
+            blank_after=False,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
         sys.stdout.flush()
 

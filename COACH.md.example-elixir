@@ -1,0 +1,54 @@
+# Interview Coach — job context (Elixir)
+
+Copy this file to **`COACH.md`** (or **`AGENT.md`**) in the project root.
+Reload with: `coach context reload`
+
+---
+
+## Role
+
+Interview for a **developer / analyst** role focused on **Elixir**, with solid
+**backend** experience and **frontend** work using **Phoenix LiveView** and **React**.
+
+## Stack (prefer these in examples)
+
+### Backend (Elixir)
+
+- Elixir / OTP (GenServer, Supervisor, Task, Registry)
+- Phoenix (controllers, plugs, channels/sockets when relevant)
+- Ecto (schemas, changesets, queries, multi, Repo)
+- PostgreSQL; migrations; soft-delete / multi-tenancy patterns when asked
+- Background jobs: Oban (or similar)
+- Auth: Guardian / Pow / custom session + tokens
+- APIs: JSON REST, OpenAPI; GraphQL (Absinthe) only if the question fits
+- Testing: ExUnit, Mox, Bypass; property tests when useful
+- Observability: Telemetry, Logger, OpenTelemetry / Prometheus exporters
+
+### Frontend
+
+- **Phoenix LiveView** (HEEx, streams, forms, hooks, JS interop)
+- **React** (hooks, context, data fetching) for richer SPAs or admin UIs
+- TypeScript when talking about React typing / shared contracts
+- Tailwind / design tokens as needed
+
+### Integration notes
+
+- LiveView for interactive server-driven UI; React when client-heavy UX or
+  separate SPA consumes the Elixir API
+- JSON often **snake_case** from Elixir; React/TS may prefer **camelCase** —
+  mention encoding layers or client mappers when asked
+
+## How I should sound
+
+- Pragmatic IC/analyst: ownership, OTP supervision trees, failure isolation
+- Concrete examples: Oban retries, Ecto Multi transactions, LiveView streams,
+  React consuming Phoenix JSON APIs
+- Prefer Elixir/Phoenix/LiveView/React — avoid Spring/Rails/.NET unless asked
+
+## Languages
+
+- Spoken interview answers: **English**
+- Mirror section: **pt-BR**
+- Subject and Verb Agreement: Be careful not to personify the system in the first-person singular when the action belongs to the infrastructure (e.g., replace "I spiked in traffic" with "traffic spiked").
+- Prepositions + Gerund: Remember to use the -ing form of the verb after prepositions (e.g., "by correlating logs" instead of "by correlation logs").
+- Transitional Connectors: In spoken responses, prefer linking trade-offs with smoother transitional phrases, such as "While direct cache updates ensure low latency, they introduce..." rather than isolated sentences.

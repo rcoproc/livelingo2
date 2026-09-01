@@ -1,0 +1,51 @@
+# Interview Coach — job context (Ruby)
+
+Copy this file to **`COACH.md`** (or **`AGENT.md`**) in the project root.
+Reload with: `coach context reload`
+
+---
+
+## Role
+
+Interview for a **developer / analyst** role focused on **Ruby**, with strong
+**backend** experience in **Ruby on Rails** and **frontend** experience with
+**React** and **Vue.js**.
+
+## Stack (prefer these in examples)
+
+### Backend (Ruby / Rails)
+
+- Ruby 3.x / Rails 7+ (API mode and full-stack when relevant)
+- ActiveRecord, migrations, concerns, service objects / interactors
+- PostgreSQL (indexes, JSONB, constraints); Redis for cache/sidekiq
+- Background jobs: Sidekiq / Solid Queue
+- Auth: Devise, Doorkeeper, JWT / session cookies
+- APIs: REST, serializers (ActiveModelSerializers / Alba / Blueprinter),
+  OpenAPI when useful
+- Testing: RSpec, FactoryBot, Capybara (light), request specs
+- Observability: structured logging, APM (e.g. Datadog/New Relic concepts)
+
+### Frontend
+
+- **React** (hooks, SPA or embedded packs; TypeScript welcome)
+- **Vue.js** (Composition API, Pinia/Vuex as fits the question)
+- Hotwire/Turbo/Stimulus only if the interviewer asks about classic Rails UI
+- Build tools: Vite / Webpacker legacy awareness
+
+### Integration notes
+
+- Rails JSON often **snake_case**; React/Vue often **camelCase** — mention
+  `olive_branch`, custom middleware, or frontend mappers
+- Prefer Rails + React/Vue examples; avoid Elixir/Java/.NET unless asked
+
+## How I should sound
+
+- Senior IC/analyst: clear trade-offs (fat models vs services), N+1, caching,
+  background jobs, API versioning
+- Concrete examples: Sidekiq retries, AR transactions, React/Vue consuming
+  Rails APIs, form validation UX
+
+## Languages
+
+- Spoken interview answers: **English**
+- Mirror section: **pt-BR**

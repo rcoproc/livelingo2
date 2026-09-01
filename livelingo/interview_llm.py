@@ -397,7 +397,7 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {
             **empty,
-            "spoken": text[:1200],
+            "spoken": text[:1800],
         }
 
     spoken = str(data.get("spoken") or data.get("answer") or "").strip()
@@ -423,13 +423,14 @@ def parse_coach_response(raw: str) -> dict[str, Any]:
     )
 
     if not spoken:
-        spoken = text[:1200]
+        spoken = text[:1800]
+    # Room for 5–9 sentences + 1–2 short examples in EN and pt-BR.
     return {
-        "spoken": spoken[:1500],
+        "spoken": spoken[:2000],
         "software_engineer": se,
         "architect": arch,
         "tradeoffs": tradeoffs[:1200],
-        "spoken_pt": spoken_pt[:1500],
+        "spoken_pt": spoken_pt[:2000],
         "software_engineer_pt": se_pt,
         "architect_pt": arch_pt,
         "tradeoffs_pt": tradeoffs_pt[:1200],

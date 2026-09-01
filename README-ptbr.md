@@ -144,7 +144,7 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 |---------|------|
 | `r` / `rN` | Repetir áudio do último chunk ou do chunk N (gera TTS sob demanda se faltar WAV) |
 | `e` / `eN` | Editar e retraduzir frase (TUI: campo já vem com o texto da frase) |
-| `enew <texto>` | Nova tradução só com texto (sem mic); TTS se som ON |
+| `enew <texto>` | Tradução prioritária **sempre PT→EN** (ignora SOURCE/TARGET; sem mic); TTS se som ON |
 | `d` / `dN` | Deletar chunk (com confirmação) |
 | `f` / `fN` | Favoritar frase |
 | `F` | Listar favoritos (modal) |
@@ -154,8 +154,8 @@ Durante a escuta, digite comandos no terminal (menu em duas colunas, `m` reexibe
 | `t` / `t EN` | **TARGET** — muda só o idioma alvo (códigos em **CAIXA ALTA**; aceita one-liner) |
 | `n` | **Mic mute** — mute do microfone no Windows (tray) + gate de captura (**só n minúsculo**) |
 | `N` | **Escuta forçada** — **N maiúsculo** só: bordas amarelas; VAD aceita **voz baixa**; **N** de novo = VAD normal |
-| `go` / `.` / `flush` / **F6** | **Flush escuta** — encerra a fala **agora** → STT (sem esperar silêncio do VAD ~1–2s) |
-| `coach` / **F7** | **Interview Coach** — sob o LC: resposta EN (+ pt-BR). Providers: `grok`/`groq`/`deepseek`/`claude`/`gemini` (`coach provider …`). Padrão OFF. |
+| `go` / `.` / `flush` / **F6** | **Push-to-talk**: 1º = escuta atenta · 2º = traduzir · depois mic OFF (`LISTEN_PUSH_TO_TALK`) |
+| `coach` / **F7** | **Interview Coach** — sob o LC: resposta EN (+ pt-BR). Providers: `grok`/`groq`/`deepseek`/`claude`/`gemini` (`coach provider …`). Contexto do cargo em **`COACH.md`** / `AGENT.md` (`coach context`). Padrão OFF. |
 | `airespond` / `air` | Teste manual: pergunta PT/EN → simula LC → resposta Coach |
 | `b` / `bypass` | **Bypass de voz** — 1ª tecla corta TTS no Cable (como `[x]`) e envia mic cru → CABLE **sem** tradução; 2ª tecla retoma escuta/tradução/TTS |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync → **OBS Virtual Camera** (requer `requirements-webcam.txt` + OBS) |
@@ -760,6 +760,36 @@ Por padrão (`UI_MODE=tui`) o LiveLingo sobe em **TUI Textual**:
 pip install textual   # se ainda não instalou
 python main.py
 ```
+
+**Painel solto em outro terminal** (mesmo host; read-only):
+
+```powershell
+# Terminal A — app completa
+python main.py
+# Terminal B — só Coach / LC / VOZ
+python main.py view coach
+python main.py view lc
+python main.py view voz
+```
+
+Usa TCP `127.0.0.1:8765` (`LOG_VIEW_PORT`). Não abre janela GUI nativa — é outro painel do Windows Terminal (ou outro emulador).
+
+**Teams / Meet não devem ouvir o mic físico**
+
+| App | Microfone | Saída |
+|-----|-----------|------|
+| LiveLingo | Mic físico (headset) | **CABLE Input** |
+| Teams / Meet | **CABLE Output** | Fones |
+
+Se o Meet ainda apontar para o headset, ative no `.env`:
+
+```env
+CAPTURE_WASAPI_EXCLUSIVE=true
+```
+
+Isso trava o mic no LiveLingo (WASAPI exclusive). Continua sendo essencial usar **CABLE Output** no Meet.
+
+Guia completo: [`docs/mic-exclusive.md`](docs/mic-exclusive.md).
 
 Modo legado (prints + readline):
 

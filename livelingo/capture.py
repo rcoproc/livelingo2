@@ -66,19 +66,29 @@ class Recorder:
         # App-level mic gate ([n]). When cleared, blocks are still read (avoid
         # PortAudio overflow) but never emitted as speech chunks.
         self._capture_enabled = threading.Event()
-        self._capture_enabled.set()
+        # Push-to-talk (LISTEN_PUSH_TO_TALK): start closed until F6 arms listen.
+        if bool(getattr(config, "LISTEN_PUSH_TO_TALK", True)):
+            self._capture_enabled.clear()
+        else:
+            self._capture_enabled.set()
         # [N] force soft-listen: accept low-energy speech (not only loud voice).
         self._force_soft_listen = threading.Event()
         # Drop in-progress VAD utterance immediately (language swap [g], etc.).
         self._abort_utterance = threading.Event()
         # [go]/F6: end current utterance NOW (emit → STT), skip silence wait.
         self._force_end_utterance = threading.Event()
+        # PTT: ignore VAD silence end until manual flush (2nd F6).
+        self._hold_until_manual_flush = threading.Event()
+        # Optional callback() after a manual flush emit (pipeline disarms PTT).
+        self.on_manual_flush_emitted = None
         # True while VAD has an open speech buffer (onset..end).
         self._in_speech = threading.Event()
         # [b]/F2 bypass: release InputStream so passthrough can open the mic
         # (dual exclusive open freezes PortAudio on Windows).
         self._stream_suspend = threading.Event()
         self._stream_held = threading.Event()  # set while InputStream context live
+        # After exclusive open fails once, stay on shared for this recorder life.
+        self._force_shared_capture = False
 
         self.sample_rate = config.SAMPLE_RATE
         self.block_frames = max(1, int(config.SAMPLE_RATE * config.BLOCK_DURATION))
@@ -316,6 +326,16 @@ class Recorder:
         self._force_end_utterance.set()
         return True
 
+    def set_hold_until_manual_flush(self, enabled: bool) -> None:
+        """When True, VAD will not end the utterance on silence (PTT / F6)."""
+        if enabled:
+            self._hold_until_manual_flush.set()
+        else:
+            self._hold_until_manual_flush.clear()
+
+    def is_hold_until_manual_flush(self) -> bool:
+        return self._hold_until_manual_flush.is_set()
+
     # ------------------------------------------------------------------ #
     def run(self):
         """Blocking capture loop; intended to run in a dedicated thread.
@@ -334,13 +354,52 @@ class Recorder:
             try:
                 _sd = _sounddevice()
                 channels = int(getattr(self.cfg, "CHANNELS", 1) or 1)
-                with _sd.InputStream(
-                    samplerate=self.sample_rate,
-                    channels=channels,
-                    dtype="float32",
-                    blocksize=self.block_frames,
-                    device=self.device,
-                ) as stream:
+                from .devices import input_stream_extra_settings
+
+                extra = input_stream_extra_settings(
+                    self.cfg, force_shared=bool(self._force_shared_capture)
+                )
+                try:
+                    stream_cm = _sd.InputStream(
+                        samplerate=self.sample_rate,
+                        channels=channels,
+                        dtype="float32",
+                        blocksize=self.block_frames,
+                        device=self.device,
+                        **extra,
+                    )
+                except Exception as open_exc:
+                    # Exclusive open failed → optional shared fallback
+                    want_ex = bool(
+                        getattr(self.cfg, "CAPTURE_WASAPI_EXCLUSIVE", False)
+                    )
+                    allow_fb = bool(
+                        getattr(self.cfg, "CAPTURE_EXCLUSIVE_FALLBACK", True)
+                    )
+                    if want_ex and allow_fb and extra and not self._force_shared_capture:
+                        self._force_shared_capture = True
+                        try:
+                            from . import ui
+
+                            ui.warn(
+                                f"WASAPI exclusive falhou ({open_exc}) — "
+                                "caindo para mic compartilhado. "
+                                "Teams/Meet ainda podem ouvir o mic físico; "
+                                "use CABLE Output no Meet.",
+                                panel="app",
+                            )
+                        except Exception:
+                            pass
+                        stream_cm = _sd.InputStream(
+                            samplerate=self.sample_rate,
+                            channels=channels,
+                            dtype="float32",
+                            blocksize=self.block_frames,
+                            device=self.device,
+                        )
+                    else:
+                        raise
+                with stream_cm as stream:
                     self._stream_held.set()
                     try:
                         failures = 0
@@ -474,23 +533,29 @@ class Recorder:
                     _reset_utterance_state(clear_preroll=True)
                     continue
                 if not self._capture_enabled.is_set():
-                    # Self-heal only when policy says ON (not [n]/bypass/hold/hangover).
-                    # During post-TTS hangover capture_should_run() is False — must
-                    # stay closed so VAD does not latch onto speaker ring-out.
-                    should = None
-                    if self.capture_should_run is not None:
-                        try:
-                            should = bool(self.capture_should_run())
-                        except Exception:
-                            should = None
-                    if should is True:
-                        self._capture_enabled.set()
-                        # Silent re-open (no log spam — "após TTS" already signals ready)
-                        # Fall through — process this block as normal listen
+                    # PTT flush: gate may close while force_end is pending — still
+                    # process the end so we do not discard the utterance.
+                    if self._force_end_utterance.is_set() and in_speech and speech:
+                        pass  # fall through to flush handling below
                     else:
-                        # Hold / hangover / mute: drop speech, pad silence into preroll
-                        _reset_utterance_state(clear_preroll=False, pad_silence=True)
-                        continue
+                        # Self-heal only when policy says ON (not [n]/bypass/hold/hangover).
+                        # During post-TTS hangover capture_should_run() is False — must
+                        # stay closed so VAD does not latch onto speaker ring-out.
+                        should = None
+                        if self.capture_should_run is not None:
+                            try:
+                                should = bool(self.capture_should_run())
+                            except Exception:
+                                should = None
+                        if should is True:
+                            self._capture_enabled.set()
+                            # Fall through — process this block as normal listen
+                        else:
+                            # Hold / hangover / mute / PTT idle: drop speech
+                            _reset_utterance_state(
+                                clear_preroll=False, pad_silence=True
+                            )
+                            continue
 
             loud = self._block_is_speech(block, in_speech=in_speech)
             need_onset = self.onset_blocks
@@ -545,7 +610,8 @@ class Recorder:
             trailing_silence = 0 if loud else trailing_silence + 1
 
             end_threshold = self._silence_blocks_to_end(total_frames)
-            ended = trailing_silence >= end_threshold
+            hold_manual = self._hold_until_manual_flush.is_set()
+            ended = (not hold_manual) and (trailing_silence >= end_threshold)
             manual_flush = False
             if self._force_end_utterance.is_set():
                 self._force_end_utterance.clear()
@@ -557,7 +623,7 @@ class Recorder:
             # Soft noise / TTS echo can hover just above hangover forever —
             # never reaching end_threshold. Force-end ONLY when already
             # partially silent (not continuous loud monologue — that was
-            # cutting "frases compridas" at 8s).
+            # cutting "frases compridas" at 8s). Skip while PTT hold.
             stuck_max = float(
                 getattr(self.cfg, "VAD_STUCK_SPEECH_MAX_SEC", 20.0) or 20.0
             )
@@ -565,7 +631,8 @@ class Recorder:
             speech_sec_now = total_frames / float(self.sample_rate)
             quiet_enough = trailing_silence >= max(3, end_threshold // 3)
             force_stuck = (
-                (not ended)
+                (not hold_manual)
+                and (not ended)
                 and (not loud)
                 and quiet_enough
                 and speech_sec_now >= stuck_max
@@ -582,10 +649,15 @@ class Recorder:
                     )
                 except Exception:
                     pass
-            rolling = rolling_enabled and total_frames >= self.rolling_chunk_frames
+            rolling = (
+                (not hold_manual)
+                and rolling_enabled
+                and total_frames >= self.rolling_chunk_frames
+            )
             early_silence_need = self._early_split_silence_blocks(total_frames)
             paragraph_split = (
-                self._paragraph_split_active()
+                (not hold_manual)
+                and self._paragraph_split_active()
                 and not ended
                 and not too_long
                 and total_frames >= self.paragraph_min_frames
@@ -634,6 +706,13 @@ class Recorder:
                                 panel="app",
                             )
                             ui.listen_ready("chunk curto/silêncio — sem STT")
+                        if manual_flush and callable(
+                            getattr(self, "on_manual_flush_emitted", None)
+                        ):
+                            try:
+                                self.on_manual_flush_emitted()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 elif paragraph_split:

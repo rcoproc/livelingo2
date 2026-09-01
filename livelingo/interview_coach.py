@@ -8,10 +8,12 @@ Runs LLM in a background thread; never blocks LC translate / VOZ pipeline.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from pathlib import Path
+from typing import Any, Callable, List, Optional, Tuple
 
 from .interview_llm import (
     InterviewLLM,
@@ -21,10 +23,22 @@ from .interview_llm import (
     parse_coach_response,
 )
 
+# Discovered relative to process CWD (project root when launching main.py).
+_DEFAULT_CONTEXT_CANDIDATES = (
+    "COACH.md",
+    "AGENT.md",
+    os.path.join(".livelingo", "coach-context.md"),
+)
+
+# Not anchored at ^ — LiveCaptions often prefixes "Specifically,", "So,",
+# "Question five,", etc. before the real interrogative.
 _QUESTION_STARTERS = re.compile(
-    r"^\s*("
-    r"can you|could you|would you|will you|how (?:do|would|did|can|could|have)|"
-    r"what (?:is|are|was|were|do|does|did|would|should|about)|"
+    r"(?:"
+    r"can you|could you|would you|will you|"
+    r"how (?:do|would|did|can|could|have|are|is)|"
+    r"what (?:is|are|was|were|do|does|did|would|should|about|tool|strategy|"
+    r"approach|library|framework)|"
+    r"which (?:tool|library|approach|strategy|one)|"
     r"why (?:do|did|would|is|are)|"
     r"when (?:do|did|would|have)|"
     r"where (?:do|did|have)|"
@@ -32,7 +46,8 @@ _QUESTION_STARTERS = re.compile(
     r"tell me|describe|explain|walk me through|walk us through|"
     r"have you|do you|are you|did you|give me|share (?:an?|your)|"
     r"talk about|speak about|what's your|what is your|what are your|"
-    r"how would you|how have you|in your experience"
+    r"how would you|how have you|in your experience|"
+    r"do you (?:use|handle|keep|ensure|manage|prefer|think|convert|sync)"
     r")\b",
     re.I,
 )
@@ -51,13 +66,14 @@ def is_interview_question(text: str, *, min_chars: int = 40) -> bool:
         return False
     if len(t) < max(8, int(min_chars or 40)):
         # Short but explicit "?" still counts if long enough for a real Q
-        if t.endswith("?") and len(t) >= 20:
+        if "?" in t and len(t) >= 20:
             pass
         else:
             return False
     if _SMALLTALK.match(t) and len(t) < 60:
         return False
-    if t.rstrip().endswith("?"):
+    # LC often drops the trailing "?" — still accept if mark appears anywhere
+    if "?" in t:
         return True
     if _QUESTION_STARTERS.search(t):
         return True
@@ -70,7 +86,7 @@ def _norm_key(text: str) -> str:
 
 
 SYSTEM_PROMPT = """You are a senior Software Engineer and Systems Architect preparing for a live job interview.
-The candidate will speak your answer aloud in English (~30–60 seconds).
+The candidate will speak your answer aloud in English (~45–75 seconds).
 
 CRITICAL LANGUAGE RULES:
 - The interviewer's question may be in English OR Portuguese (including via manual airespond).
@@ -81,13 +97,26 @@ CRITICAL LANGUAGE RULES:
 Tone: assertive, confident, concrete. No apology openers ("Well…", "I think maybe…").
 Prefer outcome + ownership + trade-offs. Avoid buzzword salad.
 
+JOB / CANDIDATE CONTEXT (when provided below):
+- Treat the context block as ground truth for the role (stack, seniority, domain).
+- Prefer technologies and practices named there (e.g. Java, Spring Boot, Angular)
+  when giving examples and trade-offs — do not invent unrelated stacks.
+- Keep answers honest to that profile; still sound like live interview speech.
+
+EXAMPLES (mandatory in spoken + spoken_pt):
+- Weave in 1–2 **simple, concrete examples** tied to the question topic (a small system, incident, migration, API, queue, cache, DB choice, etc.).
+- Phrase them as lived experience the candidate can own — e.g. "In one service I …", "For example, when we …", "On a past project …" — so it sounds like they know how to explain with examples, not only theory.
+- Keep examples short and speakable (one beat each). Prefer plausible generic scenarios over named employers or fake metrics.
+- Mirror the same examples in spoken_pt (natural pt-BR, same stories).
+- SE/Arch bullets may reference those examples briefly; do not dump a long case study.
+
 Return ONLY valid JSON (no markdown fences) with this shape:
 {
-  "spoken": "4-8 sentences the candidate can say aloud in English",
+  "spoken": "5-9 sentences the candidate can say aloud in English, including 1–2 simple topic examples",
   "software_engineer": ["up to 4 short bullets — coding/delivery angle, English"],
   "architect": ["up to 4 short bullets — systems/architecture angle, English"],
   "tradeoffs": "One clear paragraph in English explaining main trade-offs (pros vs cons, when A vs B).",
-  "spoken_pt": "Same spoken answer in Brazilian Portuguese (pt-BR)",
+  "spoken_pt": "Same spoken answer in Brazilian Portuguese (pt-BR), including the same examples",
   "software_engineer_pt": ["same SE bullets in pt-BR"],
   "architect_pt": ["same Arch bullets in pt-BR"],
   "tradeoffs_pt": "Same trade-offs paragraph in Brazilian Portuguese (pt-BR)"
@@ -95,11 +124,70 @@ Return ONLY valid JSON (no markdown fences) with this shape:
 """
 
 
+def resolve_coach_context_path(config=None, *, cwd: str | None = None) -> Optional[Path]:
+    """
+    Resolve markdown context file path.
+
+    Order: INTERVIEW_COACH_CONTEXT_FILE → COACH.md → AGENT.md →
+    .livelingo/coach-context.md (first that exists).
+    """
+    root = Path(cwd or os.getcwd()).resolve()
+    explicit = ""
+    if config is not None:
+        explicit = str(
+            getattr(config, "INTERVIEW_COACH_CONTEXT_FILE", "") or ""
+        ).strip()
+    candidates: list[Path] = []
+    if explicit:
+        p = Path(explicit).expanduser()
+        candidates.append(p if p.is_absolute() else (root / p))
+    for name in _DEFAULT_CONTEXT_CANDIDATES:
+        candidates.append(root / name)
+    seen: set[str] = set()
+    for p in candidates:
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if p.is_file():
+                return p.resolve()
+        except Exception:
+            continue
+    return None
+
+
+def load_coach_context(
+    config=None, *, cwd: str | None = None, max_chars: int = 12000
+) -> Tuple[str, Optional[Path]]:
+    """
+    Load interview context markdown from disk.
+
+    Returns (text, path_or_None). Empty text if no file found.
+    """
+    path = resolve_coach_context_path(config, cwd=cwd)
+    if path is None:
+        return "", None
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return "", path
+    text = (raw or "").strip()
+    if not text:
+        return "", path
+    limit = max(500, int(max_chars or 12000))
+    if len(text) > limit:
+        text = text[: limit - 20].rstrip() + "\n…[truncated]"
+    return text, path
+
+
 def _build_user_prompt(
     question_en: str,
     *,
     question_pt: str = "",
     profile: str = "",
+    context: str = "",
+    context_path: str = "",
     simulated: bool = False,
 ) -> str:
     label = "Interviewer's question (EN or PT)"
@@ -108,12 +196,25 @@ def _build_user_prompt(
     parts = [f"{label}:\n{question_en.strip()}"]
     if (question_pt or "").strip() and question_pt.strip() != question_en.strip():
         parts.append(f"Portuguese gloss (context only):\n{question_pt.strip()}")
+    ctx = (context or "").strip()
+    if ctx:
+        src = (context_path or "COACH.md").strip()
+        parts.append(
+            f"Job / interview context (from {src} — follow this stack/role "
+            f"in every answer):\n{ctx}"
+        )
     if (profile or "").strip():
-        parts.append(f"Candidate profile (use if relevant):\n{profile.strip()}")
+        parts.append(
+            f"Candidate profile notes (.env INTERVIEW_CANDIDATE_PROFILE):\n"
+            f"{profile.strip()}"
+        )
     parts.append(
         "Produce the JSON answer now. "
         "Remember: English fields = English only; *_pt fields = Brazilian Portuguese. "
-        "If the question is in Portuguese, still write spoken/SE/Arch/tradeoffs in English."
+        "If the question is in Portuguese, still write spoken/SE/Arch/tradeoffs in English. "
+        "Align examples and trade-offs with the job/interview context when present. "
+        "In spoken and spoken_pt, include 1–2 simple examples about this topic "
+        "that make the candidate sound experienced and ready to explain with examples."
     )
     return "\n\n".join(parts)
 
@@ -152,6 +253,11 @@ class InterviewCoach:
         self._busy = False
         # When set, next _run_job marks the prompt as simulated LC
         self._next_simulated: bool = False
+        # Cached COACH.md / AGENT.md body (reload via coach context reload)
+        self._context_text: str = ""
+        self._context_path: Optional[Path] = None
+        self._context_mtime: float = 0.0
+        self.reload_context(quiet=True)
 
     @property
     def enabled(self) -> bool:
@@ -160,6 +266,53 @@ class InterviewCoach:
     def set_enabled(self, on: bool) -> bool:
         self._enabled = bool(on)
         return self._enabled
+
+    def reload_context(self, *, quiet: bool = False) -> tuple[bool, str]:
+        """Reload COACH.md / AGENT.md (or INTERVIEW_COACH_CONTEXT_FILE)."""
+        text, path = load_coach_context(self.cfg)
+        self._context_text = text
+        self._context_path = path
+        try:
+            self._context_mtime = path.stat().st_mtime if path else 0.0
+        except Exception:
+            self._context_mtime = 0.0
+        if path is None:
+            msg = (
+                "Coach context: nenhum arquivo "
+                "(crie COACH.md ou AGENT.md na raiz do projeto)."
+            )
+            if not quiet:
+                return False, msg
+            return False, msg
+        msg = (
+            f"Coach context: {path.name} · {len(text)} chars"
+            + (" · vazio" if not text else "")
+        )
+        return True, msg
+
+    def context_status(self) -> dict[str, Any]:
+        path = self._context_path
+        return {
+            "path": str(path) if path else "",
+            "name": path.name if path else "",
+            "chars": len(self._context_text or ""),
+            "preview": (self._context_text or "")[:240],
+        }
+
+    def _ensure_context_fresh(self) -> str:
+        """Auto-reload if the markdown file changed on disk."""
+        path = self._context_path or resolve_coach_context_path(self.cfg)
+        if path is None:
+            # Maybe file was created after boot
+            self.reload_context(quiet=True)
+            return self._context_text or ""
+        try:
+            mtime = path.stat().st_mtime
+        except Exception:
+            return self._context_text or ""
+        if abs(mtime - float(self._context_mtime or 0.0)) > 0.01:
+            self.reload_context(quiet=True)
+        return self._context_text or ""
 
     def set_provider(self, provider: str, model: str = "") -> tuple[bool, str]:
         """
@@ -213,6 +366,7 @@ class InterviewCoach:
         except Exception:
             pass
         last_q = (self._last.question[:80] if self._last else "") or ""
+        ctx = self.context_status()
         return {
             "enabled": self._enabled,
             "provider": provider,
@@ -222,6 +376,8 @@ class InterviewCoach:
             "last_question": last_q,
             "mode": str(getattr(self.cfg, "INTERVIEW_QUESTION_MODE", "auto") or "auto"),
             "providers": list_interview_providers(),
+            "context_file": ctx.get("name") or "",
+            "context_chars": ctx.get("chars") or 0,
         }
 
     def remember_lc(self, n: int, en: str, pt: str = "") -> None:
@@ -386,12 +542,22 @@ class InterviewCoach:
             llm = self._ensure_llm()
             provider = getattr(llm, "provider_name", "") or ""
             profile = str(getattr(self.cfg, "INTERVIEW_CANDIDATE_PROFILE", "") or "")
+            context = self._ensure_context_fresh()
+            ctx_path = ""
+            try:
+                ctx_path = (
+                    self._context_path.name if self._context_path is not None else ""
+                )
+            except Exception:
+                ctx_path = ""
             raw = llm.complete(
                 SYSTEM_PROMPT,
                 _build_user_prompt(
                     en,
                     question_pt=pt,
                     profile=profile,
+                    context=context,
+                    context_path=ctx_path,
                     simulated=simulated,
                 ),
             )

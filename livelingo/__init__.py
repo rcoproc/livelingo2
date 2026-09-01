@@ -15,4 +15,4 @@ Modular building blocks for the LiveLingo real-time voice translation pipeline:
     ui.py           terminal banner, colors and status lines
 """
 
-__version__ = "1.0.0"
+__version__ = "1.2.3"

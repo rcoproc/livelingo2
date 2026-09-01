@@ -291,6 +291,15 @@ STREAMING_TTS_OVERLAP = _get_bool("STREAMING_TTS_OVERLAP", True)
 # Microphone. Leave empty to use the Windows default recording device.
 INPUT_DEVICE = _get_str("INPUT_DEVICE", "")
 
+# Windows WASAPI exclusive capture: LiveLingo locks the physical mic so other
+# apps (Teams/Meet) cannot share it while we listen. Requires a WASAPI input
+# device (auto-preferred when this is true). Pair with Teams mic = CABLE Output.
+# Default false — shared mode is more compatible with USB headsets / LiveCaptions.
+CAPTURE_WASAPI_EXCLUSIVE = _get_bool("CAPTURE_WASAPI_EXCLUSIVE", False)
+# If exclusive open fails, fall back to shared PortAudio (log warning) instead of
+# aborting the capture loop.
+CAPTURE_EXCLUSIVE_FALLBACK = _get_bool("CAPTURE_EXCLUSIVE_FALLBACK", True)
+
 # Where the translated speech is sent. To feed Teams/Zoom/etc. this MUST be the
 # VB-Cable *playback* side, normally named "CABLE Input (VB-Audio Virtual Cable)".
 # Apps then select "CABLE Output" as their microphone.
@@ -326,6 +335,11 @@ CHANNELS = 1
 # speaking before sending a chunk (more natural sentences). When False it cuts
 # fixed-length chunks every CHUNK_DURATION seconds.
 VAD_ENABLED = _get_bool("VAD_ENABLED", True)
+
+# Push-to-talk via F6 / [go]: start with mic OFF → F6 arms attentive listen
+# (no auto end on silence) → F6 again flushes → STT/Trad/TTS → mic OFF again.
+# false = legacy: mic usually ON; F6 only force-flushes an open utterance.
+LISTEN_PUSH_TO_TALK = _get_bool("LISTEN_PUSH_TO_TALK", True)
 
 # Fixed-chunk length (VAD disabled) AND the soft target in VAD mode.
 CHUNK_DURATION = _get_float("CHUNK_DURATION", 4.0)
@@ -493,6 +507,14 @@ UI_MODE = _get_str("UI_MODE", "tui").lower()
 # Same as pressing F4 / [u] once at launch. Default false = full menu visible.
 TUI_MINIMAL = _get_bool("TUI_MINIMAL", False)
 
+# Secondary log viewers (`python main.py view lc|coach|voz`) — TCP localhost tee.
+# Host TUI publishes NDJSON; viewers are read-only Textual panes in other terminals.
+LOG_VIEW_ENABLE = _get_bool("LOG_VIEW_ENABLE", True)
+LOG_VIEW_HOST = _get_str("LOG_VIEW_HOST", "127.0.0.1")
+LOG_VIEW_PORT = _get_int("LOG_VIEW_PORT", 8765)
+# Per-viewer outbound buffer (lines). Full → drop-oldest (never block STT/TTS).
+LOG_VIEW_CLIENT_BUF = _get_int("LOG_VIEW_CLIENT_BUF", 400)
+
 # --------------------------------------------------------------------------- #
 # Live Captions (Windows 11 LiveCaptions → faixa superior da TUI)
 # --------------------------------------------------------------------------- #
@@ -556,8 +578,11 @@ INTERVIEW_MIN_CHARS = _get_int("INTERVIEW_MIN_CHARS", 40)
 INTERVIEW_QUESTION_MODE = _get_str("INTERVIEW_QUESTION_MODE", "auto").lower()
 # Fraction of LC column height for coach pane (0.25–0.7)
 INTERVIEW_COACH_PANEL_RATIO = _get_float("INTERVIEW_COACH_PANEL_RATIO", 0.45)
-# Optional 2–4 lines about you (stack, years) injected into the prompt
+# Optional short line(s) about you (stack, years) — also see COACH.md / AGENT.md
 INTERVIEW_CANDIDATE_PROFILE = _get_str("INTERVIEW_CANDIDATE_PROFILE", "")
+# Markdown file with full interview context (role, stack, constraints). Empty =
+# auto-discover COACH.md, then AGENT.md, then .livelingo/coach-context.md
+INTERVIEW_COACH_CONTEXT_FILE = _get_str("INTERVIEW_COACH_CONTEXT_FILE", "")
 
 # --------------------------------------------------------------------------- #
 # Webcam lip-sync → virtual camera (optional; Teams/Meet)

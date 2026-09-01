@@ -11,7 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 Tag: [`v1.2.3`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3).
 
-**Highlights:** **Interview Coach** (painel sob LC — respostas assertivas EN + espelho pt-BR para perguntas de entrevista), multi-provider (**Grok / Groq / DeepSeek / Claude / Gemini**), **`airespond`** para testar sem LiveCaptions, **`[go]`/F6** flush STT, playback Cable|fones **paralelo**, mute **`[n]`** sem modal bloqueante, VOZ com respiro SOURCE/TARGET.
+**Highlights:** **Interview Coach** (painel sob LC — respostas assertivas EN + espelho pt-BR),
+multi-provider (**Grok / Groq / DeepSeek / Claude / Gemini**), contexto de cargo via
+**`COACH.md`**, **`airespond`**, **`[go]`/F6** (flush / push-to-talk), playback Cable|fones
+**paralelo**, **`SOUND_ON_PARALLEL`**, viewers destacados (`view lc|coach|voz`), mute **`[n]`**
+sem modal, LC com fallback **MyMemory**, mic **WASAPI exclusive** opcional. Header TUI mostra
+**`v1.2.3`** à direita na linha do robô.
 
 ### Added
 
@@ -30,36 +35,85 @@ Tag: [`v1.2.3`](https://github.com/rcoproc/livelingo2/releases/tag/v1.2.3).
   | `deepseek` | `DEEPSEEK_API_KEY` |
   | `claude` | `ANTHROPIC_API_KEY` (alias `CLAUDE_API_KEY`) |
   | `gemini` | `GEMINI_API_KEY` (alias `GOOGLE_API_KEY`) |
+- **`COACH.md` / `AGENT.md` context** — markdown na raiz do projeto (ou
+  `INTERVIEW_COACH_CONTEXT_FILE`) com stack/cargo/constraints injetado no prompt;
+  `coach context` / `coach context reload`. Exemplos: `COACH.md.example-java`,
+  `-elixir`, `-ruby`, `-csharp`, `-golang`.
+- **Coach Expandir/Restaurar** — maximiza o painel Coach na coluna LC (reflow wrap;
+  oculta Expand do VOZ enquanto Coach está maximizado).
 - **`airespond` / `air`** — digita pergunta PT ou EN; simula par LC + dispara Coach
   (Spoken sempre em inglês mesmo se a pergunta for em português).
 - **`coach on` / `coach off`** — além de ligar/desligar a API, **mostra/oculta** o painel
   Coach (LC ocupa a coluna inteira quando OFF).
 - **`[go]` / `.` / `flush` / F6** — force-flush do VAD: emite STT **agora** sem esperar
-  `SILENCE_DURATION`.
+  `SILENCE_DURATION`. Com `LISTEN_PUSH_TO_TALK=true` (default), F6 arma escuta atenta
+  → F6 de novo flush → mic OFF.
+- **Viewers destacados** — `python main.py view lc|coach|voz`: painéis Textual
+  read-only via `log_bus` (TCP localhost NDJSON). No viewer:
+  - **Busca** estilo vim (`/texto`, `/n`, `/p`, aliases `find`/`s?`) + caixa inferior
+  - **Ctrl+C** seleção · **Ctrl+Shift+C** / `a` / `copy` = copiar **tudo**
+  - **Ctrl+S** / `e` / `export` = exportar `.md`
+    (`YYYY-MM-DD_livelingo-view-<painel>.md` no CWD)
+  - seleção amarela legível (não azul-marinho do Textual)
+- **WASAPI exclusive capture** — `CAPTURE_WASAPI_EXCLUSIVE` trava o mic físico no
+  Windows para Teams/Meet não compartilharem; `CAPTURE_EXCLUSIVE_FALLBACK` volta a
+  shared se falhar. Guia: `docs/mic-exclusive.md`.
 - **Lista de comandos (aba)** — entradas EN/pt-BR para `[go]`, F6, `[coach]`,
-  `[airespond]`, F7, providers e mute sem modal.
+  `[airespond]`, F7, providers, mute sem modal, `COACH.md` e **`[view]`**
+  (viewers avulsos + busca/cópia/export).
+- **Badge de versão no header** — `v1.2.3` alinhado à direita na mesma linha do robô
+  (bypass / reproduzindo / mudo / escuta forçada / idle).
 
 ### Changed
 
 - **`MONITOR_PLAYBACK`** — Cable e fones recebem o TTS **em paralelo** (não 2× sequencial).
+- **`SOUND_ON_PARALLEL`** — STT/Trad do próximo chunk enquanto o TTS anterior ainda toca
+  (com `MUTE_CAPTURE_DURING_PLAYBACK=false` + fones + VB-Cable).
 - **`TTS_MONITOR_CUE_LEAD_S`** — default **0.3s** (era 1.0) para first-audio mais rápido
   no Cable após o bip.
 - **Mute `[n]`** — sem popup modal: header vermelho + bordas; logs e linha de comando
   continuam usáveis.
 - **VOZ layout** — linha em branco entre SOURCE e TARGET; TARGET com ênfase
   (bold + fundo); labels Coach SE/Arch explicados na UI.
+- **`enew`** — tradução tipada **sempre PT→EN** (ignora SOURCE/TARGET do par atual);
+  prioridade na fila; TTS se som ON.
+- **Coach system prompt** — exige 1–2 exemplos concretos faláveis no Spoken EN/pt-BR;
+  usa o bloco de contexto do cargo como ground truth.
+
+### Fixed
+
+- **LC translate** — Google `TranslationNotFound` / 500 no deep-translator: fallback
+  **MyMemory** + normalização de códigos (`br` / `pt-BR` → `pt`, etc.) para inverter
+  EN→PT nas legendas.
+- **Coach `auto` detector** — reconhece interrogativas com preâmbulo LC
+  (“Specifically, what…”) e `?` em qualquer posição (não só no fim).
+- **Paste multi-linha no `#cmd`** — wrap/cópia do LC colava só a 1ª linha; agora
+  colapsa newlines em espaços numa única linha de comando.
+- **`MUTE_CAPTURE_DURING_PLAYBACK=false`** — honrado de ponta a ponta (gate não fica
+  fechado indevidamente quando o full-duplex está habilitado).
+- **Viewer selection** — highlight azul-marinho do Textual escondia o texto; agora
+  amarelo `#f0d78c` + texto escuro (igual à TUI principal).
+- **Header `v1.2.3`** — badge em widget à direita (`#listen-header-ver`), não mais
+  padding frágil no mesmo string do robô (sumia com emoji/width 0).
 
 ### Docs
 
-- README (EN/pt-BR): release **v1.2.3**; comandos Coach / `airespond` / F6–F7;
-  knobs de latência e providers.
-- `.env.example`: bloco Interview Coach completo (keys multi-provider).
+- README (EN/pt-BR): release **v1.2.3**; Coach / `airespond` / F6–F7 / `COACH.md` /
+  viewers / mic exclusive / knobs de latência e providers.
+- `.env.example`: Interview Coach completo, `INTERVIEW_COACH_CONTEXT_FILE`,
+  `CAPTURE_WASAPI_*`, `LISTEN_PUSH_TO_TALK`, `LOG_VIEW_*`, `SOUND_ON_PARALLEL`.
+- `docs/mic-exclusive.md` — roteamento CABLE + WASAPI exclusive vs Meet/Teams.
+- Exemplos de contexto: `COACH.md.example-{java,elixir,ruby,csharp,golang}`.
 
 ### Tests
 
-- `tests/test_interview_coach.py` — detector, parse EN+pt-BR, `airespond` simulado.
+- `tests/test_interview_coach.py` — detector, parse EN+pt-BR, `airespond`, contexto.
 - `tests/test_interview_providers.py` — build/mock Grok/Groq/DeepSeek/Claude/Gemini.
 - `tests/test_flush_listen.py` — force soft-end + dual-write paralelo.
+- `tests/test_lc_translate.py` — MyMemory fallback + normalize lang.
+- `tests/test_log_bus.py` — protocol / tee viewers.
+- `tests/test_enew_typed.py` — `enew` PT→EN tipado.
+- `tests/test_devices.py` — WASAPI exclusive helpers.
 - `tests/test_command_help.py` — `[go]` / `[coach]` / `[sub]` / `[N]` no markdown.
 
 ## [1.2.2] - 2026-07-23

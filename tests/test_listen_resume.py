@@ -216,6 +216,7 @@ def test_arm_listen_after_tts_aborts_and_opens(monkeypatch):
         _capture_hold_lock=threading.Lock(),
     )
     host.is_passthrough_active = lambda: False
+    host.is_listen_ptt_enabled = lambda: False
     host._mute_capture_during_playback_enabled = lambda: True
     host._is_capture_held_for_playback = lambda: False
 
@@ -304,6 +305,111 @@ def test_capture_should_run_false_during_hangover():
     assert Pipeline.capture_should_run(host) is False
     host._capture_hangover_until = 0.0
     assert Pipeline.capture_should_run(host) is True
+
+
+def test_mute_capture_false_keeps_mic_open_during_hold_and_hangover():
+    """MUTE_CAPTURE_DURING_PLAYBACK=false → record next phrase while TTS plays."""
+    import sys
+    import threading
+    import time
+    from unittest.mock import MagicMock
+
+    sys.modules.setdefault("sounddevice", MagicMock())
+    from livelingo.pipeline import Pipeline
+
+    class FakeRec:
+        def __init__(self):
+            self.enabled = True
+
+        def set_capture_enabled(self, v):
+            self.enabled = bool(v)
+
+        def is_capture_enabled(self):
+            return self.enabled
+
+    host = SimpleNamespace(
+        mic=SimpleNamespace(is_app_muted=lambda: False),
+        recorder=FakeRec(),
+        cfg=SimpleNamespace(MUTE_CAPTURE_DURING_PLAYBACK=False),
+        _capture_hold_count=0,
+        _capture_hold_timer=None,
+        _capture_hangover_until=0.0,
+        _passthrough_active=False,
+        _capture_hold_lock=threading.Lock(),
+    )
+    host.is_passthrough_active = lambda: False
+    host._mute_capture_during_playback_enabled = (
+        lambda: Pipeline._mute_capture_during_playback_enabled(host)
+    )
+    host._is_capture_held_for_playback = lambda: Pipeline._is_capture_held_for_playback(
+        host
+    )
+    host._cancel_capture_hold_timer_unlocked = lambda: None
+    host.capture_should_run = lambda: Pipeline.capture_should_run(host)
+    host.sync_capture_gate = lambda **kw: Pipeline.sync_capture_gate(host, **kw)
+
+    # Hold is a no-op when mute-capture is off
+    Pipeline._hold_capture_for_playback(host)
+    assert host._capture_hold_count == 0
+    assert host.recorder.enabled is True
+    assert Pipeline.capture_should_run(host) is True
+    assert Pipeline.is_output_playing(host) is False
+
+    # Stale hangover must not close the gate either
+    host._capture_hangover_until = time.monotonic() + 5.0
+    assert Pipeline.capture_should_run(host) is True
+    assert Pipeline.is_output_playing(host) is False
+
+    # Release is also a no-op
+    Pipeline._release_capture_after_playback(host)
+    assert host.recorder.enabled is True
+
+
+def test_mute_capture_true_hold_closes_gate_and_marks_playing():
+    """Default MUTE_CAPTURE=true still closes mic and drives «não fale» UI."""
+    import sys
+    import threading
+    from unittest.mock import MagicMock
+
+    sys.modules.setdefault("sounddevice", MagicMock())
+    from livelingo.pipeline import Pipeline
+
+    class FakeRec:
+        def __init__(self):
+            self.enabled = True
+
+        def set_capture_enabled(self, v):
+            self.enabled = bool(v)
+
+        def is_capture_enabled(self):
+            return self.enabled
+
+    host = SimpleNamespace(
+        mic=SimpleNamespace(is_app_muted=lambda: False),
+        recorder=FakeRec(),
+        cfg=SimpleNamespace(MUTE_CAPTURE_DURING_PLAYBACK=True),
+        _capture_hold_count=0,
+        _capture_hold_timer=None,
+        _capture_hangover_until=0.0,
+        _passthrough_active=False,
+        _capture_hold_lock=threading.Lock(),
+    )
+    host.is_passthrough_active = lambda: False
+    host._mute_capture_during_playback_enabled = (
+        lambda: Pipeline._mute_capture_during_playback_enabled(host)
+    )
+    host._is_capture_held_for_playback = lambda: Pipeline._is_capture_held_for_playback(
+        host
+    )
+    host._cancel_capture_hold_timer_unlocked = lambda: None
+    host.capture_should_run = lambda: Pipeline.capture_should_run(host)
+    host.sync_capture_gate = lambda **kw: Pipeline.sync_capture_gate(host, **kw)
+
+    Pipeline._hold_capture_for_playback(host)
+    assert host._capture_hold_count == 1
+    assert host.recorder.enabled is False
+    assert Pipeline.capture_should_run(host) is False
+    assert Pipeline.is_output_playing(host) is True
 
 
 def test_force_soft_listen_lowers_energy_bar():

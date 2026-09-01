@@ -48,6 +48,7 @@ from textual.widgets import (
 # Click events on Static bypass badge (#cmd-bypass)
 from . import command_help
 from . import ui as ui_mod
+from . import __version__ as _APP_VERSION
 
 
 # --------------------------------------------------------------------------- #
@@ -1186,14 +1187,20 @@ class SelectableRichLog(RichLog):
         if selection is None:
             return None
         # Rendered strips: y/x match on-screen wrapped lines + apply_offsets.
+        # Soft-wrap bake inserts visual newlines — join to spaces so paste into
+        # the single-line #cmd (and most editors) keeps the full caption.
         try:
             if self.lines:
                 text = "\n".join(line.text for line in self.lines)
-                return selection.extract(text), "\n"
+                extracted = selection.extract(text)
+                cleaned = " ".join((extracted or "").split())
+                return cleaned, "\n"
         except Exception:
             pass
         if self._plain_lines:
-            return selection.extract("\n".join(self._plain_lines)), "\n"
+            extracted = selection.extract("\n".join(self._plain_lines))
+            cleaned = " ".join((extracted or "").split())
+            return cleaned, "\n"
         return None
 
     def selection_updated(self, selection: Selection | None) -> None:
@@ -1519,6 +1526,11 @@ _FOOTER_I18N = {
         "restore_tip": "Restore LC | VOZ split, captions strip, and key-hint footer",
         "coach_expand_tip": "Maximize Coach: full width, hide LC captions log, more room to read",
         "coach_restore_tip": "Restore LC | Coach split and VOZ column",
+        "coach_minimize": "Minimize",
+        "coach_minimize_restore": "Restore",
+        "coach_minimize_tip": "Collapse Coach log to a thin bar — LC captions use the space",
+        "coach_minimize_restore_tip": "Restore Coach log height under LC",
+        "coach_view_hint": "( python main.py view coach )",
         "cls_note_lc": "[dim]LC cleared — stable [LC n] pairs will show here again[/]",
         "cls_note_voz": "[dim]VOZ cleared — [l] history · [lo]/[lt] · F3 System[/]",
         "cls_note_app": "[dim]System cleared — STT/translate/TTS stages will show here again[/]",
@@ -1676,6 +1688,11 @@ _FOOTER_I18N = {
         "restore_tip": "Restaurar split LC | VOZ, faixa captions e atalhos do rodapé",
         "coach_expand_tip": "Maximizar Coach: largura total, oculta log LC, mais espaço para ler",
         "coach_restore_tip": "Restaurar split LC | Coach e coluna VOZ",
+        "coach_minimize": "Minimizar",
+        "coach_minimize_restore": "Restaurar",
+        "coach_minimize_tip": "Encolher o log do Coach a uma barra fina — LC Captions usa o espaço",
+        "coach_minimize_restore_tip": "Restaurar a altura do log do Coach sob o LC",
+        "coach_view_hint": "( python main.py view coach )",
         "cls_note_lc": "[dim]LC limpo — pares estáveis [LC n] voltam a aparecer aqui[/]",
         "cls_note_voz": "[dim]VOZ limpo — [l] histórico · [lo]/[lt] · F3 Sistema[/]",
         "cls_note_app": "[dim]Sistema limpo — etapas STT/tradução/TTS voltam a aparecer aqui[/]",
@@ -2313,28 +2330,61 @@ class LiveLingoApp(App):
         /* Default Header is 3 rows (tall); keep chrome compact */
         height: 1;
     }
-    /* Exactly 1 row for robot line — no border (border ate rows / left blank). */
+    /* Exactly 1 row for robot line — left status + right version badge. */
     #listen-header {
         dock: top;
         height: 1;
         min-height: 1;
         max-height: 1;
+        layout: horizontal;
         background: #e0a020;
         color: #1a1b26;
         padding: 0 1;
         border: none;
         text-style: bold;
-        content-align: left middle;
         overflow: hidden;
+    }
+    #listen-header-status {
+        width: 1fr;
+        height: 1;
+        background: transparent;
+        color: #1a1b26;
+        text-style: bold;
+        content-align: left middle;
+        overflow-x: hidden;
+        padding: 0;
+        border: none;
+    }
+    #listen-header-ver {
+        width: auto;
+        height: 1;
+        background: transparent;
+        color: #1a1b26;
+        text-style: bold;
+        content-align: right middle;
+        padding: 0 0 0 1;
+        border: none;
     }
     #listen-header.sound-on {
         background: #3d9a5f;
+        color: #ffffff;
+    }
+    #listen-header.sound-on #listen-header-status,
+    #listen-header.sound-on #listen-header-ver {
         color: #ffffff;
     }
     #listen-header.mic-muted {
         background: #c23b3b;
         color: #ffffff;
         text-style: bold;
+    }
+    #listen-header.mic-muted #listen-header-status,
+    #listen-header.mic-muted #listen-header-ver {
+        color: #ffffff;
+    }
+    #listen-header.-hot-listen #listen-header-status,
+    #listen-header.-hot-listen #listen-header-ver {
+        color: #1a1b26;
     }
     /* [n] mute — red chrome, NON-blocking (no modal; logs/cmds stay usable) */
     #log-tabs.-mic-muted {
@@ -2523,7 +2573,7 @@ class LiveLingoApp(App):
     #trad-btn-voz.-hidden {
         display: none;
     }
-    /* Coach pane under LC: log + Expand/Restore on bottom-right */
+    /* Coach pane under LC: log + Min (left) / Expand (right) on bottom bar */
     #coach-pane {
         height: 1fr;
         width: 1fr;
@@ -2533,12 +2583,43 @@ class LiveLingoApp(App):
     #coach-pane.-hidden {
         display: none;
     }
+    #coach-pane.-minimized {
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+    }
+    #log-coach.-minimized {
+        display: none;
+        height: 0;
+        min-height: 0;
+        max-height: 0;
+    }
     #coach-bar {
         height: 1;
         width: 1fr;
         layout: horizontal;
-        align: right middle;
+        align: left middle;
         background: $panel;
+    }
+    #coach-bar-spacer {
+        width: 1fr;
+        height: 1;
+    }
+    #trad-btn-coach-min {
+        width: auto;
+        min-width: 10;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+        padding: 0 1;
+        border: none;
+        background: #565f89;
+        color: #c0caf5;
+        text-style: bold;
+        dock: none;
+    }
+    #trad-btn-coach-min:hover {
+        background: #6b7399;
     }
     #trad-btn-coach {
         width: auto;
@@ -3013,6 +3094,9 @@ class LiveLingoApp(App):
             )
         except Exception:
             self._lc_coach_ratio: float = 0.45
+        # Coach log collapsed to bottom bar only (left Minimize button)
+        self._coach_minimized: bool = False
+        self._coach_panel_visible: bool = False
         # Live Captions strip height in rows (drag bottom edge vs middle logs)
         self._captions_height: int = 8
         # Saved captions height while Expand hides the strip (restore on Restaurar)
@@ -3106,8 +3190,14 @@ class LiveLingoApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        # Fixed top listen bar — single row only (robot + pair + audio + status)
-        yield Static(_footer_i18n()["starting"], id="listen-header", markup=False)
+        # Fixed top listen bar — robot/status left, version badge right
+        with Horizontal(id="listen-header"):
+            yield Static(
+                _footer_i18n()["starting"],
+                id="listen-header-status",
+                markup=False,
+            )
+            yield Static(f"v{_APP_VERSION}", id="listen-header-ver", markup=False)
         # Live Captions strip (Windows LiveCaptions) — above log tabs
         with Vertical(id="captions-panel"):
             yield Static(
@@ -3196,6 +3286,13 @@ class LiveLingoApp(App):
                                     pane_role="coach",
                                 )
                                 with Horizontal(id="coach-bar"):
+                                    yield Button(
+                                        _fi18n.get("coach_minimize", "Minimize"),
+                                        id="trad-btn-coach-min",
+                                        flat=True,
+                                        compact=True,
+                                    )
+                                    yield Static("", id="coach-bar-spacer", markup=False)
                                     yield Button(
                                         _fi18n.get("expand", "Expand"),
                                         id="trad-btn-coach",
@@ -3349,6 +3446,10 @@ class LiveLingoApp(App):
         ui_mod.set_log_sink(self._sink_from_worker)
         ui_mod.set_width_provider(self._log_content_width)
         ui_mod.set_pipeline_stage_sink(self._pipeline_stage_from_worker)
+        try:
+            self._start_log_bus()
+        except Exception:
+            pass
         self._load_cmd_history()
         # One drain tick: logs + deferred UI actions (keep light for STT latency).
         self.set_interval(0.05, self._drain_pending)
@@ -3529,16 +3630,57 @@ class LiveLingoApp(App):
 
     def _boot_listen_now(self) -> None:
         """
-        Force VOZ escuta ON as soon as the TUI log sink exists.
+        Ready VOZ listen as soon as the TUI log sink exists.
 
-        Must run on_mount after set_log_sink — otherwise "entrada — mic aberto"
-        is printed before the TUI exists and the user only sees webcam lines.
+        Push-to-talk (default): mic starts OFF — F6 arms attentive listen.
+        Legacy: force escuta ON (previous always-on behavior).
         """
         p = self.pipeline
         if p is None:
             self.post_log("error", "Pipeline ausente — escuta não iniciou", panel="app")
             return
-        # Clear any stale hold/hangover from a previous session object
+
+        muted = False
+        try:
+            muted = bool(p.is_mic_muted())
+        except Exception:
+            pass
+        ptt = bool(getattr(p, "is_listen_ptt_enabled", lambda: False)())
+
+        if ptt:
+            try:
+                if hasattr(p, "ptt_idle_boot"):
+                    p.ptt_idle_boot()
+                elif hasattr(p, "_ptt_disarm"):
+                    p._ptt_disarm(
+                        note="escuta OFF — F6 para ouvir · F6 de novo = traduzir"
+                    )
+            except Exception as exc:
+                self.post_log("warn", f"PTT boot: {exc}", panel="app")
+            if muted:
+                self.post_log(
+                    "warn",
+                    "Mic APP MUDO ([n]) — desmute antes do F6.",
+                    panel="app",
+                )
+            else:
+                self.post_log(
+                    "success",
+                    "🎙️ Escuta OFF (push-to-talk) — "
+                    "**F6** = ouvir · **F6** de novo = traduzir · [n] mute.",
+                    panel="app",
+                )
+            try:
+                self._pipe_stage = "idle"
+                self._speaking = False
+                self._mic_muted = muted
+                self._paint_pipe_bar(force=True)
+                self._tick_status()
+            except Exception:
+                pass
+            return
+
+        # Legacy always-on listen
         try:
             if hasattr(p, "_arm_listen_after_tts"):
                 p._arm_listen_after_tts(note="TUI pronta — escuta ativa")
@@ -3553,12 +3695,7 @@ class LiveLingoApp(App):
             except Exception:
                 pass
 
-        muted = False
         cap_on = False
-        try:
-            muted = bool(p.is_mic_muted())
-        except Exception:
-            pass
         try:
             cap_on = bool(p.recorder.is_capture_enabled())
         except Exception:
@@ -3731,6 +3868,10 @@ class LiveLingoApp(App):
         ui_mod.set_width_provider(None)
         try:
             ui_mod.set_pipeline_stage_sink(None)
+        except Exception:
+            pass
+        try:
+            self._stop_log_bus()
         except Exception:
             pass
         try:
@@ -4032,29 +4173,55 @@ class LiveLingoApp(App):
                 pass
             return fallback
 
+        prev_voz = int(getattr(self, "_cached_log_width", 0) or 0)
+        prev_lc = int(getattr(self, "_cached_log_width_lc", 0) or 0)
         prev_coach = int(getattr(self, "_cached_log_width_coach", 0) or 0)
         self._cached_log_width = _safe_w("#log", half)
         self._cached_log_width_lc = _safe_w("#log-lc", half)
         self._cached_log_width_coach = _safe_w("#log-coach", half)
-        # If Coach column width changed materially (expand/restore / sash), reflow
+        # Window resize / sash / expand: rebake wraps so text fills the column
+        new_voz = int(self._cached_log_width or 0)
+        new_lc = int(self._cached_log_width_lc or 0)
         new_coach = int(self._cached_log_width_coach or 0)
-        if prev_coach >= 20 and new_coach >= 20 and abs(new_coach - prev_coach) >= 3:
-            try:
+
+        def _changed(prev: int, new: int) -> bool:
+            return prev >= 20 and new >= 20 and abs(new - prev) >= 3
+
+        try:
+            if _changed(prev_voz, new_voz) or _changed(prev_lc, new_lc):
+                self._schedule_trad_log_reflow(only_coach=False)
+            elif _changed(prev_coach, new_coach):
                 self._schedule_trad_log_reflow(only_coach=True)
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     def _schedule_trad_log_reflow(self, *, only_coach: bool = False) -> None:
-        """Defer reflow until after layout has applied new column widths."""
+        """Defer reflow until after layout has applied new column widths.
+
+        Debounces rapid resize/sash events: a pending full reflow wins over
+        coach-only, and duplicate schedules collapse into one timer tick.
+        """
+        pending = getattr(self, "_trad_reflow_pending", None)
+        want = "all" if not only_coach else "coach"
+        if pending == "all":
+            return
+        if pending == "coach" and want == "coach":
+            return
+        # Upgrade coach → all, or set first request
+        self._trad_reflow_pending = "all" if want == "all" or pending == "all" else want
+        if pending is not None:
+            return  # timer already armed
 
         def _run() -> None:
+            mode = getattr(self, "_trad_reflow_pending", None)
+            self._trad_reflow_pending = None
             try:
-                self._reflow_trad_logs(only_coach=only_coach)
+                self._reflow_trad_logs(only_coach=(mode == "coach"))
             except Exception:
                 pass
 
         try:
-            self.set_timer(0.06, _run)
+            self.set_timer(0.08, _run)
         except Exception:
             _run()
 
@@ -4297,6 +4464,13 @@ class LiveLingoApp(App):
         else:
             self._trad_expand = side
             self.set_trad_focus("lc" if side == "coach" else side)
+            # Full expand leaves the thin minimized bar
+            if side == "coach" and bool(getattr(self, "_coach_minimized", False)):
+                self._coach_minimized = False
+                try:
+                    self._update_coach_min_label()
+                except Exception:
+                    pass
         self._apply_trad_split_layout()
         self._refresh_log_width()
         try:
@@ -4483,12 +4657,20 @@ class LiveLingoApp(App):
             if c_pane is not None:
                 try:
                     c_pane.remove_class("-hidden")
+                    c_pane.remove_class("-minimized")
                     c_pane.display = True
+                    try:
+                        c_pane.styles.min_height = None
+                        c_pane.styles.max_height = None
+                    except Exception:
+                        pass
                     c_pane.styles.height = "1fr"
                 except Exception:
                     pass
             try:
                 coach_log = self.query_one("#log-coach", SelectableRichLog)
+                coach_log.remove_class("-minimized")
+                coach_log.display = True
                 coach_log.styles.height = "1fr"
             except Exception:
                 pass
@@ -4533,11 +4715,84 @@ class LiveLingoApp(App):
         event.stop()
         self.trad_toggle_expand("voz")
 
+    @on(Button.Pressed, "#trad-btn-coach-min")
+    def _on_trad_btn_coach_min(self, event: Button.Pressed) -> None:
+        """Minimizar/Restaurar altura do log Coach (canto inferior esquerdo)."""
+        event.stop()
+        self.coach_toggle_minimize()
+
     @on(Button.Pressed, "#trad-btn-coach")
     def _on_trad_btn_coach(self, event: Button.Pressed) -> None:
         """Expandir/Restaurar no canto inferior direito do painel Coach."""
         event.stop()
+        # Expanding from a minimized bar should open full Coach, not stay collapsed
+        if bool(getattr(self, "_coach_minimized", False)):
+            self._coach_minimized = False
+            try:
+                self._update_coach_min_label()
+            except Exception:
+                pass
         self.trad_toggle_expand("coach")
+
+    # ------------------------------------------------------------------ #
+    # Secondary log viewers (TCP tee → `python main.py view lc|coach|voz`)
+    # ------------------------------------------------------------------ #
+    def _start_log_bus(self) -> None:
+        """Publish ui.* events to localhost for detached panel viewers."""
+        try:
+            import config as cfg
+        except Exception:
+            return
+        if not bool(getattr(cfg, "LOG_VIEW_ENABLE", True)):
+            return
+        try:
+            from .log_bus import LogBusServer
+        except Exception:
+            return
+        host = str(getattr(cfg, "LOG_VIEW_HOST", "127.0.0.1") or "127.0.0.1")
+        port = int(getattr(cfg, "LOG_VIEW_PORT", 8765) or 8765)
+        max_buf = int(getattr(cfg, "LOG_VIEW_CLIENT_BUF", 400) or 400)
+        bus = LogBusServer(host=host, port=port, max_buf=max_buf)
+        try:
+            bound_host, bound_port = bus.start()
+        except OSError as exc:
+            try:
+                self.post_log(
+                    "warn",
+                    f"Log view bus OFF (porta {port}): {exc}. "
+                    f"Ajuste LOG_VIEW_PORT ou LOG_VIEW_ENABLE=false.",
+                    panel="app",
+                )
+            except Exception:
+                pass
+            return
+        self._log_bus = bus
+        try:
+            ui_mod.set_log_bus(bus)
+        except Exception:
+            pass
+        try:
+            self.post_log(
+                "dim",
+                f"Viewers: python main.py view coach|lc|voz  "
+                f"→ {bound_host}:{bound_port}",
+                panel="app",
+            )
+        except Exception:
+            pass
+
+    def _stop_log_bus(self) -> None:
+        try:
+            ui_mod.set_log_bus(None)
+        except Exception:
+            pass
+        bus = getattr(self, "_log_bus", None)
+        self._log_bus = None
+        if bus is not None:
+            try:
+                bus.stop()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # Logging (thread-safe via queue → UI timer)
@@ -4678,6 +4933,29 @@ class LiveLingoApp(App):
             except Exception:
                 pass
             return
+        minimized = bool(getattr(self, "_coach_minimized", False))
+        if minimized:
+            # Thin bar only — LC captions take the rest of the column
+            try:
+                lc = self.query_one("#log-lc", SelectableRichLog)
+                lc.styles.height = "1fr"
+            except Exception:
+                pass
+            try:
+                pane = self.query_one("#coach-pane")
+                pane.add_class("-minimized")
+                pane.styles.height = 1
+                pane.styles.min_height = 1
+                pane.styles.max_height = 1
+            except Exception:
+                pass
+            try:
+                coach = self.query_one("#log-coach", SelectableRichLog)
+                coach.add_class("-minimized")
+                coach.display = False
+            except Exception:
+                pass
+            return
         r = float(getattr(self, "_lc_coach_ratio", 0.45) or 0.45)
         r = max(0.2, min(0.7, r))
         # Integer fr parts (e.g. 0.45 → lc 11 / coach 9)
@@ -4690,11 +4968,19 @@ class LiveLingoApp(App):
             pass
         try:
             pane = self.query_one("#coach-pane")
+            pane.remove_class("-minimized")
+            try:
+                pane.styles.min_height = None
+                pane.styles.max_height = None
+            except Exception:
+                pass
             pane.styles.height = f"{coach_fr}fr"
         except Exception:
             pass
         try:
             coach = self.query_one("#log-coach", SelectableRichLog)
+            coach.remove_class("-minimized")
+            coach.display = True
             coach.styles.height = "1fr"
         except Exception:
             pass
@@ -4742,14 +5028,20 @@ class LiveLingoApp(App):
         except Exception:
             pass
         try:
+            self._update_coach_min_label()
+        except Exception:
+            pass
+        try:
             self._paint_coach_header()
         except Exception:
             pass
 
     def _paint_coach_header(self) -> None:
         """Update Coach ON/OFF chip in LC header; sync panel visibility."""
+        t = _footer_i18n()
+        view_hint = t.get("coach_view_hint", "( python main.py view coach )")
         enabled = False
-        label = "Coach OFF"
+        label = f"Coach OFF {view_hint}"
         try:
             coach = getattr(self.pipeline, "interview_coach", None)
             if coach is not None and getattr(coach, "enabled", False):
@@ -4760,11 +5052,16 @@ class LiveLingoApp(App):
                 except Exception:
                     pass
                 prov = st.get("provider") or "on"
-                label = f"Coach ON · {prov}"
+                label = f"Coach ON · {prov} {view_hint}"
         except Exception:
             pass
         try:
-            self.query_one("#trad-lbl-coach", Static).update(label)
+            hdr = self.query_one("#trad-lbl-coach", Static)
+            hdr.update(label)
+            try:
+                hdr.tooltip = "python main.py view coach"
+            except Exception:
+                pass
         except Exception:
             pass
         # Keep pane visibility aligned with enabled (unless explicitly set)
@@ -4773,6 +5070,69 @@ class LiveLingoApp(App):
             cur = getattr(self, "_coach_panel_visible", None)
             if cur is None or bool(cur) != bool(want):
                 self.set_coach_panel_visible(want)
+        except Exception:
+            pass
+
+    def coach_toggle_minimize(self) -> None:
+        """Collapse / restore Coach log height (bottom-left button)."""
+        # Leaving full expand first — minimize is an in-column height toggle
+        if getattr(self, "_trad_expand", None) == "coach":
+            try:
+                self.trad_toggle_expand("coach")
+            except Exception:
+                self._trad_expand = None
+                try:
+                    self._apply_trad_split_layout()
+                except Exception:
+                    pass
+        if not bool(getattr(self, "_coach_panel_visible", True)):
+            try:
+                self.set_coach_panel_visible(True)
+            except Exception:
+                pass
+        self._coach_minimized = not bool(getattr(self, "_coach_minimized", False))
+        try:
+            self._apply_lc_coach_heights()
+        except Exception:
+            pass
+        try:
+            self._update_coach_min_label()
+        except Exception:
+            pass
+        try:
+            self.refresh(layout=True)
+        except Exception:
+            try:
+                self.refresh()
+            except Exception:
+                pass
+        try:
+            self._schedule_trad_log_reflow(only_coach=True)
+        except Exception:
+            pass
+
+    def _update_coach_min_label(self) -> None:
+        """Sync Minimize/Restore on the Coach bottom-left button."""
+        try:
+            btn = self.query_one("#trad-btn-coach-min", Button)
+        except Exception:
+            return
+        t = _footer_i18n()
+        minimized = bool(getattr(self, "_coach_minimized", False))
+        if minimized:
+            btn.label = t.get("coach_minimize_restore", "Restore")
+            tip = t.get(
+                "coach_minimize_restore_tip",
+                "Restore Coach log height under LC",
+            )
+        else:
+            btn.label = t.get("coach_minimize", "Minimize")
+            tip = t.get(
+                "coach_minimize_tip",
+                "Collapse Coach log to a thin bar",
+            )
+        try:
+            btn.tooltip = tip
         except Exception:
             pass
 
@@ -6400,15 +6760,29 @@ class LiveLingoApp(App):
         self.set_compact_ui(not bool(getattr(self, "_compact_ui", False)))
 
     def on_resize(self, event) -> None:  # noqa: ARG002
-        """Reflow pipe | command | TTS when the app width changes."""
+        """Reflow cmd row + Tradução log wraps when the app width changes."""
         try:
             self._apply_cmd_row_responsive()
         except Exception:
             pass
+        prev_w = int(getattr(self, "_last_app_width_for_reflow", 0) or 0)
+        cur_w = 0
+        try:
+            cur_w = int(getattr(self.size, "width", 0) or 0)
+        except Exception:
+            cur_w = 0
         try:
             self._refresh_log_width()
         except Exception:
             pass
+        # Height-only resizes skip; width changes get a deferred full reflow
+        # after layout settles (covers VOZ/LC, not only Coach).
+        if cur_w >= 20 and (prev_w < 20 or abs(cur_w - prev_w) >= 2):
+            self._last_app_width_for_reflow = cur_w
+            try:
+                self._schedule_trad_log_reflow(only_coach=False)
+            except Exception:
+                pass
 
     def _apply_cmd_row_responsive(self) -> None:
         """
@@ -6803,6 +7177,24 @@ class LiveLingoApp(App):
         except Exception:
             pass
 
+    def _set_listen_header_status(self, line: str) -> None:
+        """Update robot/status text; version badge stays on the right widget."""
+        try:
+            status = self.query_one("#listen-header-status", Static)
+        except Exception:
+            return
+        want_ver = f"v{_APP_VERSION}"
+        if getattr(self, "_last_header_ver", None) != want_ver:
+            try:
+                self.query_one("#listen-header-ver", Static).update(want_ver)
+                self._last_header_ver = want_ver
+            except Exception:
+                pass
+        if getattr(self, "_last_header_line", None) == line:
+            return
+        self._last_header_line = line
+        status.update(line)
+
     def _tick_status(self) -> None:
         """Refresh fixed top header: robot/mic + pair + audio + listen status.
 
@@ -6810,9 +7202,20 @@ class LiveLingoApp(App):
         (that starved log drain and made translations feel laggy).
         """
         try:
-            header = self.query_one("#listen-header", Static)
+            header = self.query_one("#listen-header")
         except Exception:
             return
+        try:
+            status_w = self.query_one("#listen-header-status", Static)
+        except Exception:
+            return
+
+        try:
+            width = int(getattr(status_w.size, "width", 0) or 0) or int(
+                getattr(header.size, "width", 0) or 0
+            )
+        except Exception:
+            width = 0
 
         # Live flags from pipeline
         try:
@@ -6902,9 +7305,7 @@ class LiveLingoApp(App):
                 f"🎙️  BYPASS [b]   {lang_block_short}   |  "
                 f"voz direta → CABLE (sem tradução)  |  [b] sair"
             )
-            if getattr(self, "_last_header_line", None) != by_line:
-                self._last_header_line = by_line
-                header.update(by_line)
+            self._set_listen_header_status(by_line)
             return
 
         # TTS on Cable / headphones / lip-sync — mic closed until end or [x]
@@ -6916,8 +7317,8 @@ class LiveLingoApp(App):
             )
             # Always refresh for pulse animation
             self._frame_i = (self._frame_i + 1) % 8
-            self._last_header_line = play_line
-            header.update(play_line)
+            self._last_header_line = None  # force pulse refresh
+            self._set_listen_header_status(play_line)
             try:
                 header.set_class(True, "sound-on")
                 header.set_class(False, "mic-muted")
@@ -6933,8 +7334,8 @@ class LiveLingoApp(App):
                 f"escuta pausada — logs/cmds OK  |  [n] reativar"
             )
             self._frame_i = (self._frame_i + 1) % 8
-            self._last_header_line = muted_line
-            header.update(muted_line)
+            self._last_header_line = None
+            self._set_listen_header_status(muted_line)
             try:
                 self._paint_mic_mute_chrome(True)
             except Exception:
@@ -6948,8 +7349,8 @@ class LiveLingoApp(App):
                 f"voz baixa OK · bordas amarelas  |  [N] desliga"
             )
             self._frame_i = (self._frame_i + 1) % 8
-            self._last_header_line = hot_line
-            header.update(hot_line)
+            self._last_header_line = None
+            self._set_listen_header_status(hot_line)
             try:
                 header.set_class(True, "-hot-listen")
                 header.set_class(False, "mic-muted")
@@ -6973,19 +7374,14 @@ class LiveLingoApp(App):
         else:
             audio_tag = "🔇 ÁUDIO OFF → [s]"
 
-        # robot + g(swap) LANG → LANG t(target) + audio + status
-        try:
-            width = int(getattr(header.size, "width", 0) or 0)
-        except Exception:
-            width = 0
+        # robot + g(swap) LANG → LANG t(target) + audio + status; version is
+        # a separate right-docked widget (#listen-header-ver).
         lang_block = lang_block_long if width >= 100 else lang_block_short
         line = f"{frame}  {lang_block}   {audio_tag}   {body}"
-        if width >= 24 and len(line) > width:
-            line = line[: max(0, width - 1)] + "…"
         # Always update when speaking (frame animation); idle can skip duplicates
-        if self._speaking or getattr(self, "_last_header_line", None) != line:
-            self._last_header_line = line
-            header.update(line)
+        if self._speaking:
+            self._last_header_line = None
+        self._set_listen_header_status(line)
 
     # ------------------------------------------------------------------ #
     # Prompt / command input
@@ -7173,8 +7569,18 @@ class LiveLingoApp(App):
         """Insert one character into #cmd at the cursor. Returns True on success."""
         if not ch:
             return False
-        if self._prompt_force_upper and ch.isalpha():
-            ch = ch.upper()
+        return self._insert_cmd_text(ch)
+
+    def _insert_cmd_text(self, text: str) -> bool:
+        """Insert text into #cmd at the cursor (single-line; newlines → spaces)."""
+        if text is None:
+            return False
+        # Command field is single-line — collapse wraps/newlines from LC copy
+        cleaned = " ".join(str(text).replace("\r\n", "\n").replace("\r", "\n").split())
+        if not cleaned:
+            return False
+        if self._prompt_force_upper:
+            cleaned = cleaned.upper()
         inp = self._focus_cmd()
         if inp is None:
             return False
@@ -7185,15 +7591,49 @@ class LiveLingoApp(App):
             val = inp.value or ""
             pos = int(getattr(inp, "cursor_position", len(val)) or len(val))
             pos = max(0, min(pos, len(val)))
-            inp.value = val[:pos] + ch + val[pos:]
-            inp.cursor_position = pos + 1
+            inp.value = val[:pos] + cleaned + val[pos:]
+            inp.cursor_position = pos + len(cleaned)
             return True
         except Exception:
             try:
-                inp.value = (inp.value or "") + ch
+                inp.value = (inp.value or "") + cleaned
                 return True
             except Exception:
                 return False
+
+    def on_paste(self, event: events.Paste) -> None:
+        """
+        Paste into #cmd collapses newlines from wrapped LC/VOZ selection.
+
+        Textual Input is single-line: a multi-line clipboard only inserts the
+        first line unless we normalize here. Always route paste to #cmd (same
+        as typing from any panel).
+        """
+        raw = event.text or ""
+        if not raw:
+            return
+        # Even single-line paste: focus cmd and insert (consistent UX)
+        has_break = ("\n" in raw) or ("\r" in raw)
+        if not has_break:
+            # Let Input handle if already focused on #cmd
+            if self._is_cmd_focused():
+                return
+            event.prevent_default()
+            event.stop()
+            self._insert_cmd_text(raw)
+            return
+        event.prevent_default()
+        event.stop()
+        if self._insert_cmd_text(raw):
+            try:
+                n = len(" ".join(raw.split()))
+                self.notify(
+                    f"Colado em uma linha ({n} chars)",
+                    severity="information",
+                    timeout=2,
+                )
+            except Exception:
+                pass
 
     @staticmethod
     def _word_boundary_left(text: str, pos: int) -> int:
@@ -7779,6 +8219,8 @@ class LiveLingoApp(App):
         except Exception:
             selected = None
         if selected and selected.strip():
+            # Soft-wrap from logs often embeds newlines — one line for #cmd paste
+            selected = " ".join(selected.split())
             if self._clipboard_set(selected):
                 n = len(selected)
                 try:

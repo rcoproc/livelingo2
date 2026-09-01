@@ -4,9 +4,62 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from livelingo.interview_coach import InterviewCoach, is_interview_question
+from livelingo.interview_coach import (
+    SYSTEM_PROMPT,
+    InterviewCoach,
+    _build_user_prompt,
+    is_interview_question,
+)
 from livelingo.interview_llm import parse_coach_response
 from livelingo import ui
+
+
+def test_system_prompt_requires_spoken_examples():
+    """Spoken EN + pt-BR must instruct 1–2 simple lived-experience examples."""
+    low = SYSTEM_PROMPT.lower()
+    assert "example" in low
+    assert "spoken_pt" in low
+    assert "lived experience" in low or "past project" in low
+    assert "1–2" in SYSTEM_PROMPT or "1-2" in SYSTEM_PROMPT
+
+
+def test_user_prompt_reminds_examples_for_topic():
+    prompt = _build_user_prompt(
+        "How would you design a rate limiter?",
+        question_pt="Como você projetaria um rate limiter?",
+    )
+    low = prompt.lower()
+    assert "example" in low
+    assert "spoken" in low
+    assert "rate limiter" in low
+
+
+def test_user_prompt_includes_coach_md_context():
+    prompt = _build_user_prompt(
+        "How do you map DTOs?",
+        context="Java developer with Angular and Spring Boot.",
+        context_path="COACH.md",
+        profile="8y backend",
+    )
+    assert "COACH.md" in prompt
+    assert "Spring Boot" in prompt
+    assert "INTERVIEW_CANDIDATE_PROFILE" in prompt or "8y backend" in prompt
+    assert "Job / interview context" in prompt
+
+
+def test_load_coach_context_prefers_coach_md(tmp_path, monkeypatch):
+    from livelingo.interview_coach import load_coach_context, resolve_coach_context_path
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENT.md").write_text("# agent\nagent only", encoding="utf-8")
+    (tmp_path / "COACH.md").write_text(
+        "# coach\nJava Angular Spring Boot interview", encoding="utf-8"
+    )
+    path = resolve_coach_context_path(None, cwd=str(tmp_path))
+    assert path is not None and path.name == "COACH.md"
+    text, p = load_coach_context(None, cwd=str(tmp_path))
+    assert p is not None and p.name == "COACH.md"
+    assert "Spring Boot" in text
 
 
 def test_is_interview_question_detects_clear_qs():
@@ -23,6 +76,21 @@ def test_is_interview_question_detects_clear_qs():
         min_chars=40,
     )
     assert is_interview_question("What is CAP theorem?", min_chars=20)
+
+
+def test_is_interview_question_preamble_without_question_mark():
+    """LC often drops '?' and prefixes 'Specifically,' before 'what…'."""
+    q = (
+        "Specifically, what tool or strategy do you use so that your Typescript "
+        "definitions stay In Sync with the back end and convert keys from snake "
+        "case to camel case without manual edits"
+    )
+    assert is_interview_question(q, min_chars=40)
+    assert is_interview_question(
+        "Question five When an unexpected crash happens inside an async task, "
+        "how do you handle it cleanly so Phoenix returns a proper error?",
+        min_chars=40,
+    )
 
 
 def test_is_interview_question_rejects_smalltalk():

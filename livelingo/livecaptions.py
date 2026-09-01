@@ -95,19 +95,47 @@ class _CfgLangProxy:
 def build_caption_translator(config, source: str, target: str):
     """
     Dedicated translator for captions (never shares mutable lang with voice).
-    Same engine as main app (LLM if key, else Google).
+
+    Mirrors voice HA: LLM primary + Google fallback when configured — otherwise
+    Groq blips left LC with ``[ERROR]`` or the same English as Caption.
     """
     proxy = _CfgLangProxy(config, source, target)
     engine = (getattr(config, "TRANSLATION_ENGINE", "auto") or "auto").lower()
     if engine == "auto":
         engine = "llm" if getattr(config, "GROQ_API_KEY", "") else "google"
+    fb = (getattr(config, "TRANSLATION_FALLBACK", "google") or "google").lower()
+    want_google_fb = fb == "google"
+
+    from .translate import Translator
+
+    def _google():
+        return Translator(proxy)
+
+    if engine == "google" or (
+        engine == "llm" and not getattr(config, "GROQ_API_KEY", "")
+    ):
+        return _google()
+
     if engine == "llm" and getattr(config, "GROQ_API_KEY", ""):
         from .llm import LLMTranslator
 
-        return LLMTranslator(proxy)
-    from .translate import Translator
+        primary = LLMTranslator(proxy)
+        if want_google_fb:
+            try:
+                from .failover import FailoverTranslator
 
-    return Translator(proxy)
+                return FailoverTranslator(
+                    primary,
+                    _google(),
+                    proxy,
+                    primary_name="llm",
+                    secondary_name="google",
+                )
+            except Exception:
+                return primary
+        return primary
+
+    return _google()
 
 
 # --------------------------------------------------------------------------- #
@@ -967,6 +995,7 @@ class CaptionService:
                 continue
 
             self._emit(original=text, status="translating")
+            err_msg = None
             try:
                 # Only consume [pc force] on stable commits (not mid-stream partials)
                 translated, from_cache = self._translate_with_cache(
@@ -975,27 +1004,31 @@ class CaptionService:
             except Exception as exc:
                 translated = f"[ERROR] {exc}"
                 from_cache = False
+                err_msg = str(exc)
                 self._emit(
                     original=text,
                     translated=translated,
                     status="error",
-                    error=str(exc),
+                    error=err_msg,
                 )
-                continue
 
             self._open_src = text
             self._open_tgt = translated
             self._open_from_cache = bool(from_cache)
-            self._emit(
-                original=text,
-                translated=translated,
-                status="running",
-                error=None,
-            )
+            if err_msg is None:
+                self._emit(
+                    original=text,
+                    translated=translated,
+                    status="running",
+                    error=None,
+                )
 
             # Commit only on idle/stable — never on every growth/false EOS.
             # New utterance already committed previous open above.
-            if kind == "stable":
+            # Also commit errors so LC log shows Caption + [ERROR] (not Caption-only).
+            if kind == "stable" or (
+                err_msg is not None and kind in ("stable", "final")
+            ):
                 self._commit_open_to_log()
 
     @staticmethod
@@ -1061,18 +1094,95 @@ class CaptionService:
                     f"[LC] cache MISS · {src_lang}→{tgt_lang} (store on commit)",
                     panel="app",
                 )
+        elif translated and (src_lang or "").lower() != (tgt_lang or "").lower():
+            # Bad cache entry (English stored as "PT") — ignore HIT and re-translate
+            if _normalize_for_match(translated) == _normalize_for_match(text):
+                ui.warn(
+                    f"[LC] cache HIT ecoou o Caption — ignorando e re-traduzindo "
+                    f"{src_lang}→{tgt_lang}",
+                    panel="app",
+                )
+                cache_hit = False
+                translated = self._do_translate_live(text)
 
-        return (translated or text), cache_hit
+        out = (translated or "").strip()
+        # Same-language result when src≠tgt usually means the engine failed silently
+        # (empty reply / echo). Prefer an explicit error over a fake "Translated".
+        if out and (src_lang or "").lower() != (tgt_lang or "").lower():
+            if _normalize_for_match(out) == _normalize_for_match(text):
+                ui.warn(
+                    f"[LC] tradução {src_lang}→{tgt_lang} devolveu o mesmo texto — "
+                    f"verifique GROQ/rede ou LIVE_CAPTIONS_*_LANG",
+                    panel="app",
+                )
+                return (
+                    f"[ERROR] sem tradução ({src_lang}→{tgt_lang}; texto igual)",
+                    False,
+                )
+        if not out:
+            return (
+                f"[ERROR] tradução vazia ({src_lang}→{tgt_lang})",
+                False,
+            )
+        return out, cache_hit
 
     def _do_translate_live(self, text: str) -> str:
+        """
+        Live translate for LC. If the primary (often Groq) *succeeds* but echoes
+        the English caption, force Google secondary — FailoverTranslator only
+        switches on exceptions, not on bad successful replies.
+        """
         tr = self.translator
         if tr is None:
-            return text
-        if hasattr(tr, "translate"):
-            result = tr.translate(text)
-            out = (result or "").strip()
-            return out if out else text
-        return text
+            raise RuntimeError("LC translator ausente")
+        if not hasattr(tr, "translate"):
+            raise RuntimeError("LC translator sem método translate")
+
+        result = (tr.translate(text) or "").strip()
+        src_lang, tgt_lang = self._caption_src, self._caption_tgt
+        langs_differ = (src_lang or "").lower() != (tgt_lang or "").lower()
+        echoed = (
+            langs_differ
+            and result
+            and _normalize_for_match(result) == _normalize_for_match(text)
+        )
+        if not echoed:
+            return result
+
+        # Force Google (or any secondary) when primary echoed the source
+        secondary = getattr(tr, "secondary", None)
+        if secondary is not None and hasattr(secondary, "translate"):
+            try:
+                ui.warn(
+                    f"[LC] LLM ecoou Caption — tentando Google {src_lang}→{tgt_lang}",
+                    panel="app",
+                )
+            except Exception:
+                pass
+            alt = (secondary.translate(text) or "").strip()
+            if alt and _normalize_for_match(alt) != _normalize_for_match(text):
+                return alt
+            if alt:
+                return alt
+
+        # Last resort: dedicated Google client for caption pair
+        try:
+            from .translate import Translator
+
+            proxy = _CfgLangProxy(self.cfg, src_lang, tgt_lang)
+            alt = (Translator(proxy).translate(text) or "").strip()
+            if alt and _normalize_for_match(alt) != _normalize_for_match(text):
+                try:
+                    ui.warn(
+                        f"[LC] Google one-shot OK · {src_lang}→{tgt_lang}",
+                        panel="app",
+                    )
+                except Exception:
+                    pass
+                return alt
+        except Exception:
+            pass
+        return result
 
     def _alloc_chunk_num(self) -> int:
         """Session chunk_num shared with voice pipeline when possible."""
@@ -1159,9 +1269,25 @@ class CaptionService:
         # Too short / noise
         if _utf8_len(src) < 4:
             return
-        if str(tgt).startswith("[ERROR]"):
-            # Still show in strip; skip dirty DB row
+        is_err = str(tgt).startswith("[ERROR]")
+        if is_err:
+            # Show Caption + error in LC log (was skipped → looked like Caption-only)
             self._last_logged_src = src
+            self._lc_seq += 1
+            n = self._lc_seq
+            if self.log_to_ui and bool(getattr(self.cfg, "LIVE_CAPTIONS_LOG", True)):
+                try:
+                    ui.live_caption_block(n, src, tgt, from_cache=False)
+                except Exception:
+                    try:
+                        ui.info(f"[LC {n}] Caption: {src}", indent=0, panel="lc")
+                        ui.error(f"[LC {n}] {tgt}", indent=0, panel="lc")
+                    except Exception:
+                        pass
+            ui.warn(
+                f"[LC {n}] falha ao traduzir caption — veja Translated/[ERROR]",
+                panel="app",
+            )
             self._open_src = ""
             self._open_tgt = ""
             self._open_from_cache = False

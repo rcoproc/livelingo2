@@ -80,23 +80,93 @@ def test_force_end_sets_flag_when_in_speech():
 
 
 def test_pipeline_flush_listen_now_messages():
+    """Legacy flush (LISTEN_PUSH_TO_TALK=false)."""
     from livelingo.pipeline import Pipeline
 
     pipe = SimpleNamespace()
+    pipe.cfg = SimpleNamespace(LISTEN_PUSH_TO_TALK=False)
+    pipe.is_listen_ptt_enabled = lambda: False
     rec = MagicMock()
     rec.is_capture_enabled.return_value = True
     rec.is_in_speech.return_value = False
     rec.force_end_utterance.return_value = False
     pipe.recorder = rec
-    ok, msg = Pipeline.flush_listen_now(pipe)
+    ok, msg = Pipeline._f6_flush_legacy(pipe)
     assert ok is False
     assert "Nada para flush" in msg or "sem fala" in msg.lower()
 
     rec.is_in_speech.return_value = True
     rec.force_end_utterance.return_value = True
-    ok, msg = Pipeline.flush_listen_now(pipe)
+    ok, msg = Pipeline._f6_flush_legacy(pipe)
     assert ok is True
     assert "Flush" in msg or "STT" in msg
+
+
+def test_ptt_f6_arm_then_flush():
+    """PTT: 1st F6 arms listen; 2nd flushes when in speech."""
+    from livelingo.pipeline import Pipeline
+
+    pipe = SimpleNamespace()
+    pipe.cfg = SimpleNamespace(LISTEN_PUSH_TO_TALK=True)
+    pipe._ptt_armed = False
+    pipe._ptt_owned_soft_listen = False
+    pipe._capture_hold_lock = threading.Lock()
+    pipe._capture_hold_count = 0
+    pipe._capture_hangover_until = 0.0
+    pipe._capture_hold_timer = None
+    pipe._cancel_capture_hold_timer_unlocked = lambda: None
+    pipe.mic = SimpleNamespace(is_app_muted=lambda: False)
+    pipe.is_passthrough_active = lambda: False
+    pipe.is_listen_ptt_enabled = lambda: True
+    pipe.is_ptt_armed = lambda: bool(pipe._ptt_armed)
+    # Bind instance methods used by the toggle
+    pipe._ptt_arm_listen = lambda: Pipeline._ptt_arm_listen(pipe)
+    pipe._ptt_disarm = lambda **kw: Pipeline._ptt_disarm(pipe, **kw)
+    pipe._f6_ptt_toggle = lambda: Pipeline._f6_ptt_toggle(pipe)
+
+    rec = MagicMock()
+    rec.is_force_soft_listen.return_value = False
+    rec.is_in_speech.return_value = False
+    rec.force_end_utterance.return_value = False
+    pipe.recorder = rec
+
+    ok, msg = pipe._f6_ptt_toggle()
+    assert ok is True
+    assert pipe._ptt_armed is True
+    rec.set_capture_enabled.assert_called_with(True)
+    rec.set_hold_until_manual_flush.assert_called_with(True)
+    assert "atenta" in msg.lower() or "escute" in msg.lower() or "fale" in msg.lower()
+
+    # 2nd F6 with no speech → disarm
+    ok, msg = pipe._f6_ptt_toggle()
+    assert ok is False
+    assert pipe._ptt_armed is False
+    rec.set_capture_enabled.assert_called_with(False)
+
+    # Arm again, then flush with speech
+    pipe._ptt_armed = False
+    ok, _ = pipe._f6_ptt_toggle()
+    assert ok is True and pipe._ptt_armed is True
+    rec.is_in_speech.return_value = True
+    rec.force_end_utterance.return_value = True
+    ok, msg = pipe._f6_ptt_toggle()
+    assert ok is True
+    rec.force_end_utterance.assert_called()
+    assert "traduz" in msg.lower() or "STT" in msg or "fala" in msg.lower()
+
+
+def test_hold_until_manual_flush_skips_silence_end():
+    rec = Recorder(
+        _cfg(),
+        0,
+        queue.Queue(),
+        threading.Event(),
+        capture_should_run=lambda: True,
+    )
+    rec.set_hold_until_manual_flush(True)
+    assert rec.is_hold_until_manual_flush() is True
+    rec.set_hold_until_manual_flush(False)
+    assert rec.is_hold_until_manual_flush() is False
 
 
 def test_write_cable_and_monitor_parallel_wall_clock():

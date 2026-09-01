@@ -98,6 +98,60 @@ def test_resolve_by_substring_prefers_mme(devices_mod):
     assert idx == 2
 
 
+def test_resolve_prefers_wasapi_when_requested(devices_mod):
+    devices, _ = devices_mod
+    # Same CABLE name under MME (2) and WASAPI (3) — exclusive path wants WASAPI
+    idx, name = devices.resolve_device(
+        "CABLE Input", "output", prefer_hostapi="wasapi"
+    )
+    assert "CABLE" in name
+    assert idx == 3
+
+
+def test_resolve_input_wasapi_twin_from_mme_index(devices_mod):
+    devices, devs = devices_mod
+    # Index 0 is MME Realtek mic; add a WASAPI twin with the same name
+    devs.append(
+        {
+            "name": "Microphone (Realtek)",
+            "max_input_channels": 2,
+            "max_output_channels": 0,
+            "hostapi": 1,
+        }
+    )
+    idx, name = devices.resolve_device("0", "input", prefer_hostapi="wasapi")
+    assert name == "Microphone (Realtek)"
+    assert idx == len(devs) - 1
+
+
+def test_find_wasapi_twin(devices_mod):
+    devices, _ = devices_mod
+    # Headset Mic is only on WASAPI (hostapi 1) at index 4
+    idx, name = devices.find_wasapi_twin(4)
+    assert idx == 4
+    assert "Headset" in name
+
+
+def test_wasapi_exclusive_settings_respects_flag(devices_mod, monkeypatch):
+    devices, _ = devices_mod
+
+    class _FakeWasapi:
+        def __init__(self, exclusive=False):
+            self.exclusive = exclusive
+
+    monkeypatch.setattr(devices.sd, "WasapiSettings", _FakeWasapi, raising=False)
+    cfg_off = SimpleNamespace(CAPTURE_WASAPI_EXCLUSIVE=False)
+    assert devices.wasapi_exclusive_settings(cfg_off) is None
+    cfg_on = SimpleNamespace(CAPTURE_WASAPI_EXCLUSIVE=True)
+    settings = devices.wasapi_exclusive_settings(cfg_on)
+    assert settings is not None
+    assert getattr(settings, "exclusive", False) is True
+    extra = devices.input_stream_extra_settings(cfg_on).get("extra_settings")
+    assert extra is not None
+    assert getattr(extra, "exclusive", False) is True
+    assert devices.input_stream_extra_settings(cfg_on, force_shared=True) == {}
+
+
 def test_resolve_missing_name(devices_mod):
     devices, _ = devices_mod
     with pytest.raises(ValueError, match="No output device"):

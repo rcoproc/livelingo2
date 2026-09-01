@@ -462,6 +462,17 @@ Stop any time with **Ctrl+C**.
 
 With `UI_MODE=tui` (default) you get a Textual UI: log tabs, command field, fixed listen header (robot + language pair + audio), and a full-width command menu. Footer labels follow `SOURCE_LANG`. Set `UI_MODE=classic` for the legacy print/readline UI.
 
+**Detached panel viewers** (second terminal / Windows Terminal pane, read-only):
+
+```powershell
+python main.py                 # host
+python main.py view coach      # or: view lc | view voz
+```
+
+Listens on `127.0.0.1:8765` (`LOG_VIEW_PORT`). This is a secondary TUI process, not a native OS floating window.
+
+**Keep Teams/Meet off the physical mic:** set the call app’s microphone to **CABLE Output**, LiveLingo `OUTPUT_DEVICE=CABLE Input`, and (optional hard lock) `CAPTURE_WASAPI_EXCLUSIVE=true` so other apps cannot share the headset mic while LiveLingo is listening. Full guide: [`docs/mic-exclusive.md`](docs/mic-exclusive.md).
+
 | Tab | Content |
 |-----|---------|
 | **Tradução** | Vertical split: **LC** (left, stable LiveCaptions pairs) \| **VOZ** (right, mic chunks + command output). Drag the **║** sash to resize width (double-click → 50/50). **Expandir/Restaurar** on the **VOZ** header maximizes the right pane. Click a pane to focus it for search / scroll / copy. Independent scroll per side. |
@@ -477,7 +488,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `F3` | Cycle log tabs (Tradução → Sistema → Novidades → Lista de comandos) |
 | `F4` / `u` | Compact UI: hide command menu; keep command line (optional window height shrink) |
 | `F5` / click scroll chip | **Auto-scroll lock** for Tradução **LC + VOZ** — ON (green) follows new lines; OFF (amber) freezes the viewport while lines still append. Footer shows `Auto↓ ON` / `Auto↓ OFF`. `GG` still jumps once without re-enabling follow when OFF |
-| `F6` / `go` / `.` | **Flush listen** — force end of current speech → STT now (skip silence wait) |
+| `F6` / `go` / `.` | **Push-to-talk**: 1st = attentive listen · 2nd = translate · then mic OFF (`LISTEN_PUSH_TO_TALK`) |
 | `Ctrl+C` | Copy selected log text |
 | `Ctrl+Shift+C` | Copy entire content of the **focused** log pane (on Tradução: LC or VOZ) |
 | `F2` / click bypass chip / `b` | **Voice bypass** — stop Cable TTS (like `[x]`), then raw mic → CABLE; tips log on **Sistema**; press again to resume translate |
@@ -488,7 +499,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `/text` · `/n` · `/p` | Search in the focused log pane (aliases: `find text`, `s?text`) |
 | `g` | Swap SOURCE ↔ TARGET |
 | `t` / `t EN` | Change TARGET only (codes forced UPPERCASE) |
-| `enew <text>` | New translation from typed text (no mic); TTS if sound ON |
+| `enew <text>` | Priority typed translation **always PT→EN** (ignores system SOURCE/TARGET; no mic); TTS if sound ON |
 | `e` / `eN` | Edit last / chunk N (TUI pre-fills the sentence in the command field) |
 | `gg` / `GG` (or `gt` / `gf`) | Go top / go bottom of the **focused** log pane. `GG` is case-sensitive. |
 | `cls` | Clear LC + VOZ + Sistema |
@@ -497,7 +508,7 @@ Above the tabs: **Live Captions** strip (partials live). Drag the bottom edge (`
 | `co` / `coN` / `codN` | Comment on a chunk / delete comment by id |
 | `s` / `n` / `r` / `rN` | Sound, **mic mute** (lowercase **n** only), replay |
 | `N` | **Force soft-listen** (capital **N** only) — yellow borders; VAD accepts low-volume speech; press again for normal VAD |
-| `go` / `.` / `flush` / **F6** | **Flush listen** — end current speech **now** → STT (skip VAD silence wait ~1–2s) |
+| `go` / `.` / `flush` / **F6** | **Push-to-talk**: 1st = listen · 2nd = flush→STT · mic OFF after (`LISTEN_PUSH_TO_TALK`) |
 | `coach` / **F7** | **Interview Coach** — under LC: assertive EN (+ pt-BR) for interview Qs. Providers: `grok`/`groq`/`deepseek`/`claude`/`gemini` (`coach provider …`). Default OFF. |
 | `airespond` / `air` | Manual test: type a PT/EN question → simulate LC → Coach answer |
 | `cam` / `cam on` / `cam off` / `cam status` | Webcam lip-sync stream to **OBS Virtual Camera** (needs `requirements-webcam.txt` + OBS) |

@@ -116,16 +116,97 @@ def _matches_kind(dev, kind):
     return True
 
 
-def resolve_device(spec, kind):
+def _hostapi_name(dev) -> str:
+    try:
+        return str(query_hostapis()[dev["hostapi"]]["name"] or "")
+    except Exception:
+        return ""
+
+
+def _prefer_match(matches, prefer_hostapi: str | None):
+    """
+    Pick among (idx, dev) matches.
+
+    prefer_hostapi:
+      - \"wasapi\" → Windows WASAPI (needed for exclusive capture)
+      - \"mme\" / None → MME first (most compatible shared mode)
+    """
+    if not matches:
+        return None
+    hostapis = query_hostapis()
+    pref = (prefer_hostapi or "").strip().lower()
+    if pref in ("wasapi", "windows wasapi"):
+        wasapi = next(
+            (
+                (idx, dev)
+                for idx, dev in matches
+                if "wasapi" in hostapis[dev["hostapi"]]["name"].lower()
+            ),
+            None,
+        )
+        if wasapi is not None:
+            return wasapi
+    # Default / mme: prefer MME when several APIs expose the same name
+    mme = next(
+        (
+            (idx, dev)
+            for idx, dev in matches
+            if "mme" in hostapis[dev["hostapi"]]["name"].lower()
+        ),
+        None,
+    )
+    return mme if mme is not None else matches[0]
+
+
+def find_wasapi_twin(index):
+    """
+    Given a device index, return a WASAPI device with the same name (same kind),
+    or (None, None) if none exists.
+    """
+    if index is None:
+        return None, None
+    try:
+        base = sd.query_devices(index)
+    except Exception:
+        return None, None
+    name = str(base.get("name") or "")
+    if not name:
+        return None, None
+    kind = "input" if int(base.get("max_input_channels") or 0) >= 1 else "output"
+    name_low = name.lower()
+    matches = [
+        (i, d)
+        for i, d in enumerate(query_devices())
+        if _matches_kind(d, kind) and d["name"].lower() == name_low
+    ]
+    chosen = _prefer_match(matches, "wasapi")
+    if chosen is None:
+        return None, None
+    idx, dev = chosen
+    if "wasapi" not in _hostapi_name(dev).lower():
+        return None, None
+    return idx, dev["name"]
+
+
+def resolve_device(spec, kind, *, prefer_hostapi: str | None = None):
     """
     Resolve a device spec into a concrete device index (or None for default).
 
     Returns (index_or_None, name_string). Raises ValueError if a non-empty
     spec cannot be matched to a device of the requested kind.
+
+    prefer_hostapi: \"wasapi\" | \"mme\" | None — which PortAudio host API to
+    prefer when the same name appears under several APIs.
     """
-    # Empty / None -> system default.
+    prefer = (prefer_hostapi or "").strip().lower() or None
+
+    # Empty / None -> system default (optionally retarget to WASAPI twin).
     if spec is None or str(spec).strip() == "":
         idx = default_input_index() if kind == "input" else None
+        if prefer in ("wasapi", "windows wasapi") and idx is not None:
+            twin_idx, twin_name = find_wasapi_twin(idx)
+            if twin_idx is not None:
+                return twin_idx, twin_name
         return idx, device_name(idx)
 
     spec = str(spec).strip()
@@ -139,6 +220,12 @@ def resolve_device(spec, kind):
             raise ValueError(f"No audio device with index {idx}") from exc
         if not _matches_kind(dev, kind):
             raise ValueError(f"Device #{idx} '{dev['name']}' has no {kind} channels.")
+        # If caller wants WASAPI exclusive but picked an MME index, retarget twin
+        if prefer in ("wasapi", "windows wasapi"):
+            if "wasapi" not in _hostapi_name(dev).lower():
+                twin_idx, twin_name = find_wasapi_twin(idx)
+                if twin_idx is not None:
+                    return twin_idx, twin_name
         return idx, dev["name"]
 
     # Otherwise: case-insensitive substring match among devices of this kind.
@@ -153,19 +240,40 @@ def resolve_device(spec, kind):
             f"No {kind} device whose name contains '{spec}'. "
             f"Run `python list_devices.py` to see available devices."
         )
-    # Prefer an MME device when several host APIs expose the same name; MME is
-    # the most compatible host API for simple playback on Windows.
-    hostapis = query_hostapis()
-    mme = next(
-        (
-            (idx, dev)
-            for idx, dev in matches
-            if "mme" in hostapis[dev["hostapi"]]["name"].lower()
-        ),
-        None,
-    )
-    chosen_idx, chosen_dev = mme if mme is not None else matches[0]
+    chosen = _prefer_match(matches, prefer)
+    chosen_idx, chosen_dev = chosen
     return chosen_idx, chosen_dev["name"]
+
+
+def wasapi_exclusive_settings(cfg=None):
+    """
+    Return ``sounddevice.WasapiSettings(exclusive=True)`` when exclusive capture
+    is enabled and the backend supports it; otherwise None.
+    """
+    enabled = True
+    if cfg is not None:
+        enabled = bool(getattr(cfg, "CAPTURE_WASAPI_EXCLUSIVE", False))
+    if not enabled:
+        return None
+    try:
+        import sounddevice as _sd
+
+        settings_cls = getattr(_sd, "WasapiSettings", None)
+        if settings_cls is None:
+            return None
+        return settings_cls(exclusive=True)
+    except Exception:
+        return None
+
+
+def input_stream_extra_settings(cfg=None, *, force_shared: bool = False):
+    """Kwarg dict for InputStream: may include ``extra_settings`` for WASAPI."""
+    if force_shared:
+        return {}
+    settings = wasapi_exclusive_settings(cfg)
+    if settings is None:
+        return {}
+    return {"extra_settings": settings}
 
 
 def find_vbcable_output():

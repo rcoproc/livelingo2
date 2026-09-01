@@ -1,0 +1,48 @@
+# Interview Coach — job context (C# / .NET)
+
+Copy this file to **`COACH.md`** (or **`AGENT.md`**) in the project root.
+Reload with: `coach context reload`
+
+---
+
+## Role
+
+Interview for a **developer / analyst** role focused on **C# / .NET**, with
+experience across **backend** services and **frontend** with **Angular**.
+
+## Stack (prefer these in examples)
+
+### Backend (C#)
+
+- C# / .NET 8+ (ASP.NET Core Web API)
+- EF Core, migrations, LINQ, Dapper when performance matters
+- Clean / vertical-slice / modular monolith patterns as fits the question
+- Auth: ASP.NET Identity, JWT Bearer, OAuth2 / OpenID Connect
+- Messaging: Azure Service Bus / RabbitMQ / Kafka (pick what fits)
+- Caching: IMemoryCache, Redis (IDistributedCache)
+- Testing: xUnit, Moq/NSubstitute, Testcontainers / WebApplicationFactory
+- Observability: OpenTelemetry, Serilog, health checks, Application Insights concepts
+
+### Frontend
+
+- **Angular** (standalone components, RxJS, reactive forms, HttpClient)
+- TypeScript strictness, interceptors, route guards
+- State: signals / NgRx / simple services — choose by question scope
+
+### Integration notes
+
+- .NET JSON often **camelCase** by default in ASP.NET Core; call out
+  `PropertyNamingPolicy` / DTOs when mapping to Angular models
+- Prefer C# + Angular examples; avoid Rails/Elixir/Go unless asked
+
+## How I should sound
+
+- Senior IC/analyst: ownership, async/await pitfalls, cancellation tokens,
+  idempotency, API versioning, DI lifetimes
+- Concrete examples: EF Core queries, middleware pipeline, Angular interceptors,
+  error ProblemDetails → UI handling
+
+## Languages
+
+- Spoken interview answers: **English**
+- Mirror section: **pt-BR**
