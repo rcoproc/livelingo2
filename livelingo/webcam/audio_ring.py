@@ -123,6 +123,29 @@ class AudioRingBuffer:
                     return True
             return False
 
+    def seconds_until_play(self, now: Optional[float] = None) -> Optional[float]:
+        """
+        Seconds until the next scheduled TTS clip starts.
+
+        Returns:
+          - ``0.0`` if a clip is already playing
+          - ``start - now`` for the nearest future clip
+          - ``None`` if the schedule is empty / fully idle
+        """
+        t = float(now if now is not None else time.monotonic())
+        with self._lock:
+            if not self._clips:
+                return None
+            upcoming: Optional[float] = None
+            for c in self._clips:
+                if c.start_t <= t < c.end_t:
+                    return 0.0
+                if c.start_t > t:
+                    dt = c.start_t - t
+                    if upcoming is None or dt < upcoming:
+                        upcoming = dt
+            return upcoming
+
     def seconds_until_idle(self) -> float:
         """Seconds until the schedule is fully drained (0 if idle)."""
         now = time.monotonic()

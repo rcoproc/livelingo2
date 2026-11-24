@@ -32,6 +32,25 @@ from .stt_filter import (
 )
 
 
+def _resolve_tts_engine_name(synthesizer, cfg) -> str:
+    """
+    Label for timing_json / latency A/B: piper | edge | hybrid | …
+
+    Prefer synthesizer.engine_name; fall back to class name then cfg.TTS_ENGINE.
+    """
+    name = getattr(synthesizer, "engine_name", None)
+    if name:
+        return str(name).strip().lower()
+    cls = type(synthesizer).__name__.lower() if synthesizer is not None else ""
+    if "hybrid" in cls:
+        return "hybrid"
+    if "piper" in cls:
+        return "piper"
+    if cls in ("synthesizer",) or "edge" in cls:
+        return "edge"
+    return str(getattr(cfg, "TTS_ENGINE", "edge") or "edge").strip().lower()
+
+
 class _ChunkSkip:
     """Ordered sound-OFF placeholder: print message only when this slot releases."""
 
@@ -2891,11 +2910,7 @@ class Pipeline:
 
         # Pre-TTS cue once per chunk (first segment only), not every sentence.
         pre_tts_cue_remaining = True
-        tts_engine_name = str(
-            getattr(self.synthesizer, "engine_name", None)
-            or getattr(self.cfg, "TTS_ENGINE", "edge")
-            or "edge"
-        ).lower()
+        tts_engine_name = _resolve_tts_engine_name(self.synthesizer, self.cfg)
         tts_voice_label = str(
             getattr(self.synthesizer, "voice_label", None)
             or getattr(self.synthesizer, "voice_id", None)
@@ -3249,6 +3264,15 @@ class Pipeline:
                 "total": (t3 - t0) if t3 is not None else (t2 - t0),
                 "translate_cache": bool(cache_hit),
             }
+            # Label for latency A/B (Groq LLM vs Google). Cache hits → "cache".
+            try:
+                from .failover import translator_engine_label
+
+                timing["translate_engine"] = (
+                    "cache" if cache_hit else translator_engine_label(self.translator)
+                )
+            except Exception:
+                timing["translate_engine"] = "cache" if cache_hit else "unknown"
             if include_tts:
                 timing["tts_engine"] = tts_engine_name
                 if tts_voice_label:

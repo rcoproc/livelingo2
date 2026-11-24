@@ -594,6 +594,8 @@ class CaptionService:
         self._lc_seq = 0
         self._last_partial_translate_t = 0.0
         self._local_chunk_cursor = 0  # fallback when no pipeline
+        self._last_translate_s = 0.0
+        self._last_translate_engine = "unknown"
 
     # -- public API -------------------------------------------------------- #
     def bind(
@@ -1046,11 +1048,16 @@ class CaptionService:
         Returns (translated_text, from_cache).
         Lookup uses phrase_cache keys caption_source→caption_target.
         Store happens only on stable commit (_commit_open_to_log).
+        Also records last translate latency on ``self._last_translate_s`` for SQLite.
         """
+        import time as _time
+
         self._ensure_lang_pair()
         src_lang, tgt_lang = self._caption_src, self._caption_tgt
         text = (text or "").strip()
         if not text:
+            self._last_translate_s = 0.0
+            self._last_translate_engine = "unknown"
             return "", False
 
         cache = self.phrase_cache
@@ -1063,6 +1070,7 @@ class CaptionService:
 
         cache_hit = False
         translated = None
+        t0 = _time.perf_counter()
         if cache is not None and getattr(cache, "enabled", False) and not force_live:
             try:
                 cached = cache.lookup(src_lang, tgt_lang, text)
@@ -1104,6 +1112,16 @@ class CaptionService:
                 )
                 cache_hit = False
                 translated = self._do_translate_live(text)
+
+        self._last_translate_s = max(0.0, _time.perf_counter() - t0)
+        try:
+            from .failover import translator_engine_label
+
+            self._last_translate_engine = (
+                "cache" if cache_hit else translator_engine_label(self.translator)
+            )
+        except Exception:
+            self._last_translate_engine = "cache" if cache_hit else "unknown"
 
         out = (translated or "").strip()
         # Same-language result when src≠tgt usually means the engine failed silently
@@ -1227,6 +1245,11 @@ class CaptionService:
             "caption_source_lang": src_lang,
             "caption_target_lang": tgt_lang,
             "translate_cache": bool(from_cache),
+            "translate": float(getattr(self, "_last_translate_s", 0.0) or 0.0),
+            "translate_engine": str(
+                getattr(self, "_last_translate_engine", "")
+                or ("cache" if from_cache else "unknown")
+            ),
         }
         sid = self.session_id or getattr(self.pipeline, "session_id", None)
         pl = self.pipeline

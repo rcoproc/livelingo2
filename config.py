@@ -621,6 +621,10 @@ WEBCAM_QUEUE_SIZE = _get_int("WEBCAM_QUEUE_SIZE", 2)
 WEBCAM_LIP_ENGINE = _get_str("WEBCAM_LIP_ENGINE", "amplitude").lower()
 WEBCAM_AMP_MAX_OPEN_PX = _get_float("WEBCAM_AMP_MAX_OPEN_PX", 22.0)
 WEBCAM_AMP_SENSITIVITY = _get_float("WEBCAM_AMP_SENSITIVITY", 28.0)
+# Soft elliptical mouth morph while translated TTS plays (looks like a
+# transparent mask). Set false for 100% live face during TTS too.
+# Also forced off when WEBCAM_LIP_ENGINE=passthrough.
+WEBCAM_TTS_LIP_MORPH = _get_bool("WEBCAM_TTS_LIP_MORPH", True)
 # When webcam streams, also turn LiveLingo sound ON (TTS → CABLE → Teams mic).
 WEBCAM_AUTO_SOUND = _get_bool("WEBCAM_AUTO_SOUND", True)
 # Path to ONNX export (Wav2Lip-style or custom NCHW face + audio).
@@ -643,9 +647,14 @@ WEBCAM_SYNC_MARKER = _get_bool("WEBCAM_SYNC_MARKER", False)
 # When true: mouth forced closed if no TTS; only opens while sound → Teams.
 # When false: idle shows natural webcam mouth (no force-close).
 WEBCAM_FORCE_CLOSED_IDLE = _get_bool("WEBCAM_FORCE_CLOSED_IDLE", True)
-# Legacy: VAD auto closed-photo is disabled (always off). Closed image only via
-# F10 (face plate) / F11 (full-frame). Kept for [cam closed auto] no-op status.
-WEBCAM_CLOSED_AUTO = _get_bool("WEBCAM_CLOSED_AUTO", False)
+# Auto boca calada (mouth-only template) while mic hears speech; F10/F11 still manual.
+WEBCAM_CLOSED_AUTO = _get_bool("WEBCAM_CLOSED_AUTO", True)
+# Release live mouth this many seconds *before* scheduled TTS starts on the vcam.
+WEBCAM_MOUTH_RELEASE_LEAD_S = _get_float("WEBCAM_MOUTH_RELEASE_LEAD_S", 1.0)
+# Keep closed after VAD hangover if TTS is already queued (covers STT/translate gap).
+WEBCAM_CLOSED_UNTIL_TTS = _get_bool("WEBCAM_CLOSED_UNTIL_TTS", True)
+# Auto closed region: mouth (lips only, face stays live) | face (F10-like plate).
+WEBCAM_CLOSED_REGION = _get_str("WEBCAM_CLOSED_REGION", "mouth").lower()
 # Closed-mouth photo template (best idle quality). Capture: [cam snap closed]
 # Leave empty to use defaults under .cache/webcam/
 WEBCAM_CLOSED_MOUTH_IMAGE = _get_str(
@@ -659,6 +668,26 @@ WEBCAM_CLOSED_MOUTH_LANDMARKS = _get_str(
 WEBCAM_TEMPLATE_REGION_SCALE = _get_float("WEBCAM_TEMPLATE_REGION_SCALE", 1.15)
 # Soft edge of face plate (px).
 WEBCAM_TEMPLATE_FEATHER_PX = _get_int("WEBCAM_TEMPLATE_FEATHER_PX", 24)
+# Soft edge for mouth-only auto closed blend (keep small to avoid glasses/headphones).
+WEBCAM_MOUTH_FEATHER_PX = _get_int("WEBCAM_MOUTH_FEATHER_PX", 8)
+# Mouth-only mask: pad_* multiply distance from mouth center to lip landmarks
+# (1.0 ≈ natural lip hull). LOWER pad_up = less nose/glasses. Hard caps keep
+# the band on the lips (no chin/beard plate).
+WEBCAM_MOUTH_PAD_SCALE = _get_float("WEBCAM_MOUTH_PAD_SCALE", 1.05)
+WEBCAM_MOUTH_PAD_X = _get_float("WEBCAM_MOUTH_PAD_X", 1.00)
+WEBCAM_MOUTH_PAD_UP = _get_float("WEBCAM_MOUTH_PAD_UP", 0.70)
+WEBCAM_MOUTH_PAD_DOWN = _get_float("WEBCAM_MOUTH_PAD_DOWN", 1.25)
+WEBCAM_MOUTH_SHIFT_DOWN_PX = _get_float("WEBCAM_MOUTH_SHIFT_DOWN_PX", 0.0)
+# Follow head with closed-mouth clone (anchor = stable mouth center).
+# false = freeze clone at snap pose (does not move with head).
+WEBCAM_MOUTH_TRACK = _get_bool("WEBCAM_MOUTH_TRACK", True)
+# EMA α for track pose (0 = frozen after first lock, 1 = raw landmarks).
+# Higher = follows head more tightly (0.85 default).
+WEBCAM_MOUTH_TRACK_SMOOTH = _get_float("WEBCAM_MOUTH_TRACK_SMOOTH", 0.85)
+# Reuse last good mouth pose this long when MediaPipe misses a face.
+WEBCAM_MOUTH_TRACK_HOLD_S = _get_float("WEBCAM_MOUTH_TRACK_HOLD_S", 0.20)
+# Include lip-corner rotation in the closed-mouth warp (head tilt).
+WEBCAM_MOUTH_TRACK_ROTATE = _get_bool("WEBCAM_MOUTH_TRACK_ROTATE", True)
 # Mirror closed-mouth photo vs live frame. Default false (photo already matches
 # OpenCV capture). Set true only if left/right looks swapped in Teams.
 WEBCAM_TEMPLATE_FLIP_H = _get_bool("WEBCAM_TEMPLATE_FLIP_H", False)

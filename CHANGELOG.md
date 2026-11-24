@@ -9,16 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
 
 ## [Unreleased]
 
-### Changed
-
-- **Coach EN-first** — a resposta em inglês (Spoken / SE / Arch / Trade-offs) é
-  emitida assim que a 1ª chamada LLM termina; a versão **pt-BR** chega depois em
-  background (`INTERVIEW_COACH_PT_ASYNC=true`, default). Reduz a espera pós-LC
-  antes de poder ler / usar o teleprompter. No SQLite: **INSERT** do EN na hora
-  e **UPDATE** do mesmo `coach_results` quando o pt-BR chega.
-
 ### Added
 
+- **Webcam mouth-track** — clone da boca fechada acompanha o centro estável da
+  boca (cantos + lábio superior) com EMA, hold em falha curta do MediaPipe e
+  rotação opcional; `WEBCAM_MOUTH_TRACK=false` congela na pose do snap.
+  Também: `WEBCAM_MOUTH_TRACK_SMOOTH`, `WEBCAM_MOUTH_TRACK_HOLD_S`,
+  `WEBCAM_MOUTH_TRACK_ROTATE`.
+- **Webcam auto boca calada (mouth-only)** — enquanto o mic ouve fala, a região
+  da boca usa o template fechado (rosto ao vivo); libera a boca real
+  `WEBCAM_MOUTH_RELEASE_LEAD_S` (1s) antes do TTS na vcam. Config:
+  `WEBCAM_CLOSED_AUTO`, `WEBCAM_CLOSED_UNTIL_TTS`, `WEBCAM_CLOSED_REGION=mouth`.
+- **`scripts/analyze_latency.py`** — p50/p90/p95 de STT/translate/TTS a partir do
+  `timing_json` no SQLite; quebra por cache e (após upgrade) por
+  `translate_engine` (llm vs google).
 - **`view coach` teleprompter** — painel Spoken (EN) com destaque palavra a palavra
   no ritmo de **`COACH_FOLLOW_WPM`** (default 130; você lê junto — sem mic/STT).
   **Space** inicia/pausa · **r** reinicia · **Esc** para. Palavra atual em faixa
@@ -26,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/) where app
   Após o Spoken, continua a leitura no título **Trade-offs** e no parágrafo
   seguinte (mesmo WPM). Com a leitura **done**, **↑/↓** navega o histórico de
   Spokens da sessão do viewer; **Space**/**r** relê do início.
+
+### Changed
+
+- **Mouth-only mask** — removido o stretch que inflava os lábios até o queixo/barba
+  (parecia placa congelada no `boca.png`). Máscara = hull dos lábios com teto
+  `~0.16×mouth_w` acima e `~0.28×mouth_w` abaixo. Tracking ancora em
+  `mouth_cx/cy` do MediaPipe a cada frame.
+- **timing_json** — grava `translate_engine` (`llm`|`google`|`cache`) no VOZ e no LC
+  para A/B de latência de tradução.
+- **Coach EN-first** — a resposta em inglês (Spoken / SE / Arch / Trade-offs) é
+  emitida assim que a 1ª chamada LLM termina; a versão **pt-BR** chega depois em
+  background (`INTERVIEW_COACH_PT_ASYNC=true`, default). Reduz a espera pós-LC
+  antes de poder ler / usar o teleprompter. No SQLite: **INSERT** do EN na hora
+  e **UPDATE** do mesmo `coach_results` quando o pt-BR chega.
 
 ### Fixed
 

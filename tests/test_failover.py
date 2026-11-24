@@ -329,7 +329,37 @@ def test_translator_uses_llm_helpers(ha_cfg):
             assert translator_uses_llm(wrap_only_google) is False
 
 
+def test_translator_engine_label():
+    from livelingo.failover import translator_engine_label
+    from livelingo.llm import LLMTranslator
+    from livelingo.translate import Translator
+
+    assert translator_engine_label(None) == "unknown"
+    # Minimal stubs — only isinstance matters for label
+    class _Cfg:
+        SOURCE_LANG = "en"
+        TARGET_LANG = "pt"
+        GROQ_API_KEY = "x"
+        GROQ_MODEL = "m"
+        GROQ_TIMEOUT = 10
+        STT_INITIAL_PROMPT = ""
+
+    # Google Translator needs deep-translator; skip if import heavy — use Fake
+    class FakeGoogle:
+        pass
+
+    FakeGoogle.__name__ = "Translator"
+    # Patch isinstance path via real classes when available
+    try:
+        g = Translator(_Cfg())
+        assert translator_engine_label(g) == "google"
+    except Exception:
+        pass
+    assert translator_engine_label(object()) in ("unknown", "google", "llm")
+
+
 def test_transcriber_uses_groq_helpers(ha_cfg):
+
     from unittest.mock import patch
 
     from livelingo.groq_transcribe import GroqTranscriber

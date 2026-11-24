@@ -56,14 +56,14 @@ def _resolve_onnx_providers(config):
 
 
 def _load_piper_voice(model_path, config, log=print):
-    """Load Piper with tuned ONNX Runtime session options."""
+    """
+    Load Piper with tuned ONNX Runtime session options.
+
+    Newer ``piper-tts`` prefers ``PiperVoice.load()``; older builds used
+    ``PiperVoice(config=..., session=...)``. Try both for Windows/Linux.
+    """
     import onnxruntime as ort
     from piper import PiperVoice
-    from piper.config import PiperConfig
-
-    json_path = f"{model_path}.json"
-    with open(json_path, encoding="utf-8") as config_file:
-        config_dict = json.load(config_file)
 
     ort_threads = getattr(config, "PIPER_ORT_THREADS", 0)
     if ort_threads <= 0:
@@ -71,22 +71,47 @@ def _load_piper_voice(model_path, config, log=print):
     if ort_threads > 0:
         _configure_onnx_threads(ort_threads)
 
+    providers = _resolve_onnx_providers(config)
+    provider_names = [p[0] if isinstance(p, tuple) else p for p in providers]
+    use_cuda = any("CUDA" in n for n in provider_names)
+    log(f"Piper ONNX providers: {', '.join(provider_names)}")
+
+    # Preferred API (piper-tts recent): handles espeak-ng-data paths correctly
+    if hasattr(PiperVoice, "load"):
+        try:
+            return PiperVoice.load(
+                model_path,
+                config_path=f"{model_path}.json",
+                use_cuda=use_cuda,
+            )
+        except TypeError:
+            # Older load() signature — fall through to manual session
+            pass
+        except Exception as exc:
+            log(f"PiperVoice.load failed ({type(exc).__name__}: {exc}) — trying session API")
+
+    from piper.config import PiperConfig
+
+    json_path = f"{model_path}.json"
+    with open(json_path, encoding="utf-8") as config_file:
+        config_dict = json.load(config_file)
+
     sess_options = ort.SessionOptions()
     if ort_threads > 0:
         sess_options.intra_op_num_threads = ort_threads
         sess_options.inter_op_num_threads = 1
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-    providers = _resolve_onnx_providers(config)
-    provider_names = [p[0] if isinstance(p, tuple) else p for p in providers]
-    log(f"Piper ONNX providers: {', '.join(provider_names)}")
-
     session = ort.InferenceSession(
         str(model_path),
         sess_options=sess_options,
         providers=providers,
     )
-    return PiperVoice(config=PiperConfig.from_dict(config_dict), session=session)
+    # Keyword order varies by piper version — try both
+    try:
+        return PiperVoice(session=session, config=PiperConfig.from_dict(config_dict))
+    except TypeError:
+        return PiperVoice(config=PiperConfig.from_dict(config_dict), session=session)
 
 
 from .piper_voices import (

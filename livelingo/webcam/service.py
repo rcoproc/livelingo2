@@ -44,11 +44,15 @@ from .engines import LipSyncEngine, build_engine
 from .face_roi import FaceMouthROI
 from .mouth_template import (
     ClosedMouthTemplateStore,
+    MouthTrackPose,
     align_and_blend,
+    align_and_blend_mouth,
     compute_freeze_plate_geom,
     cover_frame_with_closed_image,
+    ema_mouth_pose,
     load_template,
     open_from_closed_template,
+    pose_from_roi,
     save_template_from_frame,
 )
 
@@ -214,6 +218,32 @@ class WebcamLipSyncService:
         self._force_closed_idle = bool(
             getattr(config, "WEBCAM_FORCE_CLOSED_IDLE", True)
         )
+        # Auto boca calada while mic speech; release ~1s before TTS (mouth-only)
+        self._closed_auto = bool(getattr(config, "WEBCAM_CLOSED_AUTO", True))
+        self._mouth_release_lead_s = float(
+            getattr(config, "WEBCAM_MOUTH_RELEASE_LEAD_S", 1.0) or 0.0
+        )
+        self._closed_until_tts = bool(
+            getattr(config, "WEBCAM_CLOSED_UNTIL_TTS", True)
+        )
+        self._closed_region = str(
+            getattr(config, "WEBCAM_CLOSED_REGION", "mouth") or "mouth"
+        ).lower().strip()
+        # Closed-mouth clone follows head (mouth center). false = snap pose only.
+        self._mouth_track = bool(getattr(config, "WEBCAM_MOUTH_TRACK", True))
+        self._mouth_track_smooth = float(
+            getattr(config, "WEBCAM_MOUTH_TRACK_SMOOTH", 0.85) or 0.0
+        )
+        self._mouth_track_hold_s = float(
+            getattr(config, "WEBCAM_MOUTH_TRACK_HOLD_S", 0.20) or 0.0
+        )
+        self._mouth_track_rotate = bool(
+            getattr(config, "WEBCAM_MOUTH_TRACK_ROTATE", True)
+        )
+        self._mouth_track_lock = threading.Lock()
+        self._mouth_track_raw: Optional[MouthTrackPose] = None
+        self._mouth_track_smooth_pose: Optional[MouthTrackPose] = None
+
         self._amp_sensitivity = float(
             getattr(config, "WEBCAM_AMP_SENSITIVITY", 28.0) or 28.0
         )
@@ -240,8 +270,6 @@ class WebcamLipSyncService:
         # F11: full-frame freeze with closed photo (hides all live video)
         self._closed_full_frame_on = False
         self._closed_full_gen = 0
-        # VAD auto closed-plate removed — F10/F11 only (config kept for status/help)
-        self._closed_auto = False
         self._closed_apply_ok = 0  # frames successfully blended (debug)
         self._closed_apply_fail = 0
         self._last_frame_lock = threading.Lock()
@@ -857,6 +885,132 @@ class WebcamLipSyncService:
                 return (time.monotonic() - self._vad_end_mono) < hang
             return False
 
+    def want_closed_mouth_auto(self) -> bool:
+        """
+        Auto boca calada (mouth-only) while speaking PT on mic.
+
+        Releases live mouth ``WEBCAM_MOUTH_RELEASE_LEAD_S`` before scheduled TTS
+        starts (and while TTS is playing). F10/F11 override this path.
+        """
+        # Re-read so .env WEBCAM_CLOSED_AUTO=false is honored after restart
+        self._closed_auto = bool(
+            getattr(self.cfg, "WEBCAM_CLOSED_AUTO", self._closed_auto)
+        )
+        if not self._closed_auto:
+            return False
+        if not self._template_store.loaded:
+            return False
+        with self._vad_lock:
+            if self._closed_manual_mode:
+                # F10/F11 own the plate; auto stays out
+                return False
+        try:
+            eta = self.audio.seconds_until_play()
+        except Exception:
+            eta = None
+        try:
+            playing = bool(self.audio.is_playing())
+        except Exception:
+            playing = False
+        lead = max(0.0, float(self._mouth_release_lead_s or 0.0))
+        # Liberar boca real 1s antes do TTS (e durante o TTS)
+        if playing:
+            return False
+        if eta is not None and eta <= lead:
+            return False
+        hearing = self.is_mic_hearing_speech()
+        if hearing:
+            return True
+        # Silêncio pós-fala mas TTS ainda na fila (longe do lead) → manter calada
+        until_tts = bool(
+            getattr(self.cfg, "WEBCAM_CLOSED_UNTIL_TTS", self._closed_until_tts)
+        )
+        self._closed_until_tts = until_tts
+        if until_tts and eta is not None and eta > lead:
+            return True
+        return False
+
+    def resolve_mouth_track_pose(
+        self,
+        roi: Any,
+        *,
+        now: Optional[float] = None,
+        mesh_ok: Optional[bool] = None,
+    ) -> MouthTrackPose:
+        """
+        Stable mouth pose for closed-clone: follow live mouth center + light EMA.
+
+        When MediaPipe misses briefly, reuse the last good pose for
+        ``WEBCAM_MOUTH_TRACK_HOLD_S`` instead of jumping to the fixed heuristic box.
+        Position always refreshes from the current ROI when ``mesh_ok`` (no sticky
+        freeze while the face is still tracked).
+        """
+        t = float(time.monotonic() if now is None else now)
+        if mesh_ok is None:
+            mesh_ok = bool(getattr(roi, "mesh_ok", False))
+        # Strong = real Face Mesh lock (never treat heuristic as strong).
+        strong = bool(mesh_ok) and bool(getattr(roi, "face_ok", False))
+        if strong:
+            mw = float(getattr(roi, "mouth_w", 0) or 0)
+            if mw < 12.0:
+                strong = False
+            else:
+                lm = getattr(roi, "landmarks_xy", None)
+                if lm is None or getattr(lm, "size", 0) == 0:
+                    strong = False
+                else:
+                    try:
+                        pts = np.asarray(lm, dtype=np.float32).reshape(-1, 2)
+                        if pts.shape[0] <= 291:
+                            strong = False
+                        else:
+                            span = float(
+                                abs(pts[291, 0] - pts[61, 0])
+                                + abs(pts[291, 1] - pts[61, 1])
+                            )
+                            strong = span >= 8.0
+                    except Exception:
+                        strong = False
+
+        cur = pose_from_roi(roi, t=t)
+        with self._mouth_track_lock:
+            hold_s = max(0.0, float(self._mouth_track_hold_s or 0.0))
+            # Snappy default: high α follows head; 1.0 = raw landmarks
+            alpha = float(self._mouth_track_smooth or 0.0)
+            if alpha <= 0.0:
+                alpha = 1.0
+            if strong:
+                self._mouth_track_raw = cur
+                if not self._mouth_track:
+                    self._mouth_track_smooth_pose = cur
+                    return cur
+                # Always blend toward *current* live center (never keep old cx/cy)
+                self._mouth_track_smooth_pose = ema_mouth_pose(
+                    self._mouth_track_smooth_pose, cur, alpha
+                )
+                return self._mouth_track_smooth_pose
+
+            raw = self._mouth_track_raw
+            if raw is not None and hold_s > 0 and (t - float(raw.t)) <= hold_s:
+                # Face lost briefly — freeze last good (do not chase heuristic)
+                held = self._mouth_track_smooth_pose or raw
+                return MouthTrackPose(
+                    cx=held.cx,
+                    cy=held.cy,
+                    w=held.w,
+                    h=held.h,
+                    angle_deg=held.angle_deg,
+                    landmarks_xy=held.landmarks_xy,
+                    t=t,
+                )
+
+            # No mesh and hold expired: keep last smooth if any, else weak ROI
+            if self._mouth_track_smooth_pose is not None:
+                return self._mouth_track_smooth_pose
+            self._mouth_track_raw = cur
+            self._mouth_track_smooth_pose = cur
+            return cur
+
     def toggle_closed_mouth_manual(self) -> Tuple[bool, str]:
         """
         F10: toggle closed-mouth face plate ON/OFF (manual).
@@ -911,15 +1065,17 @@ class WebcamLipSyncService:
         return False, "Boca calada OFF (manual)"
 
     def set_closed_mouth_auto(self) -> str:
-        """Exit F10/F11 manual freeze → live video (no VAD auto plate anymore)."""
+        """Exit F10/F11 manual freeze → resume VAD auto mouth-closed (if enabled)."""
         with self._vad_lock:
             self._closed_manual_mode = False
             self._closed_manual_on = False
             self._closed_full_frame_on = False
             self._closed_gen = int(self._closed_gen) + 1
+        self._closed_auto = True
+        lead = float(self._mouth_release_lead_s or 0.0)
         return (
-            "Vídeo ao vivo — closed só com F10 (rosto) / F11 (tela inteira). "
-            "Auto no mic desativado."
+            f"Auto boca calada ON (mouth-only) — libera {lead:.1f}s antes do TTS. "
+            f"F10=rosto · F11=tela."
         )
 
     def toggle_closed_full_frame(self) -> Tuple[bool, str]:
@@ -987,15 +1143,10 @@ class WebcamLipSyncService:
                 "vad_speech": self.is_mic_hearing_speech(),
             }
 
-    def should_show_closed_template(self, *, playing: bool) -> bool:
-        """
-        Auto closed-photo on mic speech is **disabled**.
-
-        Closed image only via F10 (face plate) / F11 (full-frame) — see infer loop
-        ``manual_on`` / ``full_frame_on``. Always returns False (no VAD auto).
-        """
-        del playing  # no longer used for auto plate
-        return False
+    def should_show_closed_template(self, *, playing: bool = False) -> bool:
+        """True when auto mouth-closed should paint (ignores F10/F11)."""
+        del playing
+        return self.want_closed_mouth_auto()
 
     # Back-compat alias used by older wiring
     def set_listening_probe(self, fn: Optional[Callable[[], bool]]) -> None:
@@ -1013,6 +1164,10 @@ class WebcamLipSyncService:
                 playing = bool(self.audio.is_playing())
             except Exception:
                 playing = False
+            try:
+                eta = self.audio.seconds_until_play()
+            except Exception:
+                eta = None
             return {
                 "running": s.running,
                 "enabled": s.enabled,
@@ -1027,6 +1182,9 @@ class WebcamLipSyncService:
                 "roi_ok": self.roi.available,
                 "audio_rms": round(rms, 4),
                 "audio_playing": playing,
+                "tts_eta_s": (
+                    None if eta is None else round(float(eta), 3)
+                ),
                 "frames_sent": s.frames_sent,
                 "capture_ok": s.capture_ok,
                 "vcam_ready": self._vcam_ready.is_set(),
@@ -1042,6 +1200,29 @@ class WebcamLipSyncService:
                 "closed_full_frame_on": self._closed_full_frame_on,
                 "closed_full_gen": self._closed_full_gen,
                 "closed_auto": self._closed_auto,
+                "closed_auto_active": self.want_closed_mouth_auto(),
+                "mouth_release_lead_s": float(self._mouth_release_lead_s or 0.0),
+                "closed_region": self._closed_region,
+                "closed_until_tts": bool(
+                    getattr(self.cfg, "WEBCAM_CLOSED_UNTIL_TTS", self._closed_until_tts)
+                ),
+                "mouth_track": bool(
+                    getattr(self.cfg, "WEBCAM_MOUTH_TRACK", self._mouth_track)
+                ),
+                "mouth_track_rotate": self._mouth_track_rotate,
+                "mouth_track_smooth": float(self._mouth_track_smooth or 0.0),
+                "mouth_track_hold_s": float(self._mouth_track_hold_s or 0.0),
+                "mouth_pad_up": float(
+                    getattr(self.cfg, "WEBCAM_MOUTH_PAD_UP", 0.70) or 0.70
+                ),
+                "mouth_pad_down": float(
+                    getattr(self.cfg, "WEBCAM_MOUTH_PAD_DOWN", 1.25) or 1.25
+                ),
+                "tts_lip_morph": bool(
+                    getattr(self.cfg, "WEBCAM_TTS_LIP_MORPH", True)
+                )
+                and str(getattr(self.engine, "name", "") or "").lower()
+                not in ("passthrough", "none", "off"),
                 "closed_gen": self._closed_gen,
                 "closed_apply_ok": self._closed_apply_ok,
                 "closed_apply_fail": self._closed_apply_fail,
@@ -1072,8 +1253,20 @@ class WebcamLipSyncService:
                     f"vcam_ready={snap.get('vcam_ready')} capture_ok={snap.get('capture_ok')}",
                     f"fps_out={snap.get('fps_out')} fps_cap={snap.get('fps_cap')} "
                     f"sent={snap.get('frames_sent')} face={snap.get('face_ok')}",
-                    f"tts_playing={snap.get('audio_playing')} rms={snap.get('audio_rms')} "
+                    f"tts_playing={snap.get('audio_playing')} "
+                    f"tts_eta={snap.get('tts_eta_s')} "
+                    f"rms={snap.get('audio_rms')} "
                     f"marker={snap.get('sync_marker')}",
+                    f"closed_auto={snap.get('closed_auto')} "
+                    f"auto_active={snap.get('closed_auto_active')} "
+                    f"region={snap.get('closed_region')} "
+                    f"until_tts={snap.get('closed_until_tts')} "
+                    f"release_lead={snap.get('mouth_release_lead_s')}s "
+                    f"hearing={snap.get('vad_speech')}",
+                    f"mouth_track={snap.get('mouth_track')} "
+                    f"pad_up={snap.get('mouth_pad_up')} "
+                    f"pad_down={snap.get('mouth_pad_down')} "
+                    f"tts_lip_morph={snap.get('tts_lip_morph')}",
                     f"closed_manual={snap.get('closed_manual')} "
                     f"closed_on={snap.get('closed_manual_on')} "
                     f"gen={snap.get('closed_gen')} "
@@ -1086,6 +1279,7 @@ class WebcamLipSyncService:
                     "",
                     "Teams camera MUST be: OBS Virtual Camera (not the laptop webcam).",
                     "Teams mic MUST be: CABLE Output. LiveLingo [s] ON for speech.",
+                    "Auto: mouth closed while speaking; live mouth ~1s before TTS.",
                     "Mouth morph + SYNC marker only while TTS audio is scheduled.",
                     "",
                     json.dumps(snap, ensure_ascii=False),
@@ -1523,6 +1717,7 @@ class WebcamLipSyncService:
                     )
 
                 # F11: entire virtual-cam frame = closed photo (hides live video)
+                auto_mouth = False
                 if full_frame_on and tpl is not None and tpl.ok:
                     try:
                         out = cover_frame_with_closed_image(
@@ -1536,7 +1731,6 @@ class WebcamLipSyncService:
                         self._set_error(f"closed-full-frame: {exc}")
                         out = frame
                 elif manual_on and tpl is not None and tpl.ok:
-                    use_tpl = True  # F10 ON always paints (even if TTS ring stale)
                     roi_use = roi
                     if not roi.face_ok:
                         try:
@@ -1563,18 +1757,120 @@ class WebcamLipSyncService:
                         self._closed_apply_fail += 1
                         self._set_error(f"closed-template blend: {exc}")
                         out = frame
-                # VAD auto closed-plate removed — only F10 (above) / F11 (above).
+                elif self.want_closed_mouth_auto() and tpl is not None and tpl.ok:
+                    # Auto: mouth-only closed clone while speaking PT (tracks pose)
+                    auto_mouth = True
+                    roi_use = roi
+                    if not roi.face_ok:
+                        try:
+                            roi_use = self.roi._heuristic_mouth_roi(frame)
+                        except Exception:
+                            roi_use = roi
+                    try:
+                        if self._closed_region == "face":
+                            out = align_and_blend(
+                                frame,
+                                roi_use,
+                                tpl,
+                                feather_px=int(
+                                    getattr(
+                                        self.cfg, "WEBCAM_TEMPLATE_FEATHER_PX", 24
+                                    )
+                                    or 24
+                                ),
+                                region_scale=float(
+                                    getattr(
+                                        self.cfg, "WEBCAM_TEMPLATE_REGION_SCALE", 1.15
+                                    )
+                                    or 1.15
+                                ),
+                                flip_h=self._template_flip_h,
+                            )
+                        else:
+                            # Re-read from cfg every frame so .env changes after
+                            # restart are obvious in [cam status] / blend.
+                            track_on = bool(
+                                getattr(self.cfg, "WEBCAM_MOUTH_TRACK", self._mouth_track)
+                            )
+                            self._mouth_track = track_on
+                            self._mouth_track_rotate = bool(
+                                getattr(
+                                    self.cfg,
+                                    "WEBCAM_MOUTH_TRACK_ROTATE",
+                                    self._mouth_track_rotate,
+                                )
+                            )
+                            pad_up = float(
+                                getattr(self.cfg, "WEBCAM_MOUTH_PAD_UP", 0.70) or 0.70
+                            )
+                            pad_down = float(
+                                getattr(self.cfg, "WEBCAM_MOUTH_PAD_DOWN", 1.25)
+                                or 1.25
+                            )
+                            track_pose = None
+                            if track_on:
+                                track_pose = self.resolve_mouth_track_pose(roi)
+                            out = align_and_blend_mouth(
+                                frame,
+                                roi_use,
+                                tpl,
+                                feather_px=int(
+                                    getattr(self.cfg, "WEBCAM_MOUTH_FEATHER_PX", 8)
+                                    or 8
+                                ),
+                                pad_scale=float(
+                                    getattr(self.cfg, "WEBCAM_MOUTH_PAD_SCALE", 1.05)
+                                    or 1.05
+                                ),
+                                pad_x=float(
+                                    getattr(self.cfg, "WEBCAM_MOUTH_PAD_X", 1.00)
+                                    or 1.00
+                                ),
+                                pad_up=pad_up,
+                                pad_down=pad_down,
+                                shift_down_px=float(
+                                    getattr(
+                                        self.cfg, "WEBCAM_MOUTH_SHIFT_DOWN_PX", 0.0
+                                    )
+                                    or 0.0
+                                ),
+                                flip_h=self._template_flip_h,
+                                track=track_on,
+                                rotate=bool(self._mouth_track_rotate),
+                                pose=track_pose,
+                            )
+                        self._closed_apply_ok += 1
+                    except Exception as exc:
+                        self._closed_apply_fail += 1
+                        self._set_error(f"closed-mouth auto: {exc}")
+                        # Fallback: thin procedural lip seal
+                        try:
+                            if roi_use.face_ok:
+                                out = FaceMouthROI.force_mouth_closed(frame, roi_use)
+                            else:
+                                out = frame
+                        except Exception:
+                            out = frame
                 elif playing:
-                    if roi.face_ok and open_amt > 0.05:
+                    # TTS lip morph (soft elliptical blend) — separate from
+                    # CLOSED_AUTO. Disable via WEBCAM_TTS_LIP_MORPH=false or
+                    # WEBCAM_LIP_ENGINE=passthrough (no transparent mouth mask).
+                    engine_name = str(
+                        getattr(self.engine, "name", "") or ""
+                    ).lower()
+                    morph = bool(
+                        getattr(self.cfg, "WEBCAM_TTS_LIP_MORPH", True)
+                    ) and engine_name not in ("passthrough", "none", "off")
+                    if morph and roi.face_ok and open_amt > 0.05:
                         amt = max(open_amt, 0.2)
                         out = open_from_closed_template(frame, roi, amt)
                     else:
                         out = frame
                 else:
-                    # F10/F11 OFF / silence: 100% live
+                    # Silence / released for TTS: 100% live
                     out = frame
 
-                frozen = bool(full_frame_on or manual_on)
+                frozen = bool(full_frame_on or manual_on or auto_mouth)
                 if (
                     self._sync_marker
                     and roi.face_ok

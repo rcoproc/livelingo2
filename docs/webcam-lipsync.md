@@ -33,24 +33,51 @@ WEBCAM_TEMPLATE_REGION_SCALE=1.15  # full-face freeze (1.0 tight … 1.4 larger)
 WEBCAM_TEMPLATE_FEATHER_PX=24      # soft edge of face plate
 ```
 
-The photo freezes the **whole face** (MediaPipe face oval: forehead → chin) on top of
-the live video when F10 / closed-mouth mode is ON. Soft edges blend into the background;
-caps leave a little room around the head (not a full-frame rectangle).
+**Auto (default):** while you speak on the mic, only the **mouth region** is
+replaced with the closed-mouth photo (eyes/head stay live). The plate tracks
+pose if you move. Live mouth returns **`WEBCAM_MOUTH_RELEASE_LEAD_S` (1.0s)**
+before scheduled TTS starts on Cable/vcam; during TTS, lip morph runs as usual.
 
-**When it applies (continuous loop):**
+**F10:** freezes the **whole face** plate (forehead → chin) manually.  
+**F11:** full-frame closed photo (hides all live video).
 
-| Situation | Closed photo |
-|-----------|----------------|
-| VAD hears **speech** on mic | **ON** — freeze plate |
-| Speech ends (hangover **1.5s**) | still ON (covers mic lag) |
-| TTS / translated audio playing | **OFF** — live face |
-| Silence after hangover | **OFF** — natural live face |
+```env
+WEBCAM_CLOSED_AUTO=true
+WEBCAM_MOUTH_RELEASE_LEAD_S=1.0
+WEBCAM_CLOSED_UNTIL_TTS=true   # keep closed during STT/translate if TTS queued
+WEBCAM_CLOSED_REGION=mouth     # mouth | face
+WEBCAM_SPEECH_HANGOVER_S=1.5
+WEBCAM_MOUTH_TRACK=true         # closed clone follows mouth center / head
+WEBCAM_MOUTH_TRACK_SMOOTH=0.85  # EMA α (1=raw follow; lower = smoother)
+WEBCAM_MOUTH_TRACK_HOLD_S=0.20  # reuse last pose if face briefly lost
+WEBCAM_MOUTH_TRACK_ROTATE=true  # tilt clone with lip-corner angle
+WEBCAM_MOUTH_PAD_UP=0.90        # lip-hull × upward (LOWER = less nose/glasses)
+WEBCAM_MOUTH_PAD_DOWN=1.25      # lip-hull × downward (≤1.4 — avoid beard/chin plate)
+```
 
-**F10 / `cam closed`:** toggle closed photo **manual** (ignores VAD until
-`cam closed auto`). Use this to show/hide the plate whenever you want without
-waiting for speech detection.
+**Tracking:** with `WEBCAM_MOUTH_TRACK=true` (default), the mouth-only clone
+follows the **live MediaPipe mouth center every frame**. Set
+`WEBCAM_MOUTH_TRACK=false` to freeze at the snap pose.
 
-Driven by capture VAD (`on_listening`) when not in F10 manual mode.
+**Mask:** only the outer-lip hull (hard-capped so it cannot become a
+chin/beard plate). `PAD_*` multiply distance from mouth center to lip
+landmarks (`1.0` ≈ natural lips). If you still see nose: lower `PAD_UP`
+to `0.70`. If lower lip is cut: raise `PAD_DOWN` slightly (`1.35`).
+
+**When auto mouth-closed applies:**
+
+| Situation | Mouth |
+|-----------|--------|
+| VAD hears **speech** on mic | **CLOSED** (template, mouth-only) |
+| Speech ends (hangover) / TTS queued far away | still **CLOSED** |
+| ≤1.0s before TTS start | **LIVE** (prepare) |
+| TTS / translated audio playing | **LIVE** + lip morph |
+| Silence, no TTS queued | **LIVE** |
+
+**F10 / `cam closed`:** toggle full-face plate **manual** (overrides auto until
+`cam closed auto`). **F11:** full-frame freeze.
+
+Driven by capture VAD (`on_listening`) when not in F10/F11 manual mode.
 
 If left/right looks wrong: `WEBCAM_TEMPLATE_FLIP_H=true` (default is `false`).
 Hangover: `WEBCAM_SPEECH_HANGOVER_S=1.5`.

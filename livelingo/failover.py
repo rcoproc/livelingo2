@@ -707,6 +707,50 @@ def translator_uses_llm(translator) -> bool:
     return False
 
 
+def translator_engine_label(translator) -> str:
+    """
+    Short label for timing_json / latency reports: llm|google|failover|cache|unknown.
+
+    Prefer the backend that actually served the last call when FailoverTranslator
+    exposes ``active_backend`` / ``_last_backend``.
+    """
+    if translator is None:
+        return "unknown"
+    try:
+        from .llm import LLMTranslator
+    except Exception:
+        LLMTranslator = ()  # type: ignore
+    try:
+        from .translate import Translator as GoogleTranslator
+    except Exception:
+        GoogleTranslator = ()  # type: ignore
+
+    if isinstance(translator, FailoverTranslator):
+        last = (
+            getattr(translator, "active_backend", None)
+            or getattr(translator, "_last_backend", None)
+            or ""
+        )
+        last = str(last).strip().lower()
+        if last in ("llm", "groq", "primary"):
+            return "llm"
+        if last in ("google", "secondary"):
+            return "google"
+        if translator_uses_llm(translator):
+            return "llm"
+        return "failover"
+    if isinstance(translator, LLMTranslator):
+        return "llm"
+    if isinstance(translator, GoogleTranslator):
+        return "google"
+    name = type(translator).__name__.lower()
+    if "llm" in name or "groq" in name:
+        return "llm"
+    if "google" in name or name == "translator":
+        return "google"
+    return "unknown"
+
+
 def transcriber_uses_groq(transcriber) -> bool:
     if transcriber is None:
         return False

@@ -358,6 +358,13 @@ def build_synthesizer(config, log=print):
 
             return PiperSynthesizer(config, log=log)
         except Exception as exc:
-            log(f"Piper TTS unavailable ({exc}) — falling back to edge-tts.")
+            # Keep the real cause visible — Windows often lacks piper-tts/onnxruntime
+            # in the same Python that runs main.py.
+            log(f"Piper TTS unavailable ({type(exc).__name__}: {exc})")
+            log(
+                "  Fix: py -m pip install -U piper-tts onnxruntime "
+                "(same Python as main.py). Or set TTS_ENGINE=edge / hybrid."
+            )
+            log(f"  Falling back to edge-tts ({getattr(config, 'TTS_VOICE', '')}).")
     log(f"Text-to-speech: edge-tts ({getattr(config, 'TTS_VOICE', '')}).")
     return Synthesizer(config)

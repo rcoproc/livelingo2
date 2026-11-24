@@ -92,6 +92,8 @@ class MouthROI:
     mouth_cy: int = 0
     mouth_w: int = 0  # approx lip width px
     mouth_h: int = 0  # approx closed lip height px
+    # True only when MediaPipe Face Mesh locked this frame (not heuristic box).
+    mesh_ok: bool = False
 
 
 class FaceMouthROI:
@@ -229,6 +231,7 @@ class FaceMouthROI:
             mouth_cy=cy,
             mouth_w=mw,
             mouth_h=mh,
+            mesh_ok=False,
         )
 
     def process(self, frame_bgr: np.ndarray) -> MouthROI:
@@ -292,6 +295,7 @@ class FaceMouthROI:
             mouth_cy=mcy,
             mouth_w=mw,
             mouth_h=mh,
+            mesh_ok=True,
         )
 
     def _build_soft_mask(

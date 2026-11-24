@@ -11,8 +11,9 @@ seal/blur.
 from __future__ import annotations
 
 import json
+import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -89,6 +90,19 @@ class FreezePlateGeom:
 
 
 @dataclass
+class MouthTrackPose:
+    """Stable mouth pose for closed-clone tracking (jaw-resistant pivot)."""
+
+    cx: float
+    cy: float
+    w: float
+    h: float
+    angle_deg: float = 0.0
+    landmarks_xy: Optional[np.ndarray] = None
+    t: float = 0.0
+
+
+@dataclass
 class MouthTemplate:
     """Closed-mouth reference image + landmarks in the same pixel space."""
 
@@ -139,6 +153,129 @@ def default_image_path() -> Path:
 
 def default_landmarks_path() -> Path:
     return default_template_dir() / "closed_mouth.json"
+
+
+def lip_angle_deg(landmarks: Optional[np.ndarray]) -> float:
+    """Angle of mouth left→right corners in degrees (0 = horizontal)."""
+    if landmarks is None or getattr(landmarks, "size", 0) == 0:
+        return 0.0
+    try:
+        pts = np.asarray(landmarks, dtype=np.float64).reshape(-1, 2)
+        if pts.shape[0] <= max(_LIP_LEFT, _LIP_RIGHT):
+            return 0.0
+        left = pts[int(_LIP_LEFT)]
+        right = pts[int(_LIP_RIGHT)]
+        dx = float(right[0] - left[0])
+        dy = float(right[1] - left[1])
+        if abs(dx) + abs(dy) < 4.0:
+            return 0.0
+        return float(math.degrees(math.atan2(dy, dx)))
+    except Exception:
+        return 0.0
+
+
+def stable_mouth_pose(
+    landmarks: Optional[np.ndarray],
+    *,
+    fallback_cx: float,
+    fallback_cy: float,
+    fallback_w: float,
+    fallback_h: float,
+    t: float = 0.0,
+) -> MouthTrackPose:
+    """
+    Jaw-resistant mouth pivot for closed-mouth cloning.
+
+    Uses lip corners for cx/width/angle and upper-lip + small offset for cy
+    (avoids following an open jaw while speaking PT).
+    """
+    cx = float(fallback_cx)
+    cy = float(fallback_cy)
+    mw = float(max(12.0, fallback_w))
+    mh = float(max(4.0, fallback_h))
+    angle = 0.0
+    lm_out: Optional[np.ndarray] = None
+    if landmarks is not None and getattr(landmarks, "size", 0) > 0:
+        try:
+            pts = np.asarray(landmarks, dtype=np.float64).reshape(-1, 2)
+            lm_out = pts.astype(np.float32)
+            need = max(_LIP_LEFT, _LIP_RIGHT, _LIP_UPPER, _LIP_LOWER)
+            if pts.shape[0] > need:
+                left = pts[int(_LIP_LEFT)]
+                right = pts[int(_LIP_RIGHT)]
+                upper = pts[int(_LIP_UPPER)]
+                lower = pts[int(_LIP_LOWER)]
+                span = float(abs(right[0] - left[0]) + abs(right[1] - left[1]))
+                if span >= 8.0:
+                    mw = float(max(12.0, abs(right[0] - left[0])))
+                    mh = float(max(4.0, abs(lower[1] - upper[1])))
+                    cx = float((left[0] + right[0]) * 0.5)
+                    # Upper lip + small downward bias (not midpoint with open jaw)
+                    cy = float(upper[1] + mw * 0.08)
+                    angle = lip_angle_deg(pts)
+        except Exception:
+            pass
+    return MouthTrackPose(
+        cx=cx,
+        cy=cy,
+        w=mw,
+        h=mh,
+        angle_deg=angle,
+        landmarks_xy=lm_out,
+        t=float(t),
+    )
+
+
+def pose_from_roi(roi: MouthROI, *, t: float = 0.0) -> MouthTrackPose:
+    """Build a stable track pose from a live MouthROI."""
+    return stable_mouth_pose(
+        getattr(roi, "landmarks_xy", None),
+        fallback_cx=float(getattr(roi, "mouth_cx", 0) or 0),
+        fallback_cy=float(getattr(roi, "mouth_cy", 0) or 0),
+        fallback_w=float(getattr(roi, "mouth_w", 40) or 40),
+        fallback_h=float(getattr(roi, "mouth_h", 12) or 12),
+        t=t,
+    )
+
+
+def pose_from_template(template: MouthTemplate, *, t: float = 0.0) -> MouthTrackPose:
+    """Snap / static pose (used when WEBCAM_MOUTH_TRACK=false)."""
+    return stable_mouth_pose(
+        getattr(template, "landmarks_xy", None),
+        fallback_cx=float(getattr(template, "mouth_cx", 0) or 0),
+        fallback_cy=float(getattr(template, "mouth_cy", 0) or 0),
+        fallback_w=float(getattr(template, "mouth_w", 40) or 40),
+        fallback_h=float(getattr(template, "mouth_h", 12) or 12),
+        t=t,
+    )
+
+
+def ema_mouth_pose(
+    prev: Optional[MouthTrackPose],
+    cur: MouthTrackPose,
+    alpha: float,
+) -> MouthTrackPose:
+    """Exponential moving average on pose scalars; landmarks take latest."""
+    a = float(np.clip(alpha, 0.0, 1.0))
+    if prev is None or a >= 0.999:
+        return cur
+    if a <= 0.001:
+        return replace(prev, landmarks_xy=cur.landmarks_xy, t=cur.t)
+    # Unwrap angle toward current to avoid 179↔-179 jumps
+    d_ang = cur.angle_deg - prev.angle_deg
+    while d_ang > 180.0:
+        d_ang -= 360.0
+    while d_ang < -180.0:
+        d_ang += 360.0
+    return MouthTrackPose(
+        cx=prev.cx + a * (cur.cx - prev.cx),
+        cy=prev.cy + a * (cur.cy - prev.cy),
+        w=prev.w + a * (cur.w - prev.w),
+        h=prev.h + a * (cur.h - prev.h),
+        angle_deg=prev.angle_deg + a * d_ang,
+        landmarks_xy=cur.landmarks_xy,
+        t=cur.t,
+    )
 
 
 def _anchor_points(landmarks: np.ndarray) -> Optional[np.ndarray]:
@@ -547,6 +684,290 @@ def align_and_blend(
     blended = warped.astype(np.float32) * a3 + out.astype(np.float32) * (1.0 - a3)
     out = blended.clip(0, 255).astype(np.uint8)
     return out
+
+
+def _mouth_only_mask(
+    h: int,
+    w: int,
+    landmarks: Optional[np.ndarray],
+    cx: int,
+    cy: int,
+    mouth_w: int,
+    mouth_h: int,
+    *,
+    pad_scale: float = 1.05,
+    pad_x: float = 1.00,
+    pad_up: float = 0.70,
+    pad_down: float = 1.25,
+    shift_down_px: float = 0.0,
+    feather_px: int = 8,
+) -> np.ndarray:
+    """
+    Soft alpha mask covering **lips only** (tracks live mouth pose).
+
+    ``pad_up`` / ``pad_down`` / ``pad_x`` multiply distance from the mouth
+    center to each outer-lip landmark (1.0 ≈ natural lip hull). Hard caps
+    keep the top at the real upper-lip line (no nose/glasses plate).
+    """
+    import cv2
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    feather = max(3, min(16, int(feather_px)))
+    scale = float(np.clip(pad_scale, 0.7, 1.3))
+    px = float(np.clip(pad_x, 0.75, 1.30)) * scale
+    # Multipliers on lip geometry. LOWER pad_up → less nose/glasses.
+    pu = float(np.clip(pad_up, 0.35, 1.20)) * scale
+    pd = float(np.clip(pad_down, 0.70, 1.50)) * scale
+    mw = float(max(mouth_w, 16))
+    mh_raw = float(max(mouth_h, 6))
+    pivot_x = float(cx)
+    pivot_y = float(cy) + float(shift_down_px)
+    # Tight caps — upper especially (nose/glasses were bleeding in)
+    max_up = mw * 0.08
+    max_down = mw * 0.26
+    max_x = mw * 0.55
+    drawn = False
+    if landmarks is not None and getattr(landmarks, "size", 0) > 0:
+        try:
+            pts = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
+            lip = []
+            for idx in OUTER_LIP_IDX:
+                if 0 <= int(idx) < pts.shape[0]:
+                    lip.append(pts[int(idx)])
+            if len(lip) >= 6:
+                arr = np.array(lip, dtype=np.float32)
+                span = float(np.ptp(arr[:, 0]) + np.ptp(arr[:, 1]))
+                if span >= 8.0:
+                    lip_top = float(arr[:, 1].min())
+                    lip_bot = float(arr[:, 1].max())
+                    out_pts = np.empty_like(arr)
+                    dx = arr[:, 0] - pivot_x
+                    dy = arr[:, 1] - pivot_y
+                    out_pts[:, 0] = pivot_x + np.clip(dx * px, -max_x, max_x)
+                    above = dy < 0
+                    # Never expand above the real upper-lip landmark (+1px slack)
+                    out_pts[above, 1] = np.maximum(
+                        pivot_y + dy[above] * min(pu, 1.0),
+                        lip_top - 1.0,
+                    )
+                    out_pts[above, 1] = np.maximum(
+                        out_pts[above, 1], pivot_y - max_up
+                    )
+                    out_pts[~above, 1] = pivot_y + np.minimum(
+                        dy[~above] * pd, max_down
+                    )
+                    # Hard cut: nothing above real upper lip
+                    out_pts[:, 1] = np.maximum(out_pts[:, 1], lip_top - 1.0)
+                    # Soft floor near lower lip
+                    out_pts[:, 1] = np.minimum(
+                        out_pts[:, 1], max(lip_bot + mw * 0.06, pivot_y + max_down)
+                    )
+                    hull = cv2.convexHull(out_pts.astype(np.int32))
+                    cv2.fillConvexPoly(mask, hull, 255, cv2.LINE_AA)
+                    # Pixel hard-cut above upper lip (belt + suspenders)
+                    y_cut = int(max(0, math.floor(lip_top - 1.0)))
+                    if y_cut > 0:
+                        mask[:y_cut, :] = 0
+                    drawn = True
+        except Exception:
+            drawn = False
+    if not drawn:
+        ax = max(8, int(round(min(max_x, mw * 0.38 * px))))
+        ay_up = max(3, int(round(min(max_up, mh_raw * 0.45 * pu))))
+        ay_dn = max(6, int(round(min(max_down, mh_raw * 0.85 * pd))))
+        cy_draw = int(round(pivot_y + (ay_dn - ay_up) * 0.25))
+        ay = max(ay_up, ay_dn)
+        cv2.ellipse(
+            mask,
+            (int(pivot_x), cy_draw),
+            (ax, ay),
+            0,
+            0,
+            360,
+            255,
+            -1,
+            cv2.LINE_AA,
+        )
+        y_cut = int(round(pivot_y - max_up))
+        if 0 <= y_cut < h:
+            mask[:y_cut, :] = 0
+
+    if int(mask.max()) == 0:
+        return np.zeros((h, w), dtype=np.float32)
+
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    ramp = max(2.0, float(feather) * 0.5)
+    soft = np.clip(dist / ramp, 0.0, 1.0).astype(np.float32)
+    k = max(3, min(9, (feather // 4) * 2 + 1))
+    if k % 2 == 0:
+        k += 1
+    soft = cv2.GaussianBlur(soft, (k, k), 0)
+    soft = np.clip(soft, 0.0, 1.0)
+    soft[mask == 0] = 0.0
+    return soft
+
+
+def align_and_blend_mouth(
+    live_bgr: np.ndarray,
+    live_roi: MouthROI,
+    template: MouthTemplate,
+    *,
+    feather_px: int = 8,
+    pad_scale: float = 1.05,
+    pad_x: float = 1.00,
+    pad_up: float = 0.70,
+    pad_down: float = 1.25,
+    shift_down_px: float = 0.0,
+    color_match: bool = True,
+    flip_h: bool = False,
+    track: bool = True,
+    rotate: bool = True,
+    pose: Optional[MouthTrackPose] = None,
+) -> np.ndarray:
+    """
+    Clone **closed mouth only** from the template onto the live face.
+
+    Eyes / cheeks / forehead stay live. With ``track=True`` (default), the
+    mouth region follows a stable mouth-center pose (scale + optional
+    rotation) so head motion keeps lips closed. With ``track=False``, the
+    clone stays at the snap pose (does not follow the head).
+
+    ``pose``: optional precomputed / smoothed / held track pose from the
+    service; when omitted, derived from ``live_roi`` (or template if not tracking).
+    """
+    try:
+        import cv2
+    except Exception:
+        return live_bgr
+    if live_bgr is None or live_bgr.size == 0:
+        return live_bgr
+    if template is None or not template.ok:
+        return live_bgr
+
+    if flip_h:
+        template = template.with_horizontal_flip()
+
+    out = live_bgr.copy()
+    h, w = out.shape[:2]
+    src = template.image_bgr
+
+    tpl_pose = pose_from_template(template)
+    if track:
+        # Prefer *current* live Face Mesh every frame (hold/EMA only if mesh lost).
+        if getattr(live_roi, "mesh_ok", False):
+            live_pose = pose_from_roi(live_roi)
+            # Use MediaPipe mouth_cx/cy directly — most responsive head follow
+            try:
+                live_pose = replace(
+                    live_pose,
+                    cx=float(live_roi.mouth_cx),
+                    cy=float(live_roi.mouth_cy),
+                    w=float(live_roi.mouth_w or live_pose.w),
+                    h=float(max(live_roi.mouth_h or 0, live_pose.h)),
+                    landmarks_xy=getattr(live_roi, "landmarks_xy", live_pose.landmarks_xy),
+                )
+            except Exception:
+                pass
+        elif pose is not None:
+            live_pose = pose
+        else:
+            live_pose = pose_from_roi(live_roi)
+    else:
+        # Static: paste at snap coordinates (ignore live head motion)
+        live_pose = tpl_pose
+
+    try:
+        tw = float(max(8.0, tpl_pose.w))
+        lw = float(max(8.0, live_pose.w))
+        # Allow larger scale when snap resolution ≠ live (e.g. 640 tpl → 1280 live)
+        s = float(np.clip(lw / tw, 0.55, 2.60)) if track else 1.0
+        # Nudge warp slightly down so closed lips land under the nose
+        mh = float(max(4.0, live_pose.h, live_pose.w * 0.20))
+        ty_bias = float(shift_down_px) + mh * 0.12
+        tcx = float(tpl_pose.cx)
+        tcy = float(tpl_pose.cy)
+        lcx = float(live_pose.cx)
+        lcy = float(live_pose.cy) + ty_bias
+
+        if track and rotate:
+            d_ang = float(live_pose.angle_deg - tpl_pose.angle_deg)
+            # Clamp extreme tilts (detection noise / profile views)
+            d_ang = float(np.clip(d_ang, -35.0, 35.0))
+            M = cv2.getRotationMatrix2D((tcx, tcy), d_ang, s)
+            M[0, 2] += lcx - tcx
+            M[1, 2] += lcy - tcy
+        else:
+            # Scale + translate only (legacy path / track off)
+            if track:
+                tx = lcx - s * tcx
+                ty = lcy - s * tcy
+                M = np.array([[s, 0.0, tx], [0.0, s, ty]], dtype=np.float64)
+            else:
+                M = np.array(
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64
+                )
+    except Exception:
+        return out
+
+    try:
+        warped = cv2.warpAffine(
+            src,
+            M,
+            (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+    except Exception:
+        return out
+
+    mask_lm = live_pose.landmarks_xy
+    if mask_lm is None and track:
+        mask_lm = getattr(live_roi, "landmarks_xy", None)
+    if not track:
+        mask_lm = getattr(template, "landmarks_xy", None)
+
+    alpha = _mouth_only_mask(
+        h,
+        w,
+        mask_lm,
+        int(round(live_pose.cx)),
+        int(round(live_pose.cy)),
+        int(round(live_pose.w or 40)),
+        int(round(live_pose.h or 12)),
+        pad_scale=pad_scale,
+        pad_x=pad_x,
+        pad_up=pad_up,
+        pad_down=pad_down,
+        shift_down_px=shift_down_px,
+        feather_px=feather_px,
+    )
+
+    if color_match and float(alpha.max()) > 0.05:
+        try:
+            core = alpha > 0.55
+            if int(core.sum()) > 40:
+                live_px = out[core].astype(np.float32)
+                warp_px = warped[core].astype(np.float32)
+                live_lum = (
+                    0.114 * live_px[:, 0]
+                    + 0.587 * live_px[:, 1]
+                    + 0.299 * live_px[:, 2]
+                )
+                warp_lum = (
+                    0.114 * warp_px[:, 0]
+                    + 0.587 * warp_px[:, 1]
+                    + 0.299 * warp_px[:, 2]
+                )
+                d = float(np.clip(live_lum.mean() - warp_lum.mean(), -22.0, 22.0))
+                warped = np.clip(warped.astype(np.float32) + d, 0, 255).astype(
+                    np.uint8
+                )
+        except Exception:
+            pass
+
+    a3 = alpha[:, :, None]
+    blended = warped.astype(np.float32) * a3 + out.astype(np.float32) * (1.0 - a3)
+    return blended.clip(0, 255).astype(np.uint8)
 
 
 def cover_frame_with_closed_image(

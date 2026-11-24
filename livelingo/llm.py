@@ -142,20 +142,35 @@ class LLMTranslator:
             return None
 
     def _raise_for_status(self, resp):
+        detail = ""
+        try:
+            detail = (resp.text or "")[:240].strip()
+        except Exception:
+            detail = ""
         if resp.status_code == 401:
             raise LLMError("Groq rejected the API key (401). Check GROQ_API_KEY.")
+        if resp.status_code == 403:
+            raise LLMError(
+                f"Groq forbidden (403) for model '{self.model}'. "
+                f"Check org/project model permissions at "
+                f"https://console.groq.com/settings/limits — or try "
+                f"GROQ_MODEL=llama-3.3-70b-versatile. Detail: {detail}"
+            )
         if resp.status_code == 404:
             raise LLMError(
                 f"Groq model '{self.model}' not found (404). "
-                f"Set a valid GROQ_MODEL (e.g. llama-3.1-8b-instant)."
+                f"Set GROQ_MODEL to a model listed at "
+                f"https://console.groq.com/docs/models "
+                f"(try llama-3.3-70b-versatile or openai/gpt-oss-20b). "
+                f"Detail: {detail}"
             )
         if resp.status_code == 429:
             raise LLMError(
                 "Groq rate limit reached (429). Wait a moment or use a smaller "
-                "model (GROQ_MODEL=llama-3.1-8b-instant)."
+                "model (GROQ_MODEL=llama-3.1-8b-instant / openai/gpt-oss-20b)."
             )
         if resp.status_code >= 400:
-            raise LLMError(f"Groq error {resp.status_code}: {resp.text[:200]}")
+            raise LLMError(f"Groq error {resp.status_code}: {detail or resp.reason}")
 
     # ------------------------------------------------------------------ #
     def translate_stream(self, text, on_token=None):

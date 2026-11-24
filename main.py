@@ -751,14 +751,27 @@ def _build_translator():
         except LLMError as exc:
             _log_error(f"Groq self-test failed: {exc}")
             primary = None
+            msg = str(exc)
+            # Key is present — don't print the "no API key" help for model/auth issues
+            if "404" in msg or "not found" in msg.lower():
+                _log_warn(
+                    "Dica: ajuste GROQ_MODEL no .env "
+                    "(ex.: llama-3.3-70b-versatile) — veja "
+                    "https://console.groq.com/docs/models"
+                )
+            elif "401" in msg or "API key" in msg:
+                print(GROQ_KEY_HELP)
+            elif "403" in msg:
+                _log_warn(
+                    "Dica: permissões de modelo no console Groq "
+                    "(settings/limits) ou troque GROQ_MODEL."
+                )
             if want_google_fb:
                 _log_warn(
                     "Using Google Translate only this session "
-                    "(LLM self-test failed). Restart after fixing GROQ_API_KEY."
+                    "(LLM self-test failed). Fix GROQ_MODEL / key and restart."
                 )
-                print(GROQ_KEY_HELP)
             else:
-                print(GROQ_KEY_HELP)
                 sys.exit(1)
 
     if primary is not None and want_google_fb:
@@ -4998,6 +5011,29 @@ def main():
 
         # --- TTS (edge online or Piper local) ---
         synthesizer = build_synthesizer(cfg, log=_log_info)
+        # Make A/B unambiguous: header/cfg can say piper while runtime fell back to edge
+        try:
+            from livelingo.pipeline import _resolve_tts_engine_name
+
+            runtime_tts = _resolve_tts_engine_name(synthesizer, cfg)
+            _log_info(
+                f"TTS runtime: {type(synthesizer).__name__} · "
+                f"engine_name={runtime_tts} · "
+                f"cfg TTS_ENGINE={getattr(cfg, 'TTS_ENGINE', '?')} "
+                f"TTS_HYBRID={getattr(cfg, 'TTS_HYBRID', '?')}"
+            )
+            if (getattr(cfg, "TTS_ENGINE", "") or "").lower() == "piper" and runtime_tts == "edge":
+                _log_warn(
+                    "TTS_ENGINE=piper but runtime is edge — Piper failed to load; "
+                    "check boot log for 'Piper TTS unavailable'."
+                )
+            if runtime_tts == "hybrid":
+                _log_warn(
+                    "TTS runtime is hybrid (edge first chunk). "
+                    "For pure Piper latency A/B set TTS_HYBRID=false in .env."
+                )
+        except Exception:
+            pass
 
         use_tui = (getattr(cfg, "UI_MODE", "tui") or "tui").lower() == "tui"
         tui_holder = {"app": None}
